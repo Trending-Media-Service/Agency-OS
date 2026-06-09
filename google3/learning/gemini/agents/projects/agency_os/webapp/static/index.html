@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agency OS Control Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto px-4 py-8">
+        <header class="flex justify-between items-center mb-8 pb-4 border-b border-gray-200">
+            <h1 class="text-3xl font-bold text-gray-800">Agency OS Control Panel</h1>
+            <div class="flex items-center space-x-4">
+                <label for="user-role" class="text-sm font-medium text-gray-700">Active Role:</label>
+                <select id="user-role" class="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+                    <option value="AGENCY_OWNER">Agency Owner</option>
+                    <option value="CLIENT_EXECUTIVE">Client Executive</option>
+                    <option value="CLIENT_DBA">Client DBA</option>
+                    <option value="UNAUTHORIZED_USER">Unauthorized User</option>
+                </select>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <!-- Left Column: Status & Controls -->
+            <div class="space-y-6">
+                <!-- Status Card -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">System Status</h2>
+                    <div class="space-y-3">
+                        <div>
+                            <span class="text-sm text-gray-500">Tenant:</span>
+                            <span id="tenant-id" class="font-mono text-sm ml-2">-</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-500">Brand:</span>
+                            <span id="brand-name" class="font-semibold ml-2">-</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-500">Trust Score:</span>
+                            <span id="trust-score" class="font-bold text-lg ml-2">-</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-500">Autonomy Tier:</span>
+                            <span id="autonomy-tier" class="font-bold text-lg ml-2">-</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-500">Lockout:</span>
+                            <span id="lockout-status" class="px-2 py-1 rounded text-xs font-semibold ml-2">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Simulation Controls -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">Simulation Controls</h2>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <label for="ctrl-gtm" class="text-sm text-gray-600">GTM Present</label>
+                            <input type="checkbox" id="ctrl-gtm" checked class="rounded text-indigo-600 focus:ring-indigo-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label for="ctrl-pixel" class="text-sm text-gray-600">Pixel Present</label>
+                            <input type="checkbox" id="ctrl-pixel" checked class="rounded text-indigo-600 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label for="ctrl-capi" class="block text-sm text-gray-600 mb-1">CAPI Dedup Rate</label>
+                            <input type="number" id="ctrl-capi" step="0.01" min="0" max="1" value="0.98" class="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300">
+                        </div>
+                        <div>
+                            <label for="ctrl-gmc-critical" class="block text-sm text-gray-600 mb-1">GMC Critical Mismatches</label>
+                            <input type="number" id="ctrl-gmc-critical" min="0" value="0" class="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300">
+                        </div>
+                        <div>
+                            <label for="ctrl-reputation" class="block text-sm text-gray-600 mb-1">Reputation Alerts</label>
+                            <input type="number" id="ctrl-reputation" min="0" value="0" class="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300">
+                        </div>
+                        <button id="btn-update-state" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded shadow">
+                            Update Trust Factors
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Integrations -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">Integrations</h2>
+                    <ul id="integrations-list" class="space-y-2">
+                        <!-- Loaded dynamically -->
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Middle & Right Columns: Actions & History -->
+            <div class="md:col-span-2 space-y-6">
+                <!-- Actions Controls -->
+                <div class="bg-white p-6 rounded-lg shadow flex justify-between items-center">
+                    <div>
+                        <h2 class="text-xl font-semibold text-gray-800">Autonomy Cycle</h2>
+                        <p class="text-sm text-gray-500">Trigger a sweep to generate and process optimization cards.</p>
+                    </div>
+                    <button id="btn-run-sweep" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded shadow-lg transition duration-150">
+                        Run Sweep
+                    </button>
+                </div>
+
+                <!-- Pending Cards -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700 flex justify-between items-center">
+                        <span>Pending Approvals</span>
+                        <span id="pending-count" class="bg-gray-200 text-gray-800 text-xs px-2.5 py-0.5 rounded-full font-semibold">-</span>
+                    </h2>
+                    <div id="pending-cards-container" class="space-y-4">
+                        <!-- Loaded dynamically -->
+                        <p class="text-gray-500 text-center py-4">No pending approvals. Run a sweep or update trust factors.</p>
+                    </div>
+                </div>
+
+                <!-- Processed History -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">Execution History</h2>
+                    <div id="processed-cards-container" class="space-y-4 max-h-96 overflow-y-auto">
+                        <!-- Loaded dynamically -->
+                        <p class="text-gray-500 text-center py-4">No history yet.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // UI Elements
+        const userRoleSelect = document.getElementById('user-role');
+        const tenantIdEl = document.getElementById('tenant-id');
+        const brandNameEl = document.getElementById('brand-name');
+        const trustScoreEl = document.getElementById('trust-score');
+        const autonomyTierEl = document.getElementById('autonomy-tier');
+        const lockoutStatusEl = document.getElementById('lockout-status');
+        const integrationsList = document.getElementById('integrations-list');
+        const pendingCardsContainer = document.getElementById('pending-cards-container');
+        const processedCardsContainer = document.getElementById('processed-cards-container');
+        const pendingCountEl = document.getElementById('pending-count');
+
+        // Control Inputs
+        const ctrlGtm = document.getElementById('ctrl-gtm');
+        const ctrlPixel = document.getElementById('ctrl-pixel');
+        const ctrlCapi = document.getElementById('ctrl-capi');
+        const ctrlGmcCritical = document.getElementById('ctrl-gmc-critical');
+        const ctrlReputation = document.getElementById('ctrl-reputation');
+
+        // Buttons
+        const btnUpdateState = document.getElementById('btn-update-state');
+        const btnRunSweep = document.getElementById('btn-run-sweep');
+
+        // Fetch and update status
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                tenantIdEl.textContent = data.tenant_id;
+                brandNameEl.textContent = data.brand_name;
+                trustScoreEl.textContent = data.trust_score.toFixed(2);
+                autonomyTierEl.textContent = 'Tier ' + data.autonomy_tier;
+                
+                if (data.lockout_active) {
+                    lockoutStatusEl.textContent = 'Active';
+                    lockoutStatusEl.className = 'px-2 py-1 rounded text-xs font-semibold ml-2 bg-red-100 text-red-800';
+                } else {
+                    lockoutStatusEl.textContent = 'Inactive';
+                    lockoutStatusEl.className = 'px-2 py-1 rounded text-xs font-semibold ml-2 bg-green-100 text-green-800';
+                }
+
+                // Render integrations
+                integrationsList.innerHTML = '';
+                data.integrations.forEach(int => {
+                    const li = document.createElement('li');
+                    li.className = 'flex justify-between items-center py-2 border-b border-gray-100 last:border-0';
+                    li.innerHTML = `
+                        <span class="text-sm font-medium text-gray-700">${int.name.replace('_', ' ').toUpperCase()}</span>
+                        <span class="px-2 py-0.5 rounded text-xs font-semibold ${int.connected ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                            ${int.connected ? 'Connected' : 'Disconnected'}
+                        </span>
+                    `;
+                    integrationsList.appendChild(li);
+                });
+
+            } catch (err) {
+                console.error('Error fetching status:', err);
+            }
+        }
+
+        // Fetch and update cards
+        async function updateCards() {
+            try {
+                const res = await fetch('/api/cards');
+                const data = await res.json();
+                
+                pendingCountEl.textContent = data.pending.length;
+
+                // Render Pending Cards
+                pendingCardsContainer.innerHTML = '';
+                if (data.pending.length === 0) {
+                    pendingCardsContainer.innerHTML = '<p class="text-gray-500 text-center py-4">No pending approvals.</p>';
+                } else {
+                    data.pending.forEach(card => {
+                        const cardEl = document.createElement('div');
+                        cardEl.className = 'border border-yellow-200 bg-yellow-50/30 p-4 rounded-lg space-y-3';
+                        cardEl.innerHTML = `
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <span class="px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-800">${card.recommendation_type}</span>
+                                    <h3 class="text-lg font-semibold text-gray-800 mt-1">${card.description}</h3>
+                                </div>
+                                <span class="text-sm font-bold text-gray-500">Impact: ${card.impact_score}</span>
+                            </div>
+                            <div class="bg-white p-3 rounded border border-gray-100 font-mono text-xs text-gray-600">
+                                ${JSON.stringify(card.payload, null, 2)}
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button onclick="rejectCard('${card.id}')" class="bg-red-50 hover:bg-red-100 text-red-700 font-semibold py-1.5 px-4 rounded border border-red-200 transition">
+                                    Reject
+                                </button>
+                                <button onclick="approveCard('${card.id}')" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1.5 px-4 rounded shadow transition">
+                                    Approve
+                                </button>
+                            </div>
+                        `;
+                        pendingCardsContainer.appendChild(cardEl);
+                    });
+                }
+
+                // Render Processed Cards
+                processedCardsContainer.innerHTML = '';
+                if (data.processed.length === 0) {
+                    processedCardsContainer.innerHTML = '<p class="text-gray-500 text-center py-4">No history yet.</p>';
+                } else {
+                    // Show latest first
+                    data.processed.slice().reverse().forEach(card => {
+                        const cardEl = document.createElement('div');
+                        let statusClass = 'bg-gray-100 text-gray-800';
+                        if (card.status === 'APPROVED') statusClass = 'bg-green-100 text-green-800';
+                        if (card.status === 'REJECTED') statusClass = 'bg-red-100 text-red-800';
+
+                        cardEl.className = 'border border-gray-200 p-4 rounded-lg space-y-2';
+                        cardEl.innerHTML = `
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <span class="px-2 py-0.5 rounded text-xs font-semibold ${statusClass}">${card.status}</span>
+                                    <h3 class="text-md font-semibold text-gray-800 mt-1">${card.description}</h3>
+                                </div>
+                                <span class="text-xs text-gray-400">ID: ${card.id}</span>
+                            </div>
+                            <div class="font-mono text-xs text-gray-500">
+                                Type: ${card.recommendation_type} | Impact: ${card.impact_score}
+                            </div>
+                        `;
+                        processedCardsContainer.appendChild(cardEl);
+                    });
+                }
+
+            } catch (err) {
+                console.error('Error fetching cards:', err);
+            }
+        }
+
+        // Approve Action Card
+        async function approveCard(cardId) {
+            const role = userRoleSelect.value;
+            try {
+                const res = await fetch('/api/approve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_id: cardId, user_role: role })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    updateCards();
+                    updateStatus();
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        }
+
+        // Reject Action Card
+        async function rejectCard(cardId) {
+            const role = userRoleSelect.value;
+            try {
+                const res = await fetch('/api/reject', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_id: cardId, user_role: role })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    updateCards();
+                    updateStatus();
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        }
+
+        // Update State
+        btnUpdateState.addEventListener('click', async () => {
+            const payload = {
+                gtm_present: ctrlGtm.checked,
+                pixel_present: ctrlPixel.checked,
+                capi_dedup_rate: parseFloat(ctrlCapi.value),
+                gmc_critical_mismatch_count: parseInt(ctrlGmcCritical.value),
+                reputation_alert_count: parseInt(ctrlReputation.value)
+            };
+
+            try {
+                const res = await fetch('/api/state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                await res.json();
+                updateStatus();
+                alert('State updated. Run sweep to apply changes to new cards.');
+            } catch (err) {
+                alert('Failed to update state');
+            }
+        });
+
+        // Run Sweep
+        btnRunSweep.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/sweep', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}) // Uses mock default cards on backend if empty
+                });
+                const data = await res.json();
+                updateCards();
+                updateStatus();
+                
+                // Show summary
+                const approved = data.processed_cards.filter(c => c.status === 'APPROVED').length;
+                const rejected = data.processed_cards.filter(c => c.status === 'REJECTED').length;
+                const pending = data.processed_cards.filter(c => c.status === 'PENDING').length;
+                alert(`Sweep completed!\nTier: ${data.autonomy_tier}\nAuto-Approved: ${approved}\nRejected/OPA Violations: ${rejected}\nPending Approval: ${pending}`);
+            } catch (err) {
+                alert('Sweep failed');
+            }
+        });
+
+        // Initial Load
+        updateStatus();
+        updateCards();
+    </script>
+</body>
+</html>

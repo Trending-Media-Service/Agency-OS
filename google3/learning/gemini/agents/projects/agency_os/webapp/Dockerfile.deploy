@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the google3 structure we prepared
+COPY google3 /app/google3
+
+# Set PYTHONPATH to include /app
+ENV PYTHONPATH=/app
+
+# Expose port
+EXPOSE 8080
+
+# Run the app
+CMD ["python", "google3/learning/gemini/agents/projects/agency_os/webapp/app.py"]

@@ -1,0 +1,4 @@
+Flask==3.0.2
+Werkzeug==3.0.1
+# Add other dependencies if needed. The backend files don't seem to import much external stuff.
+# Let's check imports in other files.
