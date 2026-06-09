@@ -1,0 +1,91 @@
+MAIN DASHBOARD: /dashboard
+├─ Layout: Sidebar (nav) + Main content
+├─ Top header bar: User → Settings → Logout
+│
+├─ LEFT SIDEBAR (Navigation):
+│  ├─ Logo + "Agency OS"
+│  ├─ [Dashboard] (active, blue)
+│  ├─ [Integrations] → Shows connection status
+│  ├─ [Policies] → OPA policy editor
+│  ├─ [History] → Past cards & decisions
+│  ├─ [Alerts] → Notifications
+│  └─ [Settings] → Team, billing, account
+│
+├─ MAIN CONTENT (4 Sections):
+│
+│  SECTION 1: AUTONOMY STATUS (Top row, 3 cards)
+│  ├─ Card 1: "Trust Score"
+│  │  ├─ Large number: 87/100
+│  │  ├─ Small chart: Score trend (7-day sparkline)
+│  │  ├─ Status indicator: ✅ Healthy
+│  │  ├─ Breakdown text: "GTM ✓ | Pixel ✓ | CAPI 0.98 | GMC 1 warning"
+│  │  └─ [View Details] link
+│  │
+│  ├─ Card 2: "Current Autonomy Tier"
+│  │  ├─ Large tier: Tier 2 (Supervised)
+│  │  ├─ Description: "Auto-approve low-impact, manual review for high-impact"
+│  │  ├─ % auto-approved this week: 73%
+│  │  └─ [Adjust Tier] link → Opens modal
+│  │
+│  └─ Card 3: "Active Integrations"
+│     ├─ Logo grid: Google Ads ✓ | Facebook ✓ | Shopify ✓ | GMC ✓
+│     ├─ Last sync: "2 hours ago"
+│     └─ [Manage Connections] link
+│
+│  SECTION 2: PENDING CARDS (Middle, full width)
+│  ├─ Title: "Pending Optimizations (7 awaiting action)"
+│  ├─ Filter bar: [All] [Bid Adjustments] [Budget] [Audience] [Status: Manual]
+│  ├─ Sort: [By Date] [By Impact Score] [By Risk Level]
+│  ├─ Table with columns:
+│  │  ├─ Type (icon + name)
+│  │  ├─ Description (truncated)
+│  │  ├─ Impact Score (0-10, colored: red/yellow/green)
+│  │  ├─ Risk Level (Low/Medium/High badge)
+│  │  ├─ Created (time ago)
+│  │  └─ Action buttons: [View] [Approve] [Reject]
+│  │
+│  └─ Table row example:
+│     ├─ [📈] Bid Adjustment
+│     ├─ "Increase bid for 'winter-jacket' campaign"
+│     ├─ 8.2 (green bar)
+│     ├─ Medium (yellow badge)
+│     ├─ "1 hour ago"
+│     └─ [>] [✓] [✗]
+│
+│  SECTION 3: RECENT ACTIVITY (Bottom left, 50% width)
+│  ├─ Title: "Activity This Week"
+│  ├─ Timeline visualization:
+│  │  ├─ Each day as a row
+│  │  ├─ Bars showing: Cards Approved | Cards Rejected | Cards Auto-executed
+│  │  └─ Colors: Green | Red | Blue
+│  └─ Total stats: "31 cards | 24 approved | 4 rejected | 3 auto"
+│
+│  SECTION 4: KEY METRICS (Bottom right, 50% width)
+│  ├─ Title: "Financial Impact"
+│  ├─ Metric 1: "Avg ROAS"
+│  │  └─ 2.1 (↑ 0.3 vs last week) Green ↑
+│  ├─ Metric 2: "Optimizations Applied"
+│  │  └─ 124 (↑ 18 vs last week) Blue
+│  ├─ Metric 3: "Avg Time to Approval"
+│  │  └─ 2.3 hours (↓ 0.8 vs last week) Green ↓
+│  └─ Metric 4: "Policy Violations Prevented"
+│     └─ 3 (this week)
+│
+└─ Responsiveness: 
+   ├─ Desktop: 4 sections visible
+   ├─ Tablet: 3 sections, 1 scrolls
+   └─ Mobile: Stacked, sidebar becomes hamburger
+
+INTERACTIVE FEATURES:
+├─ Clicking "View Details" on Trust Score → Modal showing:
+│  ├─ Full breakdown of trust factors
+│  ├─ Historical trend (30-day chart)
+│  ├─ Recommendations to improve score
+│  └─ [Close] button
+│
+├─ Hovering over card row → Shows [View] [Approve] [Reject] buttons (if not visible)
+│
+└─ Real-time updates:
+   ├─ WebSocket connection to /api/ws/dashboard
+   ├─ New cards appear in table with animation
+   └─ Metrics update every 30 seconds
