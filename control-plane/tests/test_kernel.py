@@ -13,7 +13,7 @@ import pathlib
 import shutil
 
 import app.main as mainmod
-from app.database import get_db
+from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.kernel import loop
 from app.kernel.optypes import (InvalidTransition, Money, OpSpec, OpState,
                                 Reversibility, Severity, assert_transition)
@@ -55,10 +55,22 @@ async def client(db_engine):
 
     async def override_get_db():
         async with async_session() as s:
-            async with s.begin():
+            await s.begin()
+            try:
                 yield s
+                if s.in_transaction():
+                    await s.commit()
+            except Exception:
+                if s.in_transaction():
+                    await s.rollback()
+                raise
+
+    def override_get_worker_session_maker():
+        return async_session
 
     mainmod.app.dependency_overrides[get_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
     mainmod.app.dependency_overrides.clear()
@@ -161,7 +173,7 @@ def test_tier2_auto_approval_only_within_bounds():
 
 # ------------------------------------------------------------ e2e heartbeat
 
-async def test_e2e_governed_loop(client):
+async def test_e2e_governed_loop(client, db_engine):
     r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
     H = {"X-Tenant-ID": tid}
@@ -175,10 +187,10 @@ async def test_e2e_governed_loop(client):
 
     r = await client.post(f"/ops/{card['op_id']}/decision", headers=H,
                     json={"decision": "approve", "actor": "chandan", "surface": "whatsapp"})
-    print("DECISION RESPONSE:", r.status_code, r.text)
-    assert r.json()["state"] == "DONE"
+    assert r.json()["state"] == "APPROVED"
 
     r = await client.get(f"/ops/{card['op_id']}", headers=H)
+    assert r.json()["state"] == "DONE"
     kinds = [t["kind"] for t in r.json()["trace"]]
     assert kinds.count("transition") >= 6
 
@@ -202,3 +214,10 @@ async def test_e2e_blocked_op_explains_itself(db_engine, client):
         await s.commit()
         assert requirement == "BLOCKED" and row.state == "BLOCKED"
         assert gate.violations[0].message
+
+
+async def test_drain_outbox_endpoint_returns_ok(client):
+    r = await client.post("/tasks/drain-outbox")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert "processed_items" in r.json()
