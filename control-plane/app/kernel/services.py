@@ -105,7 +105,15 @@ def history_score(events: list[tuple[str, dt.datetime]], now: dt.datetime) -> fl
     total = 0.0
     for kind, ts in events:
         base = cfg["deltas"].get(kind, 0.0)
-        age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+        
+        # Reconcile naive and aware datetimes (common in SQLite tests)
+        event_ts = ts
+        if event_ts.tzinfo is None and now.tzinfo is not None:
+            event_ts = event_ts.replace(tzinfo=dt.timezone.utc)
+        elif event_ts.tzinfo is not None and now.tzinfo is None:
+            event_ts = event_ts.replace(tzinfo=None)
+
+        age_days = max(0.0, (now - event_ts).total_seconds() / 86400.0)
         total += base * (0.5 ** (age_days / hl))
     return max(-clamp, min(clamp, total))
 
