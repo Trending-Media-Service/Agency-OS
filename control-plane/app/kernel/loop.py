@@ -121,21 +121,13 @@ def enqueue(s: AsyncSession, op_id: str) -> None:
 async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_items: int = 10) -> int:
     """v1 in-process drain. Cloud Tasks worker replaces the call site, not the logic."""
     now = now or dt.datetime.now(dt.timezone.utc)
-    print(f"DEBUG: drain_once: now={now}")
     await s.flush()  # stamp defaults on same-txn enqueues BEFORE the cutoff comparison
     now = max(now, dt.datetime.now(dt.timezone.utc))
-    all_items_result = await s.execute(select(OutboxItem))
-    all_items = all_items_result.scalars().all()
-    print(f"DEBUG: drain_once: total OutboxItems in DB={len(all_items)}")
-    for item in all_items:
-        print(f"  OutboxItem: id={item.id}, op_id={item.op_id}, status={item.status}, next_attempt_at={item.next_attempt_at}")
-
     result = await s.execute(
         select(OutboxItem).where(OutboxItem.status == "PENDING",
                                  OutboxItem.next_attempt_at <= now)
         .order_by(OutboxItem.id).limit(max_items))
     items = result.scalars().all()
-    print(f"DEBUG: drain_once: items to process={len(items)}")
     processed = 0
     for item in items:
         row = await s.get(OpRow, item.op_id)

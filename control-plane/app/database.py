@@ -31,15 +31,22 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
   Injects app.current_tenant_id at the database level for Row-Level Security.
   """
   async with AsyncSessionLocal() as session:
-    async with session.begin():
-      tenant_id = tenant_context.get()
-      if tenant_id and session.bind.dialect.name == "postgresql":
-        # Local variable valid strictly inside the active transaction block
-        await session.execute(
-            text("SET LOCAL app.current_tenant_id = :tenant_id"),
-            {"tenant_id": tenant_id},
-        )
+    await session.begin()
+    tenant_id = tenant_context.get()
+    if tenant_id and session.bind.dialect.name == "postgresql":
+      # Local variable valid strictly inside the active transaction block
+      await session.execute(
+          text("SET LOCAL app.current_tenant_id = :tenant_id"),
+          {"tenant_id": tenant_id},
+      )
+    try:
       yield session
+      if session.in_transaction():
+        await session.commit()
+    except Exception:
+      if session.in_transaction():
+        await session.rollback()
+      raise
 
 
 WORKER_DATABASE_URL = os.getenv("WORKER_DATABASE_URL", DATABASE_URL)
@@ -57,8 +64,15 @@ async def get_worker_db() -> AsyncGenerator[AsyncSession, None]:
   Bypasses RLS (runs as worker/admin role).
   """
   async with WorkerAsyncSessionLocal() as session:
-    async with session.begin():
+    await session.begin()
+    try:
       yield session
+      if session.in_transaction():
+        await session.commit()
+    except Exception:
+      if session.in_transaction():
+        await session.rollback()
+      raise
 
 
 def get_worker_session_maker() -> async_sessionmaker[AsyncSession]:

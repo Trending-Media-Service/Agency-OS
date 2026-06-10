@@ -55,8 +55,15 @@ async def client(db_engine):
 
     async def override_get_db():
         async with async_session() as s:
-            async with s.begin():
+            await s.begin()
+            try:
                 yield s
+                if s.in_transaction():
+                    await s.commit()
+            except Exception:
+                if s.in_transaction():
+                    await s.rollback()
+                raise
 
     def override_get_worker_session_maker():
         return async_session
@@ -180,17 +187,6 @@ async def test_e2e_governed_loop(client, db_engine):
 
     r = await client.post(f"/ops/{card['op_id']}/decision", headers=H,
                     json={"decision": "approve", "actor": "chandan", "surface": "whatsapp"})
-    print("DECISION RESPONSE:", r.status_code, r.text)
-
-    # Query DB directly in the test to check outbox
-    from app.models import OutboxItem
-    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
-    async with async_session() as s:
-        all_items = (await s.execute(select(OutboxItem))).scalars().all()
-        print(f"DEBUG TEST: total OutboxItems in DB after response={len(all_items)}")
-        for item in all_items:
-            print(f"  DEBUG TEST: OutboxItem: id={item.id}, op_id={item.op_id}, status={item.status}")
-
     assert r.json()["state"] == "APPROVED"
 
     r = await client.get(f"/ops/{card['op_id']}", headers=H)

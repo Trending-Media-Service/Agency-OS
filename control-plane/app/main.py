@@ -87,7 +87,7 @@ async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks
         raise HTTPException(404, "op not found for tenant")
     await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
                 surface=body.surface, reason=body.reason)
-    await s.flush()
+    await s.commit()
     enqueue_drain(background_tasks, worker_session_maker)
     return {"op_id": row.id, "state": row.state}
 
