@@ -185,7 +185,7 @@ async def test_e2e_governed_loop(client, db_engine):
     H = {"X-Tenant-ID": tid}
 
     r = await client.post("/intents", headers=H,
-                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+                    json={"brand_id": bid, "text": "host woktok.in please"})
     card = r.json()["cards"][0]
     assert card["state"] == "AWAITING_APPROVAL"
     assert "cloud_dns zone woktok.in" in card["preview"]
@@ -268,7 +268,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
 
     # Submit intent that requires approval (tier 1)
     r = await client.post("/intents", headers=H,
-                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+                    json={"brand_id": bid, "text": "host woktok.in please"})
     card = r.json()["cards"][0]
     op_id = card["op_id"]
     assert card["state"] == "AWAITING_APPROVAL"
@@ -345,7 +345,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
     H = {"X-Tenant-ID": tid}
     r = await client.post("/intents", headers=H,
-                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+                    json={"brand_id": bid, "text": "host woktok.in please"})
     op_id = r.json()["cards"][0]["op_id"]
 
     # Simulate User clicking "Reject" via Webhook
@@ -405,7 +405,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
     H = {"X-Tenant-ID": tid}
     r = await client.post("/intents", headers=H,
-                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+                    json={"brand_id": bid, "text": "host woktok.in please"})
     op_id = r.json()["cards"][0]["op_id"]
 
     # Simulate User sending text message "modify make it 40k"
@@ -446,3 +446,99 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     # Verify that the modify approval is in the traces
     traces = r.json()["trace"]
     assert len(traces) >= 2
+
+
+# ------------------------------------------------------------- trust engine E2E
+
+async def test_e2e_trust_tier_2_auto_approves(client, db_engine):
+    from app.models import TrustSnapshot
+
+    # 1. Create tenant/brand
+    r = await client.post("/tenants", json={"name": "TrustBrand", "brand_name": "Trusty"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+
+    # 2. Insert a TrustSnapshot with tier=2 for this brand and domain "provision"
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        s.add(TrustSnapshot(tenant_id=tid, brand_id=bid, domain="provision", score=90.0, tier=2))
+        await s.commit()
+
+    # 3. Submit intent (no tier parameter)
+    r = await client.post("/intents", headers=H,
+                          json={"brand_id": bid, "text": "host woktok.in please"})
+    card = r.json()["cards"][0]
+    assert card["state"] == "APPROVED"
+    assert card["requirement"] == "AUTO"
+
+
+async def test_trust_snapshots_nightly_job(db_engine):
+    from app.kernel.services import compute_snapshots
+    from app.models import Tenant, Brand, TrustEvent, TrustSnapshot
+
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Create brand
+        t = Tenant(name="T")
+        s.add(t)
+        await s.flush()
+        b = Brand(tenant_id=t.id, name="B")
+        s.add(b)
+        await s.flush()
+
+        # Add some trust events
+        s.add(TrustEvent(tenant_id=t.id, brand_id=b.id, domain="provision", kind="verified_success", base_delta=1.0))
+        s.add(TrustEvent(tenant_id=t.id, brand_id=b.id, domain="provision", kind="verify_failure", base_delta=-8.0))
+        await s.commit()
+
+    async with async_session() as s:
+        await compute_snapshots(s)
+        await s.commit()
+
+    async with async_session() as s:
+        res = await s.execute(select(TrustSnapshot).where(TrustSnapshot.brand_id == b.id, TrustSnapshot.domain == "provision"))
+        snap = res.scalar_one()
+        # Initial health score = 70.0 (gtm + pixel + capi) (Wait: in services.py it is 67.0! Check math below)
+        # score = health (67.0) - penalties (0) + history (-7) = 60.0
+        # Tier = 1
+        assert snap.score == 60.0
+        assert snap.tier == 1
+
+
+async def test_decide_enforces_override_reason(db_engine):
+    from app.kernel import loop
+    from app.models import OpRow, TrustEvent
+    from app.kernel.optypes import Severity, Reversibility, Money
+    from app.kernel.services import evaluate_gates
+
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Create an Op that violates cost ceiling policy
+        # Cost ceiling is 10,000 INR (1,000,000 minor)
+        spec = _spec(cost_estimate=Money(2_000_000))  # 20,000 INR -> violates cost ceiling!
+        row = await loop.propose(s, spec, actor="test")
+        await s.commit()
+
+    async with async_session() as s:
+        db_row = await s.get(OpRow, row.id)
+        # Move to AWAITING_APPROVAL state
+        db_row.state = "AWAITING_APPROVAL"
+        await s.commit()
+
+    async with async_session() as s:
+        db_row = await s.get(OpRow, row.id)
+        # Try to approve without reason -> should fail
+        with pytest.raises(ValueError, match="Override reason is mandatory"):
+            await loop.decide(s, db_row, decision="approve", actor="chandan", role="owner", surface="whatsapp")
+
+        # Try to approve with reason -> should succeed
+        await loop.decide(s, db_row, decision="approve", actor="chandan", role="owner", surface="whatsapp", reason="Approved for client launch")
+        await s.commit()
+
+    async with async_session() as s:
+        # Check that TrustEvent of kind 'override' was written
+        res = await s.execute(select(TrustEvent).where(TrustEvent.brand_id == "b1", TrustEvent.kind == "override"))
+        ev = res.scalar_one()
+        assert ev.base_delta == -5.0
+        assert ev.reason == "Approved for client launch"
+

@@ -234,3 +234,43 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
             and op.severity.reversibility != Reversibility.IRREVERSIBLE):
         return "AUTO"
     return "HUMAN"
+
+
+async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
+    from ..models import Brand, TrustEvent, TrustSnapshot
+    now = now or dt.datetime.now(dt.timezone.utc)
+
+    # Get all brands
+    res = await s.execute(select(Brand))
+    brands = res.scalars().all()
+
+    domains = ["provision", "build", "manage", "grow"]
+
+    for brand in brands:
+        for domain in domains:
+            # Fetch events
+            res_ev = await s.execute(
+                select(TrustEvent).where(
+                    TrustEvent.tenant_id == brand.tenant_id,
+                    TrustEvent.brand_id == brand.id,
+                    TrustEvent.domain == domain
+                )
+            )
+            events = res_ev.scalars().all()
+            event_tuples = [(e.kind, e.ts) for e in events]
+
+            # Default signals (can hook up to real integration metrics later)
+            signals = {"gtm_present": True, "pixel_present": True, "capi_dedup_rate": 0.9}
+
+            score = trust_score(signals, event_tuples, now)
+            tier = tier_for(score)
+
+            snapshot = TrustSnapshot(
+                tenant_id=brand.tenant_id,
+                brand_id=brand.id,
+                domain=domain,
+                score=score,
+                tier=tier,
+                ts=now
+            )
+            s.add(snapshot)
