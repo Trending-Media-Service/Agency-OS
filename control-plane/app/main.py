@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.database import get_db, get_worker_db
+from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware
 from .kernel import loop
@@ -78,14 +78,17 @@ class DecisionIn(BaseModel):
 
 
 @app.post("/ops/{op_id}/decision")
-async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks,
+                 s: AsyncSession = Depends(get_db),
+                 worker_session_maker = Depends(get_worker_session_maker),
+                 tid: str = Depends(tenant_id)):
     row = await s.get(OpRow, op_id)
     if not row or row.tenant_id != tid:
         raise HTTPException(404, "op not found for tenant")
     await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
                 surface=body.surface, reason=body.reason)
     await s.flush()
-    enqueue_drain(background_tasks)
+    enqueue_drain(background_tasks, worker_session_maker)
     return {"op_id": row.id, "state": row.state}
 
 

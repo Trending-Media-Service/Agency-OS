@@ -59,3 +59,8 @@ async def get_worker_db() -> AsyncGenerator[AsyncSession, None]:
   async with WorkerAsyncSessionLocal() as session:
     async with session.begin():
       yield session
+
+
+def get_worker_session_maker() -> async_sessionmaker[AsyncSession]:
+  """FastAPI dependency yielding the privileged session maker for background workers."""
+  return WorkerAsyncSessionLocal

@@ -1,7 +1,6 @@
 import os
 import logging
 from fastapi import BackgroundTasks
-from app.database import WorkerAsyncSessionLocal
 from app.kernel import loop
 
 logger = logging.getLogger(__name__)
@@ -12,18 +11,18 @@ GCP_LOCATION = os.getenv("GCP_LOCATION")
 QUEUE_NAME = os.getenv("OUTBOX_QUEUE_NAME")
 APP_URL = os.getenv("APP_URL")
 
-async def _drain_local_task():
+async def _drain_local_task(session_maker):
     """Local fallback: run drain_once directly with a privileged session."""
     logger.info("Running local background outbox drain...")
     try:
-        async with WorkerAsyncSessionLocal() as s:
+        async with session_maker() as s:
             async with s.begin():
                 processed = await loop.drain_once(s)
                 logger.info(f"Local outbox drain processed {processed} items.")
     except Exception as e:
         logger.error(f"Error in local background outbox drain: {e}", exc_info=True)
 
-def enqueue_drain(background_tasks: BackgroundTasks):
+def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
     """Enqueues a task to drain the outbox.
 
     Uses Cloud Tasks in GCP, falls back to FastAPI BackgroundTasks locally.
@@ -52,4 +51,7 @@ def enqueue_drain(background_tasks: BackgroundTasks):
             logger.error(f"Failed to enqueue Cloud Task, falling back to local: {e}")
 
     # Local fallback
-    background_tasks.add_task(_drain_local_task)
+    if not session_maker:
+        from app.database import WorkerAsyncSessionLocal
+        session_maker = WorkerAsyncSessionLocal
+    background_tasks.add_task(_drain_local_task, session_maker)

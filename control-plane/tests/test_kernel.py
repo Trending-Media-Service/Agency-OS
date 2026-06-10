@@ -13,7 +13,7 @@ import pathlib
 import shutil
 
 import app.main as mainmod
-from app.database import get_db, get_worker_db
+from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.kernel import loop
 from app.kernel.optypes import (InvalidTransition, Money, OpSpec, OpState,
                                 Reversibility, Severity, assert_transition)
@@ -58,8 +58,12 @@ async def client(db_engine):
             async with s.begin():
                 yield s
 
+    def override_get_worker_session_maker():
+        return async_session
+
     mainmod.app.dependency_overrides[get_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
     mainmod.app.dependency_overrides.clear()
