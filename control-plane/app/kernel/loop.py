@@ -5,7 +5,7 @@ import datetime as dt
 from typing import Optional, Protocol
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Approval, OpRow, OpTrace, OutboxItem
 from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
@@ -41,20 +41,20 @@ def _row_to_spec(row: OpRow) -> OpSpec:
     )
 
 
-def trace(s: Session, op_id: str, kind: str, detail: dict) -> None:
+def trace(s: AsyncSession, op_id: str, kind: str, detail: dict) -> None:
     s.add(OpTrace(op_id=op_id, kind=kind, detail=detail))
 
 
-def transition(s: Session, row: OpRow, target: OpState, *, actor: str, detail: Optional[dict] = None) -> None:
+async def transition(s: AsyncSession, row: OpRow, target: OpState, *, actor: str, detail: Optional[dict] = None) -> None:
     current = OpState(row.state)
     assert_transition(current, target)
     row.state = target.value
     trace(s, row.id, "transition", {"from": current.value, "to": target.value, **(detail or {})})
-    audit_append(s, tenant_id=row.tenant_id, actor=actor,
+    await audit_append(s, tenant_id=row.tenant_id, actor=actor,
                  action=f"op.{target.value.lower()}", op_id=row.id, payload=detail or {})
 
 
-def propose(s: Session, spec: OpSpec, *, actor: str) -> OpRow:
+async def propose(s: AsyncSession, spec: OpSpec, *, actor: str) -> OpRow:
     row = OpRow(
         id=spec.id, tenant_id=spec.tenant_id, brand_id=spec.brand_id,
         domain=spec.domain, action=spec.action, params=spec.params,
@@ -65,12 +65,12 @@ def propose(s: Session, spec: OpSpec, *, actor: str) -> OpRow:
         parent_op_id=spec.parent_op_id, idem_key=spec.idem_key,
     )
     s.add(row)
-    audit_append(s, tenant_id=spec.tenant_id, actor=actor, action="op.proposed",
+    await audit_append(s, tenant_id=spec.tenant_id, actor=actor, action="op.proposed",
                  op_id=spec.id, payload={"action": spec.action})
     return row
 
 
-def preview_and_gate(s: Session, row: OpRow, *, tier: int, actor: str = "kernel") -> tuple[GateResult, str]:
+async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str = "kernel") -> tuple[GateResult, str]:
     """PROPOSED -> PREVIEWED -> (AWAITING_APPROVAL | APPROVED(auto) | BLOCKED)."""
     spec = _row_to_spec(row)
     adapter = REGISTRY[row.domain]
@@ -78,7 +78,7 @@ def preview_and_gate(s: Session, row: OpRow, *, tier: int, actor: str = "kernel"
     artifact = adapter.preview(spec)
     row.preview_summary = artifact.summary
     trace(s, row.id, "preview", {"kind": artifact.kind})
-    transition(s, row, OpState.PREVIEWED, actor=actor)
+    await transition(s, row, OpState.PREVIEWED, actor=actor)
 
     gate = evaluate_gates(spec)
     trace(s, row.id, "gate", {"violations": [v.as_dict() for v in gate.violations],
@@ -86,61 +86,62 @@ def preview_and_gate(s: Session, row: OpRow, *, tier: int, actor: str = "kernel"
     requirement = approval_requirement(spec, tier, gate)
 
     if requirement == "BLOCKED":
-        transition(s, row, OpState.BLOCKED, actor=actor,
+        await transition(s, row, OpState.BLOCKED, actor=actor,
                    detail={"violations": [v.as_dict() for v in gate.violations], "tier": tier})
     elif requirement == "AUTO":
-        transition(s, row, OpState.APPROVED, actor="kernel:tier2-auto",
+        await transition(s, row, OpState.APPROVED, actor="kernel:tier2-auto",
                    detail={"tier": tier})
         s.add(Approval(op_id=row.id, actor="kernel", role="tier2-auto",
                        surface="auto", decision="approve"))
         enqueue(s, row.id)
     else:
-        transition(s, row, OpState.AWAITING_APPROVAL, actor=actor, detail={"tier": tier})
+        await transition(s, row, OpState.AWAITING_APPROVAL, actor=actor, detail={"tier": tier})
     return gate, requirement
 
 
-def decide(s: Session, row: OpRow, *, decision: str, actor: str, role: str,
+async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role: str,
            surface: str, reason: Optional[str] = None,
            latency_ms: Optional[int] = None) -> None:
     s.add(Approval(op_id=row.id, actor=actor, role=role, surface=surface,
                    decision=decision, reason=reason, latency_ms=latency_ms))
     if decision == "approve":
-        transition(s, row, OpState.APPROVED, actor=actor)
+        await transition(s, row, OpState.APPROVED, actor=actor)
         enqueue(s, row.id)
     elif decision == "reject":
-        transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
+        await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
     else:
         raise ValueError(f"unknown decision {decision!r} (A2UI 'modify' is a Slice-1 issue)")
 
 # ------------------------------------------------------------------- outbox
 
-def enqueue(s: Session, op_id: str) -> None:
+def enqueue(s: AsyncSession, op_id: str) -> None:
     s.add(OutboxItem(op_id=op_id))  # same txn as the APPROVED transition (§4.2)
 
 
-def drain_once(s: Session, *, now: Optional[dt.datetime] = None, max_items: int = 10) -> int:
+async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_items: int = 10) -> int:
     """v1 in-process drain. Cloud Tasks worker replaces the call site, not the logic."""
     now = now or dt.datetime.now(dt.timezone.utc)
-    s.flush()  # stamp defaults on same-txn enqueues BEFORE the cutoff comparison
+    await s.flush()  # stamp defaults on same-txn enqueues BEFORE the cutoff comparison
     now = max(now, dt.datetime.now(dt.timezone.utc))
-    items = s.execute(
+    result = await s.execute(
         select(OutboxItem).where(OutboxItem.status == "PENDING",
                                  OutboxItem.next_attempt_at <= now)
-        .order_by(OutboxItem.id).limit(max_items)).scalars().all()
+        .order_by(OutboxItem.id).limit(max_items))
+    items = result.scalars().all()
     processed = 0
     for item in items:
-        row = s.get(OpRow, item.op_id)
+        row = await s.get(OpRow, item.op_id)
         item.status = "IN_FLIGHT"
         item.attempts += 1
         try:
-            _execute_and_verify(s, row)
+            await _execute_and_verify(s, row)
             item.status = "DONE"
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
             trace(s, row.id, "retry", {"attempt": item.attempts, "error": str(exc)})
             if item.attempts >= 5:
                 item.status = "DEAD"
                 if OpState(row.state) in (OpState.EXECUTING, OpState.VERIFYING):
-                    transition(s, row, OpState.PARTIAL, actor="kernel",
+                    await transition(s, row, OpState.PARTIAL, actor="kernel",
                                detail={"error": str(exc)})
             else:
                 item.status = "PENDING"
@@ -149,36 +150,36 @@ def drain_once(s: Session, *, now: Optional[dt.datetime] = None, max_items: int 
     return processed
 
 
-def _execute_and_verify(s: Session, row: OpRow) -> None:
+async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
     spec = _row_to_spec(row)
     adapter = REGISTRY[row.domain]
 
-    transition(s, row, OpState.EXECUTING, actor="kernel")
+    await transition(s, row, OpState.EXECUTING, actor="kernel")
     result = adapter.execute(spec, idem_key=row.idem_key)
     trace(s, row.id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
     if not result.ok:
-        transition(s, row, OpState.FAILED, actor="kernel", detail=result.detail)
-        _compensate(s, row, adapter, spec)
+        await transition(s, row, OpState.FAILED, actor="kernel", detail=result.detail)
+        await _compensate(s, row, adapter, spec)
         return
 
-    transition(s, row, OpState.VERIFYING, actor="kernel")
+    await transition(s, row, OpState.VERIFYING, actor="kernel")
     verdict = adapter.verify(spec)
     trace(s, row.id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
-        transition(s, row, OpState.DONE, actor="kernel")
+        await transition(s, row, OpState.DONE, actor="kernel")
     else:
-        transition(s, row, OpState.FAILED, actor="kernel",
+        await transition(s, row, OpState.FAILED, actor="kernel",
                    detail={"checks": verdict.checks, "note": verdict.detail})
-        _compensate(s, row, adapter, spec)
+        await _compensate(s, row, adapter, spec)
 
 
-def _compensate(s: Session, row: OpRow, adapter: Adapter, spec: OpSpec) -> None:
-    transition(s, row, OpState.COMPENSATING, actor="kernel")
+async def _compensate(s: AsyncSession, row: OpRow, adapter: Adapter, spec: OpSpec) -> None:
+    await transition(s, row, OpState.COMPENSATING, actor="kernel")
     comp_ops = adapter.compensate(spec)
     trace(s, row.id, "note", {"compensation_ops": [c.action for c in comp_ops]})
     # Compensations are themselves Ops (§4.1); for the v1 stub they are no-ops.
-    transition(s, row, OpState.ROLLED_BACK, actor="kernel")
+    await transition(s, row, OpState.ROLLED_BACK, actor="kernel")
 
 
 # ------------------------------------------------- demo provision adapter (§6.1)

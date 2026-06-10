@@ -5,27 +5,62 @@ with the audit chain intact.
 import datetime as dt
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy import select
+import tempfile
+import pathlib
+import shutil
 
 import app.main as mainmod
+from app.database import get_db
 from app.kernel import loop
 from app.kernel.optypes import (InvalidTransition, Money, OpSpec, OpState,
                                 Reversibility, Severity, assert_transition)
 from app.kernel.services import (audit_append, audit_verify, evaluate_gates,
                                  approval_requirement, saturating_penalty,
                                  tier_for, trust_score)
-from app.models import AuditEvent, make_engine, make_session_factory
+from app.models import AuditEvent, Base
 
 NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
 
 @pytest.fixture()
-def session():
-    factory = make_session_factory(make_engine("sqlite://"))
-    s = factory()
-    yield s
-    s.close()
+async def db_file():
+    temp_dir = tempfile.mkdtemp()
+    db_path = pathlib.Path(temp_dir) / "test.db"
+    yield f"sqlite+aiosqlite:///{db_path}"
+    shutil.rmtree(temp_dir)
+
+
+@pytest.fixture()
+async def db_engine(db_file):
+    engine = create_async_engine(db_file)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture()
+async def session(db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        yield s
+
+
+@pytest.fixture()
+async def client(db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    async def override_get_db():
+        async with async_session() as s:
+            yield s
+
+    mainmod.app.dependency_overrides[get_db] = override_get_db
+    async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
+        yield ac
+    mainmod.app.dependency_overrides.clear()
 
 
 def _spec(**kw) -> OpSpec:
@@ -47,16 +82,17 @@ def test_state_machine_blocks_illegal_jumps():
 
 # ------------------------------------------------------------- audit chain
 
-def test_audit_chain_verifies_and_detects_tamper(session: Session):
+async def test_audit_chain_verifies_and_detects_tamper(session: AsyncSession):
     for i in range(5):
-        audit_append(session, tenant_id="t1", actor="test", action=f"e{i}")
-    session.flush()
-    assert audit_verify(session) == (True, None)
+        await audit_append(session, tenant_id="t1", actor="test", action=f"e{i}")
+    await session.flush()
+    assert await audit_verify(session) == (True, None)
 
-    victim = session.query(AuditEvent).filter_by(action="e2").one()
+    result = await session.execute(select(AuditEvent).filter_by(action="e2"))
+    victim = result.scalars().one()
     victim.payload = {"injected": True}  # tamper
-    session.flush()
-    ok, first_bad = audit_verify(session)
+    await session.flush()
+    ok, first_bad = await audit_verify(session)
     assert ok is False and first_bad == victim.id
 
 # ------------------------------------------------------------------ trust
@@ -124,51 +160,43 @@ def test_tier2_auto_approval_only_within_bounds():
 
 # ------------------------------------------------------------ e2e heartbeat
 
-def test_e2e_governed_loop():
-    factory = make_session_factory(make_engine("sqlite://"))
-    mainmod.SessionFactory = factory  # point the app at a fresh in-memory DB
-    client = TestClient(mainmod.app)
-
-    r = client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+async def test_e2e_governed_loop(client):
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
-    H = {"X-Tenant-Id": tid}
+    H = {"X-Tenant-ID": tid}
 
-    r = client.post("/intents", headers=H,
+    r = await client.post("/intents", headers=H,
                     json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
     card = r.json()["cards"][0]
     assert card["state"] == "AWAITING_APPROVAL"
     assert "cloud_dns zone woktok.in" in card["preview"]
     assert card["cost_estimate"] == "2500.00 INR/mo"
 
-    r = client.post(f"/ops/{card['op_id']}/decision", headers=H,
+    r = await client.post(f"/ops/{card['op_id']}/decision", headers=H,
                     json={"decision": "approve", "actor": "chandan", "surface": "whatsapp"})
     assert r.json()["state"] == "DONE"
 
-    r = client.get(f"/ops/{card['op_id']}", headers=H)
+    r = await client.get(f"/ops/{card['op_id']}", headers=H)
     kinds = [t["kind"] for t in r.json()["trace"]]
-    assert kinds.count("transition") >= 6  # the full loop left footprints
+    assert kinds.count("transition") >= 6
 
-    assert client.get("/audit/verify").json()["ok"] is True
+    r = await client.get("/audit/verify")
+    assert r.json()["ok"] is True
 
     # cross-tenant access is structurally denied
-    r = client.get(f"/ops/{card['op_id']}", headers={"X-Tenant-Id": "someone-else"})
+    r = await client.get(f"/ops/{card['op_id']}", headers={"X-Tenant-ID": "someone-else"})
     assert r.status_code == 404
 
 
-def test_e2e_blocked_op_explains_itself():
-    factory = make_session_factory(make_engine("sqlite://"))
-    mainmod.SessionFactory = factory
-    client = TestClient(mainmod.app)
-    r = client.post("/tenants", json={"name": "T", "brand_name": "B"})
-    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+async def test_e2e_blocked_op_explains_itself(db_engine, client):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        r = await client.post("/tenants", json={"name": "T", "brand_name": "B"})
+        tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
 
-    # Force a too-expensive plan through the demo adapter by proposing directly
-    factory2 = mainmod.SessionFactory
-    s = factory2()
-    spec = _spec(tenant_id=tid, brand_id=bid, cost_estimate=Money(2_000_000))
-    row = loop.propose(s, spec, actor="test")
-    gate, requirement = loop.preview_and_gate(s, row, tier=2)
-    s.commit()
-    assert requirement == "BLOCKED" and row.state == "BLOCKED"
-    assert gate.violations[0].message  # never a generic error
-    s.close()
+        spec = _spec(tenant_id=tid, brand_id=bid, cost_estimate=Money(2_000_000))
+        row = await loop.propose(s, spec, actor="test")
+        gate, requirement = await loop.preview_and_gate(s, row, tier=2)
+        await s.commit()
+        assert requirement == "BLOCKED" and row.state == "BLOCKED"
+        assert gate.violations[0].message

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .optypes import OpSpec, Reversibility
 
@@ -25,10 +25,11 @@ def _canonical(payload: dict) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def audit_append(s: Session, *, tenant_id: str, actor: str, action: str,
+async def audit_append(s: AsyncSession, *, tenant_id: str, actor: str, action: str,
                  op_id: Optional[str] = None, payload: Optional[dict] = None):
     from ..models import AuditEvent
-    last = s.execute(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(1)).scalar_one_or_none()
+    result = await s.execute(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(1))
+    last = result.scalar_one_or_none()
     prev_hash = last.hash if last else GENESIS
     ts = dt.datetime.now(dt.timezone.utc).isoformat()
     preimage = prev_hash + "|" + _canonical(
@@ -41,11 +42,12 @@ def audit_append(s: Session, *, tenant_id: str, actor: str, action: str,
     return ev
 
 
-def audit_verify(s: Session) -> tuple[bool, Optional[int]]:
+async def audit_verify(s: AsyncSession) -> tuple[bool, Optional[int]]:
     """Walk the chain; return (ok, first_bad_id)."""
     from ..models import AuditEvent
     prev = GENESIS
-    for ev in s.execute(select(AuditEvent).order_by(AuditEvent.id.asc())).scalars():
+    result = await s.execute(select(AuditEvent).order_by(AuditEvent.id.asc()))
+    for ev in result.scalars():
         preimage = prev + "|" + _canonical(
             {"ts": ev.ts, "tenant_id": ev.tenant_id, "actor": ev.actor,
              "action": ev.action, "op_id": ev.op_id, "payload": ev.payload})

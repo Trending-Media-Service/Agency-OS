@@ -1,13 +1,12 @@
-# STATUS: NOT WIRED. Will replace the Header dependency in main.py when the
-# app moves to the async session (issue #2). Kept to preserve the RLS design.
+# WIRED. Replaces the Header dependency in main.py to enforce RLS via tenant context.
 from app.database import tenant_context
-from fastapi import HTTPException, Request, status
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
   """Parses and asserts valid tenant headers across all endpoint executions,
-
   populating async-safe storage boundaries to prevent database leaks.
   """
 
@@ -16,13 +15,13 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     tenant_id = request.headers.get("X-Tenant-ID")
 
     # Bypass validation strictly on public API paths
-    if request.url.path in ["/health", "/docs", "/openapi.json"]:
+    if request.url.path in ["/health", "/docs", "/openapi.json", "/tenants", "/audit/verify"]:
       return await call_next(request)
 
     if not tenant_id:
-      raise HTTPException(
+      return JSONResponse(
           status_code=status.HTTP_400_BAD_REQUEST,
-          detail="X-Tenant-ID header is missing.",
+          content={"detail": "X-Tenant-ID header is missing."},
       )
 
     # Set tenant identification safely across the current thread-safe context

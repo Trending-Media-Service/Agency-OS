@@ -1,6 +1,4 @@
-# STATUS: NOT WIRED. Async engine for issue #2 (Postgres+RLS). The app still
-# runs the sync session from models.py; full async migration happens in #2.
-# Used today only by tests/test_rls.py.
+# WIRED. Async engine for issue #2 (Postgres+RLS). Used by main.py and tests.
 from contextvars import ContextVar
 import os
 from typing import AsyncGenerator
@@ -35,7 +33,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
   async with AsyncSessionLocal() as session:
     async with session.begin():
       tenant_id = tenant_context.get()
-      if tenant_id:
+      if tenant_id and session.bind.dialect.name == "postgresql":
         # Local variable valid strictly inside the active transaction block
         await session.execute(
             text("SET LOCAL app.current_tenant_id = :tenant_id"),
