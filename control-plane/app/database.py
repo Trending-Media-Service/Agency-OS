@@ -1,3 +1,6 @@
+# STATUS: NOT WIRED. Async engine for issue #2 (Postgres+RLS). The app still
+# runs the sync session from models.py; full async migration happens in #2.
+# Used today only by tests/test_rls.py.
 from contextvars import ContextVar
 import os
 from typing import AsyncGenerator

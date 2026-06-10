@@ -1,3 +1,5 @@
+# STATUS: NOT WIRED. Will replace the Header dependency in main.py when the
+# app moves to the async session (issue #2). Kept to preserve the RLS design.
 from app.database import tenant_context
 from fastapi import HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware

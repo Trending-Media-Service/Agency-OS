@@ -27,17 +27,22 @@ git commit -m "Guardrails: AGENTS.md (binding agent rules), CI invariant checks,
 git push origin main
 
 # 3) protect main: PRs must pass the 'tests' check; no force pushes/deletes
-gh api -X PUT "repos/$REPO/branches/main/protection" --input - <<'JSON'
+if ! gh api -X PUT "repos/$REPO/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": { "strict": true, "contexts": ["tests"] },
-  "enforce_admins": false,
+  "enforce_admins": true,
   "required_pull_request_reviews": null,
   "restrictions": null,
   "allow_force_pushes": false,
   "allow_deletions": false
 }
 JSON
-echo "branch protection ON (main): 'tests' check required, force-push blocked"
+then
+  echo "!! BRANCH PROTECTION UNAVAILABLE: private repos on the GitHub Free plan"
+  echo "!! cannot enforce protection. Upgrade to GitHub Pro (~\$4/mo) or every"
+  echo "!! agent and human can push straight to main. CI alone cannot block merges."
+fi
+echo "branch protection attempt finished (verify in Settings -> Branches)"
 
 # 4) Gemini CLI (free tier with a personal Google login on first run)
 command -v gemini >/dev/null || npm install -g @google/gemini-cli
