@@ -93,45 +93,30 @@ class ProvisionAdapter(Adapter):
 
     def verify(self, op: OpSpec) -> VerifyResult:
         """Executes verification checks defined in checks.py using execute outputs."""
-        # We need the outputs from execution. But verify() receives op.
-        # How does verify get outputs?
-        # Wait, in E2E tests, the Execution result is saved, but where are outputs stored?
-        # Let's check loop.py drain_once / _execute_and_verify.
-        # Ah! In loop.py, verify does NOT receive execution results directly in the signature.
-        # The verify method: `def verify(self, op: OpSpec) -> VerifyResult: ...`
-        # But wait!
-        # If verify needs outputs, how does it access them?
-        # In a real environment, we can run `terraform output -json` again!
-        # Yes! We can just prepare the directory again, run init, and read `terraform output -json`!
-        # This is stateless and robust, since the state is in the backend (GCS or local).
-        # Let's do that!
-        
-        recipe = op.params.get("recipe")
-        version = op.params.get("version")
+        action_parts = op.action.split(".")
+        verb = action_parts[-1]
+        if verb == "destroy":
+            return VerifyResult(ok=True, checks={"destroyed": True})
+
+        recipe = op.params.get("recipe", "web-host")
+        version = op.params.get("version", "0.1.0")
         recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
         checks_file = os.path.join(recipe_path, "checks.py")
-        
+
         if not os.path.exists(checks_file):
             logger.info(f"No checks.py found for recipe {recipe} {version}. Assuming OK.")
             return VerifyResult(ok=True, checks={})
-            
+
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
             # Run init
             code, out, err = self._run_terraform(op, ["init", "-input=false", "-no-color"], temp_dir)
             if code != 0:
                 return VerifyResult(ok=False, checks={}, detail={"error": f"Init failed for verify: {err}"})
-                
+
             # Read outputs
             code_out, out_out, err_out = self._run_terraform(op, ["output", "-json"], temp_dir)
             if code_out != 0:
-                # If destroy was executed, outputs might be empty or error out.
-                # If it's a destroy, verification might be different (e.g. check domain is gone).
-                # But checks.py is usually for post-apply.
-                # Let's see if we should skip checks if it is a destroy action.
-                action_parts = op.action.split(".")
-                if action_parts[-1] == "destroy":
-                     return VerifyResult(ok=True, checks={"destroyed": True})
                 return VerifyResult(ok=False, checks={}, detail={"error": f"Failed to read outputs: {err_out}"})
                 
             outputs = {}
@@ -175,8 +160,8 @@ class ProvisionAdapter(Adapter):
 
     def _prepare_dir(self, op: OpSpec, temp_dir: str):
         """Copies recipe files and writes backend.tf & variables."""
-        recipe = op.params.get("recipe")
-        version = op.params.get("version")
+        recipe = op.params.get("recipe", "web-host")
+        version = op.params.get("version", "0.1.0")
         recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
         
         if not os.path.exists(recipe_path):

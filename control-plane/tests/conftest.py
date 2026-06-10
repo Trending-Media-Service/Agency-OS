@@ -15,7 +15,13 @@ def mock_terraform_cli():
         if subcomm == "init":
             mock_res.stdout = "Success! Terraform has been initialized."
         elif subcomm == "plan":
-            mock_res.stdout = "Plan: 5 to add, 0 to change, 0 to destroy."
+            domain = "example.in"
+            tfvars_path = os.path.join(cwd, "terraform.tfvars.json") if cwd else None
+            if tfvars_path and os.path.exists(tfvars_path):
+                with open(tfvars_path, "r") as f:
+                    vars_dict = json.load(f)
+                    domain = vars_dict.get("domain", "example.in")
+            mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
         elif subcomm == "apply":
             mock_res.stdout = "Apply complete! Resources: 5 added, 0 changed, 0 destroyed."
         elif subcomm == "destroy":
