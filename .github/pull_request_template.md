@@ -1,4 +1,4 @@
-<!-- Place at: .google/pull_request_template.md -->
+<!-- Place at: .github/pull_request_template.md -->
 Closes #
 
 **ARCHITECTURE.md sections implemented:**
