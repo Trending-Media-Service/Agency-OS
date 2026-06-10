@@ -3,6 +3,8 @@ intent -> preview -> gate -> approval -> outbox -> execute -> verify -> DONE,
 with the audit chain intact.
 """
 import datetime as dt
+import os
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -221,3 +223,222 @@ async def test_drain_outbox_endpoint_returns_ok(client):
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
     assert "processed_items" in r.json()
+
+
+# ------------------------------------------------------------ WhatsApp Webhook Tests
+
+async def test_whatsapp_webhook_verification(client):
+    # Setup verify token
+    mainmod.WHATSAPP_VERIFY_TOKEN = "meaty"
+
+    # Correct token
+    r = await client.get("/webhooks/whatsapp?hub.mode=subscribe&hub.challenge=1234&hub.verify_token=meaty")
+    assert r.status_code == 200
+    assert r.text == "1234"
+
+    # Incorrect token
+    r = await client.get("/webhooks/whatsapp?hub.mode=subscribe&hub.challenge=1234&hub.verify_token=wrong")
+    assert r.status_code == 403
+
+
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+    wa.WHATSAPP_TEMPLATE_NAME = "agency_os_approval"
+
+    # Mock AsyncClient context manager and its post method
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_client.post.return_value = mock_response
+
+    # 1. Propose Op (Submit intent)
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+
+    # Submit intent that requires approval (tier 1)
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+    card = r.json()["cards"][0]
+    op_id = card["op_id"]
+    assert card["state"] == "AWAITING_APPROVAL"
+
+    # Wait for background task to send whatsapp card
+    assert mock_client.post.called
+    # Check that it sent the correct payload
+    args, kwargs = mock_client.post.call_args
+    assert "12345" in args[0] # Phone Number ID
+    payload = kwargs["json"]
+    assert payload["to"] == "919999999999"
+    assert payload["template"]["name"] == "agency_os_approval"
+    # Verify button payloads
+    components = payload["template"]["components"]
+    button_0 = next(c for c in components if c["type"] == "button" and c["index"] == "0")
+    assert button_0["parameters"][0]["payload"] == f"approve_{op_id}"
+
+    # 2. Simulate User clicking "Approve" via Webhook
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_1",
+                                    "type": "button",
+                                    "button": {
+                                        "payload": f"approve_{op_id}",
+                                        "text": "Approve"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    # Call the webhook (POST)
+    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    assert r.status_code == 200
+    assert r.json()["status"] == "accepted"
+
+    # 3. Verify Op is transitioned to DONE
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "DONE"
+
+
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine):
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_client.post.return_value = mock_response
+
+    # Propose Op
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+    op_id = r.json()["cards"][0]["op_id"]
+
+    # Simulate User clicking "Reject" via Webhook
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_2",
+                                    "type": "button",
+                                    "button": {
+                                        "payload": f"reject_{op_id}",
+                                        "text": "Reject"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    assert r.status_code == 200
+
+    # Verify Op is transitioned to REJECTED
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "REJECTED"
+
+
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_client.post.return_value = mock_response
+
+    # Propose Op
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please", "tier": 1})
+    op_id = r.json()["cards"][0]["op_id"]
+
+    # Simulate User sending text message "modify make it 40k"
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_3",
+                                    "type": "text",
+                                    "text": {
+                                        "body": "modify make it 40k"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    assert r.status_code == 200
+
+    # Verify Op is transitioned back to PREVIEWED
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "PREVIEWED"
+
+    # Verify that the modify approval is in the traces
+    traces = r.json()["trace"]
+    assert len(traces) >= 2

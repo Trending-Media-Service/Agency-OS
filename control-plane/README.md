@@ -19,7 +19,7 @@ The governance kernel from `/ARCHITECTURE.md`. Run:
 | Per-tenant access checks | REAL (header-based; app-level) |
 | Postgres RLS policies | VERIFIED by tests against live Postgres in CI (FORCE RLS, non-superuser role); app session wiring pending (#2) |
 | Provision adapter | STUB (fake terraform plan; real recipe executor = issue) |
-| WhatsApp surface | NOT BUILT (issue — submit Meta templates NOW, review lead time) |
+| WhatsApp surface | REAL (Meta Cloud API client + webhook receiver; mock in tests) |
 | Trust wiring into /intents tier | NOT WIRED (tier passed explicitly until trust events flow) |
 
 SQLite by default (`AOS_DB_URL` overrides). Postgres + RLS is a tracked issue —
