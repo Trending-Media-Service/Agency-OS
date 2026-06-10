@@ -4,7 +4,7 @@ with the audit chain intact.
 """
 import datetime as dt
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -241,8 +241,8 @@ async def test_whatsapp_webhook_verification(client):
     assert r.status_code == 403
 
 
-@patch("app.whatsapp.httpx.AsyncClient.post")
-async def test_whatsapp_e2e_approval_flow(mock_post, client, db_engine):
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
     wa.WHATSAPP_TOKEN = "mock_token"
@@ -250,10 +250,12 @@ async def test_whatsapp_e2e_approval_flow(mock_post, client, db_engine):
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
     wa.WHATSAPP_TEMPLATE_NAME = "agency_os_approval"
 
-    # Mock HTTP response from Meta API
+    # Mock AsyncClient context manager and its post method
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_post.return_value = mock_response
+    mock_client.post.return_value = mock_response
 
     # 1. Propose Op (Submit intent)
     r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
@@ -268,9 +270,9 @@ async def test_whatsapp_e2e_approval_flow(mock_post, client, db_engine):
     assert card["state"] == "AWAITING_APPROVAL"
 
     # Wait for background task to send whatsapp card
-    assert mock_post.called
+    assert mock_client.post.called
     # Check that it sent the correct payload
-    args, kwargs = mock_post.call_args
+    args, kwargs = mock_client.post.call_args
     assert "12345" in args[0] # Phone Number ID
     payload = kwargs["json"]
     assert payload["to"] == "919999999999"
@@ -319,17 +321,20 @@ async def test_whatsapp_e2e_approval_flow(mock_post, client, db_engine):
     assert r.json()["state"] == "DONE"
 
 
-@patch("app.whatsapp.httpx.AsyncClient.post")
-async def test_whatsapp_e2e_rejection_flow(mock_post, client, db_engine):
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
 
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_post.return_value = mock_response
+    mock_client.post.return_value = mock_response
 
     # Propose Op
     r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
@@ -376,17 +381,20 @@ async def test_whatsapp_e2e_rejection_flow(mock_post, client, db_engine):
     assert r.json()["state"] == "REJECTED"
 
 
-@patch("app.whatsapp.httpx.AsyncClient.post")
-async def test_whatsapp_e2e_modify_flow(mock_post, client, db_engine):
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
 
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_post.return_value = mock_response
+    mock_client.post.return_value = mock_response
 
     # Propose Op
     r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
