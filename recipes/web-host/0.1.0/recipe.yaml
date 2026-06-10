@@ -1,0 +1,18 @@
+# Recipe contract (ARCHITECTURE.md §6.1). Terraform module lands via Slice 1 issue.
+name: web-host
+version: 0.1.0
+description: Cloud Run service + Cloud DNS zone + managed SSL + budget alert
+tier: shared            # shared | dedicated
+inputs:
+  domain: {type: string, required: true}
+  region: {type: string, default: asia-south1}
+outputs: [service_url, dns_zone, cert_id]
+cost_estimate_monthly: {amount_minor: 250000, currency: INR}
+severity: {impact: 2, reversibility: COMPENSATABLE}
+reversibility_map:
+  cloud_run_service: REVERSIBLE
+  dns_zone: COMPENSATABLE
+  managed_ssl: COMPENSATABLE
+  domain_registration: IRREVERSIBLE   # if registered, not merely delegated
+policy_packs: [provision_cost_ceiling]
+checks: [dns_resolves, cert_issued, http_200]
