@@ -55,7 +55,8 @@ async def client(db_engine):
 
     async def override_get_db():
         async with async_session() as s:
-            yield s
+            async with s.begin():
+                yield s
 
     mainmod.app.dependency_overrides[get_db] = override_get_db
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
