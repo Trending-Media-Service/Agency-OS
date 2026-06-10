@@ -1,0 +1,31 @@
+# Place at: .github/workflows/ci.yml
+# This check + branch protection is what makes agent PRs safe to merge.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install
+        run: pip install fastapi uvicorn "sqlalchemy>=2.0" "pydantic>=2.6" pytest httpx
+      - name: Kernel test suite
+        run: cd control-plane && python -m pytest -q
+      - name: Invariant checks
+        run: |
+          set -e
+          if [ -d google3 ]; then echo "::error::google3/ path recreated — forbidden (AGENTS.md)"; exit 1; fi
+          if grep -rEn "ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN (RSA |EC )?PRIVATE KEY" \
+               --include="*.py" --include="*.yaml" --include="*.yml" --include="*.tf" --include="*.json" --include="*.md" \
+               --exclude-dir=.git . ; then
+            echo "::error::credential-like string committed — forbidden (AGENTS.md)"; exit 1
+          fi
+          # Gating paths must stay model-free (ARCHITECTURE.md §2.1)
+          if grep -nE "anthropic|openai|google\.generativeai|genai|vertexai" control-plane/app/kernel/services.py control-plane/app/kernel/optypes.py 2>/dev/null; then
+            echo "::error::model SDK referenced inside a gating module — forbidden (§2.1)"; exit 1
+          fi
