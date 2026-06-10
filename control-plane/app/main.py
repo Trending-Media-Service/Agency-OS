@@ -72,6 +72,7 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
         })
         if row.state == "AWAITING_APPROVAL":
             background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+    await s.commit()
     return {"cards": cards}
 
 
