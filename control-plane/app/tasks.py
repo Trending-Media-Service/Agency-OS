@@ -13,20 +13,21 @@ APP_URL = os.getenv("APP_URL")
 
 async def _drain_local_task(session_maker):
     """Local fallback: run drain_once directly with a privileged session."""
-    logger.info("Running local background outbox drain...")
+    print("DEBUG: _drain_local_task started")
     try:
         async with session_maker() as s:
             async with s.begin():
                 processed = await loop.drain_once(s)
-                logger.info(f"Local outbox drain processed {processed} items.")
+                print(f"DEBUG: _drain_local_task finished, processed {processed} items")
     except Exception as e:
-        logger.error(f"Error in local background outbox drain: {e}", exc_info=True)
+        print(f"DEBUG: _drain_local_task failed: {e}")
 
 def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
     """Enqueues a task to drain the outbox.
 
     Uses Cloud Tasks in GCP, falls back to FastAPI BackgroundTasks locally.
     """
+    print(f"DEBUG: enqueue_drain called, GCP_PROJECT={GCP_PROJECT}")
     if GCP_PROJECT and GCP_LOCATION and QUEUE_NAME and APP_URL:
         try:
             from google.cloud import tasks_v2
