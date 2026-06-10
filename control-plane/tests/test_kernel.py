@@ -166,7 +166,7 @@ def test_tier2_auto_approval_only_within_bounds():
 
 # ------------------------------------------------------------ e2e heartbeat
 
-async def test_e2e_governed_loop(client):
+async def test_e2e_governed_loop(client, db_engine):
     r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
     H = {"X-Tenant-ID": tid}
