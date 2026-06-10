@@ -10,9 +10,12 @@ from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
+from app.adapters.provision import ProvisionAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant
+
+loop.register(ProvisionAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
