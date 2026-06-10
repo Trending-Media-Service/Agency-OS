@@ -3,7 +3,7 @@ name = "agencyos-control-plane"
 version = "0.1.0"
 description = "Agency OS governance kernel — see /ARCHITECTURE.md"
 requires-python = ">=3.11"
-dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6", "google-cloud-tasks>=2.16"]
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6", "google-cloud-tasks>=2.16", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "aiosqlite>=0.20"]

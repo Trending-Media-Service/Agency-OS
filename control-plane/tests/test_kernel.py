@@ -27,6 +27,9 @@ from app.models import AuditEvent, Base
 NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
 
+
+
+
 @pytest.fixture()
 async def db_file():
     temp_dir = tempfile.mkdtemp()
@@ -80,7 +83,8 @@ async def client(db_engine):
 
 def _spec(**kw) -> OpSpec:
     base = dict(tenant_id="t1", brand_id="b1", domain="provision",
-                action="provision.web_host.create", params={"domain": "x.in"},
+                action="provision.web_host.create",
+                params={"domain": "x.in", "recipe": "web-host", "version": "0.1.0"},
                 severity=Severity(2, Reversibility.COMPENSATABLE),
                 cost_estimate=Money(250_000))
     base.update(kw)
