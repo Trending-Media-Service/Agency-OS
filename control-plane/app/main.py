@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.database import get_db
+from app.database import get_db, get_worker_db
+from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware
 from .kernel import loop
 from .kernel.services import audit_verify
@@ -77,14 +78,14 @@ class DecisionIn(BaseModel):
 
 
 @app.post("/ops/{op_id}/decision")
-async def decide(op_id: str, body: DecisionIn, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
     row = await s.get(OpRow, op_id)
     if not row or row.tenant_id != tid:
         raise HTTPException(404, "op not found for tenant")
     await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
                 surface=body.surface, reason=body.reason)
-    await loop.drain_once(s)
     await s.flush()
+    enqueue_drain(background_tasks)
     return {"op_id": row.id, "state": row.state}
 
 
@@ -106,3 +107,14 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
 async def verify_audit(s: AsyncSession = Depends(get_db)):
     ok, first_bad = await audit_verify(s)
     return {"ok": ok, "first_bad_id": first_bad}
+
+
+@app.post("/tasks/drain-outbox")
+async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task endpoint to drain the outbox.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    processed = await loop.drain_once(s)
+    return {"status": "ok", "processed_items": processed}
+

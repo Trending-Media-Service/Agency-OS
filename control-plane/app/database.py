@@ -40,3 +40,22 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             {"tenant_id": tenant_id},
         )
       yield session
+
+
+WORKER_DATABASE_URL = os.getenv("WORKER_DATABASE_URL", DATABASE_URL)
+worker_engine = create_async_engine(
+    WORKER_DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20
+)
+WorkerAsyncSessionLocal = async_sessionmaker(
+    worker_engine, class_=AsyncSession, expire_on_commit=False
+)
+
+
+async def get_worker_db() -> AsyncGenerator[AsyncSession, None]:
+  """FastAPI dependency yielding a privileged session for background workers.
+
+  Bypasses RLS (runs as worker/admin role).
+  """
+  async with WorkerAsyncSessionLocal() as session:
+    async with session.begin():
+      yield session

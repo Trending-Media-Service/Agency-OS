@@ -13,7 +13,7 @@ import pathlib
 import shutil
 
 import app.main as mainmod
-from app.database import get_db
+from app.database import get_db, get_worker_db
 from app.kernel import loop
 from app.kernel.optypes import (InvalidTransition, Money, OpSpec, OpState,
                                 Reversibility, Severity, assert_transition)
@@ -59,6 +59,7 @@ async def client(db_engine):
                 yield s
 
     mainmod.app.dependency_overrides[get_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_db] = override_get_db
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
     mainmod.app.dependency_overrides.clear()
@@ -176,9 +177,10 @@ async def test_e2e_governed_loop(client):
     r = await client.post(f"/ops/{card['op_id']}/decision", headers=H,
                     json={"decision": "approve", "actor": "chandan", "surface": "whatsapp"})
     print("DECISION RESPONSE:", r.status_code, r.text)
-    assert r.json()["state"] == "DONE"
+    assert r.json()["state"] == "APPROVED"
 
     r = await client.get(f"/ops/{card['op_id']}", headers=H)
+    assert r.json()["state"] == "DONE"
     kinds = [t["kind"] for t in r.json()["trace"]]
     assert kinds.count("transition") >= 6
 
@@ -202,3 +204,10 @@ async def test_e2e_blocked_op_explains_itself(db_engine, client):
         await s.commit()
         assert requirement == "BLOCKED" and row.state == "BLOCKED"
         assert gate.violations[0].message
+
+
+async def test_drain_outbox_endpoint_returns_ok(client):
+    r = await client.post("/tasks/drain-outbox")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert "processed_items" in r.json()
