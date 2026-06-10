@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install
-        run: pip install fastapi uvicorn "sqlalchemy>=2.0" "pydantic>=2.6" pytest httpx
+        run: pip install -r control-plane/requirements.txt
       - name: Kernel test suite
         run: cd control-plane && python -m pytest -q
       - name: Invariant checks
