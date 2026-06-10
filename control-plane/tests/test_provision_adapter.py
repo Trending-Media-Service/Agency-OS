@@ -100,3 +100,39 @@ def test_provision_adapter_compensate(adapter, create_op):
     assert comp.parent_op_id == create_op.id
     assert comp.params == create_op.params
     assert comp.severity.reversibility == Reversibility.IRREVERSIBLE
+
+
+@pytest.fixture
+def brand_baseline_op():
+    return OpSpec(
+        id="op_789",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="provision",
+        action="provision.brand_baseline.create",
+        params={"brand_id": "b1", "tenant_id": "t1", "tier": "shared", "recipe": "brand-baseline", "version": "0.1.0"},
+        severity=Severity(impact=3, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR"),
+    )
+
+
+def test_provision_adapter_brand_baseline_preview(adapter, brand_baseline_op):
+    preview_art = adapter.preview(brand_baseline_op)
+    assert preview_art.kind == "terraform_plan"
+    assert "Plan: 3 to add" in preview_art.summary
+    assert "+ database db-b1" in preview_art.summary
+
+
+def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_op):
+    res = adapter.execute(brand_baseline_op, "idem_789")
+    assert res.ok is True
+    assert res.detail["outputs"]["project_id"] == "aos-shared-tier"
+    assert "shared-sa@aos-shared-tier" in res.detail["outputs"]["service_account_email"]
+
+
+def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
+    res = adapter.verify(brand_baseline_op)
+    assert res.ok is True
+    assert res.checks["sa_exists"] is True
+    assert res.checks["db_reachable"] is True
+

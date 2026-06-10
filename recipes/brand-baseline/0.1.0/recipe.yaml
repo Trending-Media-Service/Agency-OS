@@ -1,0 +1,22 @@
+name: brand-baseline
+version: 0.1.0
+description: GCP Project (for dedicated tier) or shared-tier DB slot, Service Account, and Budget Alert
+tier: shared            # can override to dedicated via input
+inputs:
+  brand_id: {type: string, required: true}
+  tenant_id: {type: string, required: true}
+  tier: {type: string, default: shared}
+  region: {type: string, default: asia-south1}
+  budget_amount: {type: number, default: 1000}
+  billing_account: {type: string, required: false}
+  folder_id: {type: string, required: false}
+  shared_postgres_instance: {type: string, default: aos-shared-postgres}
+outputs: [project_id, service_account_email, db_connection_name]
+cost_estimate_monthly: {amount_minor: 0, currency: INR} # shared is free baseline, dedicated project costs depend on services
+severity: {impact: 3, reversibility: COMPENSATABLE}
+reversibility_map:
+  project: REVERSIBLE
+  database: REVERSIBLE
+  service_account: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [sa_exists, db_reachable]
