@@ -174,6 +174,7 @@ async def test_e2e_governed_loop(client):
 
     r = await client.post(f"/ops/{card['op_id']}/decision", headers=H,
                     json={"decision": "approve", "actor": "chandan", "surface": "whatsapp"})
+    print("DECISION RESPONSE:", r.status_code, r.text)
     assert r.json()["state"] == "DONE"
 
     r = await client.get(f"/ops/{card['op_id']}", headers=H)
