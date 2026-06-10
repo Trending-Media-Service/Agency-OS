@@ -501,7 +501,7 @@ async def test_trust_snapshots_nightly_job(db_engine):
         # Initial health score = 70.0 (gtm + pixel + capi) (Wait: in services.py it is 67.0! Check math below)
         # score = health (67.0) - penalties (0) + history (-7) = 60.0
         # Tier = 1
-        assert snap.score == 60.0
+        assert snap.score == pytest.approx(60.0)
         assert snap.tier == 1
 
 
