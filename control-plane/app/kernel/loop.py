@@ -109,8 +109,10 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         enqueue(s, row.id)
     elif decision == "reject":
         await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
+    elif decision == "modify":
+        await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or ""})
     else:
-        raise ValueError(f"unknown decision {decision!r} (A2UI 'modify' is a Slice-1 issue)")
+        raise ValueError(f"unknown decision {decision!r}")
 
 # ------------------------------------------------------------------- outbox
 
