@@ -7,10 +7,10 @@ from typing import Optional, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Approval, OpRow, OpTrace, OutboxItem
+from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent
 from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
                       Reversibility, Severity, VerifyResult, assert_transition)
-from .services import (GateResult, approval_requirement, audit_append,
+from .services import (GateResult, TRUST_CONFIG, approval_requirement, audit_append,
                        evaluate_gates)
 
 
@@ -99,15 +99,34 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
     return gate, requirement
 
 
+def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, kind: str, reason: Optional[str] = None):
+    delta = TRUST_CONFIG["history"]["deltas"].get(kind, 0.0)
+    s.add(TrustEvent(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        domain=domain,
+        kind=kind,
+        base_delta=delta,
+        reason=reason
+    ))
+
+
 async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role: str,
            surface: str, reason: Optional[str] = None,
            latency_ms: Optional[int] = None) -> None:
     s.add(Approval(op_id=row.id, actor=actor, role=role, surface=surface,
                    decision=decision, reason=reason, latency_ms=latency_ms))
     if decision == "approve":
+        spec = _row_to_spec(row)
+        gate = evaluate_gates(spec)
+        if gate.violations:
+            if not reason or not reason.strip():
+                raise ValueError("Override reason is mandatory for approved ops with policy violations")
+            emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "override", reason=reason)
         await transition(s, row, OpState.APPROVED, actor=actor)
         enqueue(s, row.id)
     elif decision == "reject":
+        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "rejection", reason=reason)
         await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
     elif decision == "modify":
         await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or ""})
@@ -160,6 +179,8 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
     result = adapter.execute(spec, idem_key=row.idem_key)
     trace(s, row.id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
     if not result.ok:
+        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
+                         reason=f"Execution failed: {result.detail.get('error')}")
         await transition(s, row, OpState.FAILED, actor="kernel", detail=result.detail)
         await _compensate(s, row, adapter, spec)
         return
@@ -169,8 +190,11 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
     trace(s, row.id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
+        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verified_success")
         await transition(s, row, OpState.DONE, actor="kernel")
     else:
+        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
+                         reason=f"Verification checks failed: {verdict.checks}")
         await transition(s, row, OpState.FAILED, actor="kernel",
                    detail={"checks": verdict.checks, "note": verdict.detail})
         await _compensate(s, row, adapter, spec)

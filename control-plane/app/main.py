@@ -13,7 +13,7 @@ from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_paylo
 from app.adapters.provision import ProvisionAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
-from .models import Brand, OpRow, OpTrace, Tenant
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
 
 loop.register(ProvisionAdapter())
 
@@ -50,7 +50,6 @@ class IntentIn(BaseModel):
     brand_id: str
     text: str
     domain: str = "provision"
-    tier: int = 1  # trust-engine wiring is a Slice 1 issue; explicit until then
 
 
 @app.post("/intents")
@@ -61,10 +60,27 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
     adapter = loop.REGISTRY.get(body.domain)
     if not adapter:
         raise HTTPException(400, f"no adapter for domain {body.domain!r}")
+    
+    # Derive tier from the latest TrustSnapshot for this brand and domain
+    stmt = (
+        select(TrustSnapshot.tier)
+        .where(
+            TrustSnapshot.tenant_id == tid,
+            TrustSnapshot.brand_id == body.brand_id,
+            TrustSnapshot.domain == body.domain
+        )
+        .order_by(TrustSnapshot.ts.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    tier = res.scalar_one_or_none()
+    if tier is None:
+        tier = 1  # Default to Supervised (Tier 1)
+
     cards = []
     for spec in adapter.plan(body.text, tid, body.brand_id):
         row = await loop.propose(s, spec, actor="chat")
-        gate, requirement = await loop.preview_and_gate(s, row, tier=body.tier)
+        gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
         cards.append({
             "op_id": row.id, "action": row.action, "state": row.state,
             "requirement": requirement,
@@ -130,6 +146,18 @@ async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
     """
     processed = await loop.drain_once(s)
     return {"status": "ok", "processed_items": processed}
+
+
+@app.post("/tasks/trust-snapshots")
+async def run_trust_snapshots(s: AsyncSession = Depends(get_worker_db)):
+    """Nightly job to calculate and persist trust snapshots for all brands.
+
+    Bypasses RLS by using get_worker_db to execute across all tenants.
+    """
+    from .kernel.services import compute_snapshots
+    await compute_snapshots(s)
+    await s.commit()
+    return {"status": "ok"}
 
 
 @app.get("/webhooks/whatsapp")
