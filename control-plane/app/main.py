@@ -15,6 +15,7 @@ from app.adapters.provision import ProvisionAdapter
 from app.adapters.build import BuildAdapter
 from app.adapters.manage import ManageAdapter
 from app.adapters.grow import GrowAdapter
+from app.adapters.presence import PresenceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Connection, Order
@@ -38,6 +39,7 @@ loop.register(ProvisionAdapter())
 loop.register(BuildAdapter())
 loop.register(ManageAdapter())
 loop.register(GrowAdapter())
+loop.register(PresenceAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
