@@ -113,10 +113,19 @@ async def execute_decision(op_id: str, decision: str, session_maker, reason: str
                 reason=reason
             )
             # Transaction commits on exit
-    if decision == "approve":
-        # Run local drain worker directly since we are already in background task
-        from app.tasks import _drain_local_task
-        await _drain_local_task(session_maker)
+
+    # Reload row in a fresh session to observe post-transaction state
+    async with session_maker() as s:
+        row = await s.get(OpRow, op_id)
+        if not row:
+            return
+
+        if row.state == "AWAITING_APPROVAL":
+            await send_whatsapp_card_task(row.id, session_maker)
+        elif row.state == "APPROVED":
+            # Run local drain worker directly since we are already in background task
+            from app.tasks import _drain_local_task
+            await _drain_local_task(session_maker)
 
 
 async def handle_whatsapp_button_payload(payload: str, session_maker):

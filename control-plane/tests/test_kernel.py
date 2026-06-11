@@ -424,7 +424,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
                                     "id": "msg_id_3",
                                     "type": "text",
                                     "text": {
-                                        "body": "modify make it 40k"
+                                        "body": "modify use woktok.co"
                                     }
                                 }
                             ]
@@ -439,13 +439,21 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     r = await client.post("/webhooks/whatsapp", json=webhook_payload)
     assert r.status_code == 200
 
-    # Verify Op is transitioned back to PREVIEWED
+    # Verify Op is re-gated and transitioned back to AWAITING_APPROVAL with updated params
     r = await client.get(f"/ops/{op_id}", headers=H)
-    assert r.json()["state"] == "PREVIEWED"
+    assert r.json()["state"] == "AWAITING_APPROVAL"
+    assert r.json()["params"]["domain"] == "woktok.co"
 
     # Verify that the modify approval is in the traces
     traces = r.json()["trace"]
     assert len(traces) >= 2
+
+    # Verify that mock_client.post was called twice (initial + modified card)
+    assert mock_client.post.call_count == 2
+    args, kwargs = mock_client.post.call_args_list[1]
+    payload = kwargs["json"]
+    # Check that the second card references the modified domain
+    assert "woktok.co" in str(payload)
 
 
 # ------------------------------------------------------------- trust engine E2E
