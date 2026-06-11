@@ -22,7 +22,7 @@ from app.kernel.optypes import (InvalidTransition, Money, OpSpec, OpState,
 from app.kernel.services import (audit_append, audit_verify, evaluate_gates,
                                  approval_requirement, saturating_penalty,
                                  tier_for, trust_score)
-from app.models import AuditEvent, Base
+from app.models import AuditEvent, Base, OpRow, OutboxItem, TrustSnapshot, OpTrace
 
 NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
@@ -549,4 +549,160 @@ async def test_decide_enforces_override_reason(db_engine):
         ev = res.scalar_one()
         assert ev.base_delta == -5.0
         assert ev.reason == "Approved for client launch"
+
+
+@pytest.mark.asyncio
+async def test_e2e_brand_bootstrap_saga(client, db_engine):
+    # Setup: Create initial trust snapshot for b1/provision so we don't fail tier resolution
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        s.add(TrustSnapshot(tenant_id="t1", brand_id="b1", domain="provision", tier=1, score=75.0))
+        await s.commit()
+
+    H = {"X-Tenant-ID": "t1"}
+    # 1. Submit brand bootstrap intent
+    resp = await client.post("/intents", headers=H, json={
+        "domain": "provision",
+        "brand_id": "b1",
+        "text": "bootstrap brand ableys ableys.com"
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # Only the parent card should be returned!
+    assert len(data["cards"]) == 1
+    parent_card = data["cards"][0]
+    assert parent_card["action"] == "provision.brand_bootstrap.create"
+    assert parent_card["state"] == "AWAITING_APPROVAL"
+    parent_id = parent_card["op_id"]
+
+    # Verify database state for children
+    async with async_session() as s:
+        # Parent
+        parent_row = await s.get(OpRow, parent_id)
+        assert parent_row is not None
+        assert parent_row.state == "AWAITING_APPROVAL"
+
+        # Children
+        res = await s.execute(select(OpRow).where(OpRow.parent_op_id == parent_id).order_by(OpRow.sequence_order))
+        children = res.scalars().all()
+        assert len(children) == 2
+
+        child_baseline, child_web = children[0], children[1]
+        assert child_baseline.action == "provision.brand_baseline.create"
+        assert child_baseline.sequence_order == 1
+        assert child_baseline.state == "AWAITING_APPROVAL"
+
+        assert child_web.action == "provision.web_host.create"
+        assert child_web.sequence_order == 2
+        assert child_web.state == "AWAITING_APPROVAL"
+
+    # 2. Approve the parent Op (triggers child_baseline execution automatically)
+    resp_dec = await client.post(f"/ops/{parent_id}/decision", headers=H, json={
+        "decision": "approve",
+        "actor": "chandan",
+        "role": "owner",
+        "surface": "whatsapp"
+    })
+    assert resp_dec.status_code == 200, resp_dec.text
+
+    # Verify parent is EXECUTING, child_baseline is DONE, and child_web is APPROVED and enqueued
+    async with async_session() as s:
+        parent_row = await s.get(OpRow, parent_id)
+        assert parent_row.state == "EXECUTING"
+
+        res = await s.execute(select(OpRow).where(OpRow.parent_op_id == parent_id).order_by(OpRow.sequence_order))
+        children = res.scalars().all()
+        child_baseline, child_web = children[0], children[1]
+        assert child_baseline.state == "DONE"
+        assert child_web.state == "APPROVED"
+
+        # Check Outbox
+        res_outbox = await s.execute(select(OutboxItem).where(OutboxItem.status == "PENDING"))
+        outbox_items = res_outbox.scalars().all()
+        # Should contain child_web!
+        assert len(outbox_items) == 1
+        assert outbox_items[0].op_id == child_web.id
+
+    # 3. Drain outbox (executes child_web)
+    async with async_session() as s:
+        processed = await loop.drain_once(s)
+        assert processed == 1
+        await s.commit()
+
+    # Verify both children and parent are DONE
+    async with async_session() as s:
+
+
+        child_baseline = await s.get(OpRow, child_baseline.id)
+        assert child_baseline.state == "DONE"
+
+        child_web = await s.get(OpRow, child_web.id)
+        assert child_web.state == "DONE"
+
+        parent_row = await s.get(OpRow, parent_id)
+        assert parent_row.state == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_e2e_brand_bootstrap_saga_rollback(client, db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        s.add(TrustSnapshot(tenant_id="t1", brand_id="b2", domain="provision", tier=1, score=75.0))
+        await s.commit()
+
+    H = {"X-Tenant-ID": "t1"}
+    # 1. Submit brand bootstrap intent with fail.in domain to trigger child_web execute failure
+    resp = await client.post("/intents", headers=H, json={
+        "domain": "provision",
+        "brand_id": "b2",
+        "text": "bootstrap brand fail fail.in" 
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    parent_id = data["cards"][0]["op_id"]
+
+    # 2. Approve parent Op (triggers child_baseline execution -> DONE)
+    resp_dec = await client.post(f"/ops/{parent_id}/decision", headers=H, json={
+        "decision": "approve",
+        "actor": "chandan",
+        "role": "owner",
+        "surface": "whatsapp"
+    })
+    assert resp_dec.status_code == 200
+
+    # Verify child_baseline is DONE, parent is EXECUTING, and child_web is APPROVED and enqueued
+    async with async_session() as s:
+        res = await s.execute(select(OpRow).where(OpRow.parent_op_id == parent_id).order_by(OpRow.sequence_order))
+        children = res.scalars().all()
+        child_baseline, child_web = children[0], children[1]
+        assert child_baseline.state == "DONE"
+        assert child_web.state == "APPROVED"
+
+        parent_row = await s.get(OpRow, parent_id)
+        assert parent_row.state == "EXECUTING"
+
+        res_outbox = await s.execute(select(OutboxItem).where(OutboxItem.status == "PENDING"))
+        assert len(res_outbox.scalars().all()) == 1
+
+    # 3. Drain outbox (executes child_web -> fails, triggers cascading rollback)
+    async with async_session() as s:
+        processed = await loop.drain_once(s)
+        assert processed == 1
+        await s.commit()
+
+    # Verify states: all children and parent are ROLLED_BACK
+    async with async_session() as s:
+
+
+        res = await s.execute(select(OpRow).where(OpRow.parent_op_id == parent_id).order_by(OpRow.sequence_order))
+        children = res.scalars().all()
+        child_baseline, child_web = children[0], children[1]
+
+        assert child_web.state == "ROLLED_BACK"
+        assert child_baseline.state == "ROLLED_BACK"
+
+        parent_row = await s.get(OpRow, parent_id)
+        assert parent_row.state == "ROLLED_BACK"
+
 

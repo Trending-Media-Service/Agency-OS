@@ -6,6 +6,8 @@ import logging
 import subprocess
 import yaml
 import importlib.util
+import uuid
+import re
 from typing import Optional
 
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
@@ -20,12 +22,71 @@ class ProvisionAdapter(Adapter):
     domain = "provision"
 
     def plan(self, intent: str, tenant_id: str, brand_id: str) -> list[OpSpec]:
-        """Simple intent parser: extracts domain name and plans web-host creation."""
-        # Clean up commas and split
+        """Plans provisioning actions. Supports brand bootstrap and single web host."""
         words = intent.replace(",", " ").split()
-        # Find first word containing a dot (excluding leading dot)
+        normalized = intent.strip().lower()
+
+        # Check if this is a brand bootstrap intent (e.g. "onboard brand ableys" or "bootstrap brand woktok.co")
+        if any(w in normalized for w in ["bootstrap", "onboard"]):
+            # Find the brand name: look for next word after "brand"
+            brand_name = "default-brand"
+            if "brand" in words:
+                idx = words.index("brand")
+                if idx + 1 < len(words):
+                    brand_name = words[idx + 1]
+
+            # Find first word containing a dot for the domain name
+            domain_name = next((w for w in words if "." in w and not w.startswith(".")), f"{brand_name}.in")
+
+            parent_id = uuid.uuid4().hex
+
+            # 1. Parent Saga wrapper Op
+            parent_spec = OpSpec(
+                id=parent_id,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="provision.brand_bootstrap.create",
+                params={
+                    "brand_name": brand_name,
+                    "domain": domain_name,
+                    "recipe": "brand-bootstrap",
+                    "preview_summary": f"Saga: Onboard Brand '{brand_name}'\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy Cloud Run web host ({domain_name})"
+                },
+                severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                cost_estimate=Money(amount_minor=250_000, currency="INR"), # sum of children
+            )
+
+            # 2. Child 1: brand-baseline recipe (GCP project setup or shared DB slot)
+            child1 = OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="provision.brand_baseline.create",
+                params={"brand_id": brand_id, "tier": "shared", "recipe": "brand-baseline", "version": "0.1.0"},
+                severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                parent_op_id=parent_id,
+                sequence_order=1,
+                cost_estimate=Money(amount_minor=0, currency="INR"),
+            )
+
+            # 3. Child 2: web-host recipe (Cloud Run deployment)
+            child2 = OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="provision.web_host.create",
+                params={"domain": domain_name, "recipe": "web-host", "version": "0.1.0"},
+                severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                parent_op_id=parent_id,
+                sequence_order=2,
+                cost_estimate=Money(amount_minor=250_000, currency="INR"),
+            )
+
+            return [parent_spec, child1, child2]
+
+        # Normal single web host intent (backwards compatibility)
         domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
-        
         return [OpSpec(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -38,19 +99,23 @@ class ProvisionAdapter(Adapter):
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
         """Runs terraform init & plan and returns the plan output."""
+        if op.action == "provision.brand_bootstrap.create":
+            summary = op.params.get("preview_summary", "Brand bootstrap sequential saga")
+            return PreviewArtifact(kind="saga_preview", summary=summary, detail={})
+
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
-            
+
             # Run init
             code, out, err = self._run_terraform(op, ["init", "-input=false", "-no-color"], temp_dir)
             if code != 0:
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Init failed: {err}", detail={"stderr": err})
-                
+
             # Run plan
             code, out, err = self._run_terraform(op, ["plan", "-no-color", "-input=false"], temp_dir)
             if code != 0:
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Plan failed: {err}", detail={"stderr": err})
-                
+
             return PreviewArtifact(kind="terraform_plan", summary=out, detail={"stdout": out})
 
     def execute(self, op: OpSpec, idem_key: str) -> ExecResult:
@@ -142,9 +207,14 @@ class ProvisionAdapter(Adapter):
 
     def compensate(self, op: OpSpec) -> list[OpSpec]:
         """Returns the compensating destroy Op for this create Op."""
+        if op.action == "provision.brand_bootstrap.create":
+            # Logical parent Saga has no direct compensation itself; its rollback is driven
+            # by children cascading rollbacks.
+            return []
+
         action_parts = op.action.split(".")
         verb = action_parts[-1]
-        
+
         if verb == "create":
             destroy_action = ".".join(action_parts[:-1] + ["destroy"])
             return [OpSpec(
