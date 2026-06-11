@@ -234,6 +234,20 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
     await transition(s, row, OpState.EXECUTING, actor="kernel")
     result = adapter.execute(spec, idem_key=row.idem_key)
     trace(s, row.id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
+
+    # Record any execution costs returned by the adapter
+    if hasattr(result, "costs") and result.costs:
+        from app.kernel.services import emit_cost
+        for cost in result.costs:
+            await emit_cost(
+                s,
+                tenant_id=row.tenant_id,
+                op_id=row.id,
+                kind=cost.kind,
+                amount_minor=cost.amount_minor,
+                currency=cost.currency,
+                meta=cost.meta
+            )
     if not result.ok:
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
                          reason=f"Execution failed: {result.detail.get('error')}")

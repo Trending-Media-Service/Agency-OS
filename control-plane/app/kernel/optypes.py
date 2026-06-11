@@ -121,9 +121,18 @@ class PreviewArtifact:
 
 
 @dataclass(frozen=True)
+class CostSpec:
+    kind: str  # llm_tokens | api_call | gcp_resource
+    amount_minor: int
+    currency: str = "INR"
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ExecResult:
     ok: bool
     detail: dict[str, Any] = field(default_factory=dict)
+    costs: list[CostSpec] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
