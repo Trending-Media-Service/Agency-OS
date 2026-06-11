@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Optional, Protocol
 
 from sqlalchemy import select
@@ -78,7 +79,8 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
     artifact = adapter.preview(spec)
     row.preview_summary = artifact.summary
     trace(s, row.id, "preview", {"kind": artifact.kind})
-    await transition(s, row, OpState.PREVIEWED, actor=actor)
+    if row.state != OpState.PREVIEWED.value:
+        await transition(s, row, OpState.PREVIEWED, actor=actor)
 
     gate = evaluate_gates(spec)
     trace(s, row.id, "gate", {"violations": [v.as_dict() for v in gate.violations],
@@ -111,6 +113,15 @@ def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str
     ))
 
 
+def apply_tweak(domain: str, action: str, params: dict, tweak_text: str) -> dict:
+    new_params = dict(params)
+    # Match domain names like woktok.co, google.com, etc.
+    match = re.search(r'\b([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,})\b', tweak_text.lower())
+    if match:
+        new_params["domain"] = match.group(1)
+    return new_params
+
+
 async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role: str,
            surface: str, reason: Optional[str] = None,
            latency_ms: Optional[int] = None) -> None:
@@ -129,7 +140,32 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "rejection", reason=reason)
         await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
     elif decision == "modify":
-        await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or ""})
+        # Apply tweak to parameters
+        new_params = apply_tweak(row.domain, row.action, row.params, reason or "")
+        row.params = new_params
+
+        # Transition back to PREVIEWED
+        await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or "", "params_before": row.params})
+
+        # Resolve tier from latest snapshot
+        from ..models import TrustSnapshot
+        stmt = (
+            select(TrustSnapshot.tier)
+            .where(
+                TrustSnapshot.tenant_id == row.tenant_id,
+                TrustSnapshot.brand_id == row.brand_id,
+                TrustSnapshot.domain == row.domain
+            )
+            .order_by(TrustSnapshot.ts.desc())
+            .limit(1)
+        )
+        res = await s.execute(stmt)
+        tier = res.scalar_one_or_none()
+        if tier is None:
+            tier = 1
+
+        # Re-run preview and gate
+        await preview_and_gate(s, row, tier=tier, actor=actor)
     else:
         raise ValueError(f"unknown decision {decision!r}")
 
