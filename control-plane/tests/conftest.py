@@ -86,6 +86,13 @@ def mock_terraform_cli():
                 recipe = "unknown"
 
             if subcomm == "plan":
+                # Write a mock plan file if -out is requested
+                out_arg = next((arg for arg in cmd if arg.startswith("-out=")), None)
+                if out_arg and cwd:
+                    plan_filename = out_arg.split("=")[1]
+                    with open(os.path.join(cwd, plan_filename), "w") as f:
+                        f.write("mock_tfplan_content")
+
                 if recipe == "brand-baseline":
                     brand = vars_dict.get("brand_id", "example-brand")
                     mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"

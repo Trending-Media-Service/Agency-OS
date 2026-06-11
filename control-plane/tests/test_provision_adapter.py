@@ -76,6 +76,24 @@ async def test_provision_adapter_execute_destroy(adapter, destroy_op):
     assert "Destroy complete!" in res.detail["stdout"]
 
 
+async def test_provision_adapter_preview_then_execute(adapter, create_op):
+    # 1. Run preview to generate plan
+    preview_art = adapter.preview(create_op)
+    assert preview_art.kind == "terraform_plan"
+
+    # Verify plan file exists
+    persistent_plan_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../tfplans"))
+    plan_file_path = os.path.join(persistent_plan_dir, f"{create_op.id}.tfplan")
+    assert os.path.exists(plan_file_path)
+
+    # 2. Execute using the plan
+    res = await adapter.execute(create_op, "idem_123")
+    assert res.ok is True
+
+    # Verify plan file is cleaned up
+    assert not os.path.exists(plan_file_path)
+
+
 @pytest.mark.asyncio
 async def test_provision_adapter_verify_success(adapter, create_op):
     # Execute first to write outputs (mocked, but verify reads mock output)
