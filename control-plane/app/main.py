@@ -8,12 +8,28 @@ from sqlalchemy import select
 
 from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.tasks import enqueue_drain
-from app.middleware import TenantIsolationMiddleware
+from app.middleware import TenantIsolationMiddleware, TraceMiddleware
+from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
+
+# Setup Sentry SDK if DSN is set
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        traces_sample_rate=1.0,
+        profiles_sample_rate=1.0,
+    )
+
+# Setup logging
+log_level = os.getenv("LOG_LEVEL", "INFO")
+json_format = os.getenv("LOG_FORMAT", "text").lower() == "json"
+setup_logging(level=log_level, json_format=json_format)
 
 loop.register(ProvisionAdapter())
 
@@ -21,6 +37,7 @@ logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
+app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
 
 
