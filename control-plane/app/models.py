@@ -47,6 +47,11 @@ class Brand(Base):
         lazy="selectin"
     )
 
+    cadences: Mapped[list[Cadence]] = relationship(
+        "Cadence", back_populates="brand", cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+
 
 class BrandProperty(Base):
     __tablename__ = "brand_properties"
@@ -63,6 +68,24 @@ class BrandProperty(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
 
     brand: Mapped[Brand] = relationship("Brand", back_populates="properties")
+
+
+class Cadence(Base):
+    __tablename__ = "cadences"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(120))
+    schedule: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="on_track")
+    last_run: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    next_run: Mapped[dt.datetime] = mapped_column()
+    last_finding_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+    brand: Mapped[Brand] = relationship("Brand", back_populates="cadences")
 
 
 class OpRow(Base):
