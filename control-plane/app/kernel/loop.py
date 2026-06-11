@@ -186,7 +186,9 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
 # ------------------------------------------------------------------- outbox
 
 def enqueue(s: AsyncSession, op_id: str) -> None:
-    s.add(OutboxItem(op_id=op_id))  # same txn as the APPROVED transition (§4.2)
+    from app.observability import trace_context
+    trace_id = trace_context.get()
+    s.add(OutboxItem(op_id=op_id, trace_id=trace_id))  # same txn as the APPROVED transition (§4.2)
 
 
 async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_items: int = 10) -> int:
@@ -201,10 +203,12 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
     items = result.scalars().all()
     processed = 0
     for item in items:
-        row = await s.get(OpRow, item.op_id)
-        item.status = "IN_FLIGHT"
-        item.attempts += 1
+        from app.observability import trace_context
+        token = trace_context.set(item.trace_id)
         try:
+            row = await s.get(OpRow, item.op_id)
+            item.status = "IN_FLIGHT"
+            item.attempts += 1
             await _execute_and_verify(s, row)
             item.status = "DONE"
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
@@ -217,6 +221,8 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
             else:
                 item.status = "PENDING"
                 item.next_attempt_at = now + dt.timedelta(seconds=2 ** item.attempts)
+        finally:
+            trace_context.reset(token)
         processed += 1
     return processed
 

@@ -1,8 +1,27 @@
-# WIRED. Replaces the Header dependency in main.py to enforce RLS via tenant context.
 from app.database import tenant_context
+from app.observability import trace_context
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import uuid
+
+
+class TraceMiddleware(BaseHTTPMiddleware):
+  """Generates or propagates trace IDs to coordinate logs and telemetry across service hops."""
+
+  async def dispatch(self, request: Request, call_next):
+    trace_id = request.headers.get("X-Trace-ID") or request.headers.get("traceparent")
+    if not trace_id:
+      trace_id = f"tr-{uuid.uuid4().hex[:16]}"
+
+    token = trace_context.set(trace_id)
+    try:
+      response = await call_next(request)
+      response.headers["X-Trace-ID"] = trace_id
+      return response
+    finally:
+      trace_context.reset(token)
+
 
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):

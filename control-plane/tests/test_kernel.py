@@ -782,4 +782,77 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
         assert tenant_rollup.get("gcp_resource") == 1240
 
 
+@pytest.mark.asyncio
+async def test_observability_and_trace_propagation(client, db_engine, capsys):
+    import json
+    import logging
+    from app.observability import setup_logging, trace_context
+    from app.database import tenant_context
+
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    
+    # 1. Create a trust snapshot to pass gate tier resolution
+    async with async_session() as s:
+        s.add(TrustSnapshot(tenant_id="t1", brand_id="b1", domain="provision", tier=1, score=75.0))
+        await s.commit()
+
+    # 2. Test JSON formatted logging directly
+    setup_logging(level="INFO", json_format=True)
+    
+    test_logger = logging.getLogger("test_obs")
+    
+    # Set context variables manually to simulate a request flow
+    t_token = tenant_context.set("t1")
+    tr_token = trace_context.set("tr-manual-999")
+    try:
+        test_logger.info("Structured log statement", extra={"custom_metric": 42})
+    finally:
+        tenant_context.reset(t_token)
+        trace_context.reset(tr_token)
+        
+    # Reset logging back to text format so we don't mess up standard pytest logs
+    setup_logging(level="INFO", json_format=False)
+    
+    # Capture stderr and verify JSON formatting (StreamHandler outputs to stderr by default)
+    captured = capsys.readouterr()
+    log_line = captured.err.strip()
+    
+    # Parse the captured log statement as JSON
+    parsed = json.loads(log_line)
+    assert parsed["message"] == "Structured log statement"
+    assert parsed["severity"] == "INFO"
+    assert parsed["logger"] == "test_obs"
+    assert parsed["trace_id"] == "tr-manual-999"
+    assert parsed["tenant_id"] == "t1"
+    assert parsed["custom_metric"] == 42
+    
+    # 3. Test HTTP propagation via TraceMiddleware
+    H = {"X-Tenant-ID": "t1", "X-Trace-ID": "tr-http-555"}
+    resp = await client.post("/intents", headers=H, json={
+        "domain": "provision",
+        "brand_id": "b1",
+        "text": "host my site ableys.com"
+    })
+    assert resp.status_code == 200
+    assert resp.headers.get("X-Trace-ID") == "tr-http-555"
+    data = resp.json()
+    op_id = data["cards"][0]["op_id"]
+    
+    # 4. Approve the Op (triggers execution and outbox enqueuing)
+    resp_dec = await client.post(f"/ops/{op_id}/decision", headers=H, json={
+        "decision": "approve",
+        "actor": "chandan",
+        "role": "owner",
+        "surface": "whatsapp"
+    })
+    assert resp_dec.status_code == 200
+    
+    # 5. Verify that OutboxItem in database contains the correct propagated trace ID
+    async with async_session() as s:
+        res_outbox = await s.execute(select(OutboxItem).where(OutboxItem.op_id == op_id))
+        outbox_item = res_outbox.scalar_one()
+        assert outbox_item.trace_id == "tr-http-555"
+
+
+
 

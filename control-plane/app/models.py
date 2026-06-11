@@ -146,6 +146,7 @@ class OutboxItem(Base):
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)  # PENDING|IN_FLIGHT|DONE|DEAD
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 
