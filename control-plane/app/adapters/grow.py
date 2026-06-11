@@ -84,6 +84,20 @@ class GrowAdapter(Adapter):
         elif op.action == "grow.campaign.delete":
             summary = f"Will delete campaign: {op.params.get('campaign_id')}"
             return PreviewArtifact(kind="campaign_delete_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.reallocate_budget.apply":
+            transfer = op.params.get("transfer_amount_minor", 0) / 100.0
+            src = op.params.get("source_campaign_id")
+            tgt = op.params.get("target_campaign_id")
+            summary = f"Saga: Budget Reallocation\n  - Transfer {transfer:.2f} INR from {src} to {tgt} due to performance variance."
+            return PreviewArtifact(kind="campaign_reallocate_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.campaign.update":
+            budget = op.params.get("budget_minor", 0) / 100
+            bid_part = ""
+            if "bid_minor" in op.params:
+                bid = op.params.get("bid_minor") / 100
+                bid_part = f"\nTarget Bid: {bid:.2f} INR"
+            summary = f"Will update campaign: {op.params.get('campaign_id')}\nNew Budget: {budget:.2f} INR{bid_part}"
+            return PreviewArtifact(kind="campaign_update_preview", summary=summary, detail=op.params)
         return PreviewArtifact(kind="unknown_preview", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
@@ -140,6 +154,16 @@ class GrowAdapter(Adapter):
             except Exception as e:
                  return VerifyResult(ok=False, checks={}, detail={"error": str(e)})
 
+        elif op.action == "grow.campaign.update":
+            try:
+                camp = await client.get_campaign(campaign_id)
+                expected_budget = op.params.get("budget_minor")
+                if camp and camp["budget_minor"] == expected_budget:
+                    return VerifyResult(ok=True, checks={"budget_updated": True}, detail=camp)
+                return VerifyResult(ok=False, checks={"budget_updated": False})
+            except Exception as e:
+                return VerifyResult(ok=False, checks={}, detail={"error": str(e)})
+
         return VerifyResult(ok=False, checks={})
 
     def compensate(self, op: OpSpec) -> list[OpSpec]:
@@ -159,4 +183,23 @@ class GrowAdapter(Adapter):
                     parent_op_id=op.id
                 )
             ]
+        elif op.action == "grow.campaign.update":
+            prev_budget = op.params.get("previous_budget_minor")
+            if prev_budget is not None:
+                return [
+                    OpSpec(
+                        tenant_id=op.tenant_id,
+                        brand_id=op.brand_id,
+                        domain=self.domain,
+                        action="grow.campaign.update",
+                        params={
+                            "campaign_id": op.params.get("campaign_id"),
+                            "provider": op.params.get("provider"),
+                            "budget_minor": prev_budget,
+                            "bid_minor": op.params.get("bid_minor")
+                        },
+                        severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                        parent_op_id=op.id
+                    )
+                ]
         return []

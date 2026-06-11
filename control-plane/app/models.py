@@ -169,6 +169,17 @@ class ProcessedWebhookMessage(Base):
     processed_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 
+class Order(Base):
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[float] = mapped_column()
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+    attributed_campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
 Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)
 
 

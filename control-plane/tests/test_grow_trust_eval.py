@@ -1,6 +1,6 @@
 import pytest
 from sqlalchemy import select
-from app.models import OpRow, TrustSnapshot, TrustEvent
+from app.models import OpRow, TrustSnapshot, TrustEvent, Order
 from app.services.marketing import MockMarketingClient
 
 @pytest.fixture(autouse=True)
@@ -37,6 +37,7 @@ async def test_trust_evaluation_success_roi(client, session):
         idem_key="idem_grow_1"
     )
     session.add(op)
+    session.add(Order(tenant_id=tid, brand_id=bid, amount=12000.0, attributed_campaign_id=campaign_id))
     await session.commit()
 
     # 4. Trigger trust evaluation task
@@ -92,6 +93,7 @@ async def test_trust_evaluation_poor_roi(client, session):
         idem_key="idem_grow_2"
     )
     session.add(op)
+    session.add(Order(tenant_id=tid, brand_id=bid, amount=4000.0, attributed_campaign_id=campaign_id))
     await session.commit()
 
     # 4. Trigger trust evaluation task
