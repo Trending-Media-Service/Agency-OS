@@ -10,9 +10,11 @@
 
 ## 1. Thesis
 
-Agency OS is a digital agency's delivery capability turned into an operating system. A brand expresses intent in plain language; governed agents provision, build, run, and grow its entire digital presence on GCP — with every action previewed, approved, audited, and reversible.
+Agency OS is a digital agency's delivery capability turned into an operating system. A brand expresses intent in plain language; governed agents provision, build, run, and grow a brand's entire paid and organic digital presence — over a canonical brand model, on recurring cadences, with every action previewed, approved, audited, and reversible.
 
-It is **one governance kernel with four adapter families**, not four products:
+It is **one governance kernel with four adapter families supported by three connective layers**:
+
+### Core Pillars
 
 | Pillar | What it does | Adapter family |
 |---|---|---|
@@ -20,6 +22,14 @@ It is **one governance kernel with four adapter families**, not four products:
 | **Build** | Conversational dev agents ship web apps, automations, AI features | Agent harness + golden templates |
 | **Manage** | Connect, observe, and operate existing client infrastructure | Read-then-write connectors |
 | **Grow** | Trust-tiered autonomous ad operations (original Agency OS) | Ad-platform adapters |
+
+### Supporting Layers (Connective Tissue)
+
+| Layer | Role | Relationship to the four pillars |
+|---|---|---|
+| **Brand Graph (§6.5)** | Canonical model of what a brand consists of + health | The object every pillar reads and writes findings into |
+| **Presence (§6.6)** | Organic & owned-channel audit-and-improve | A peer adapter family to Grow (organic : paid) |
+| **Cadences (§13)** | Recurring responsibility → governed Op generator | Drives all four pillars on a schedule, executes nothing itself |
 
 Every operation in every pillar is the same primitive: a proposed **Op**, previewed, gated by deterministic policy, approved by a human (until autonomy is earned), executed, verified, and reversible via a defined compensating action.
 
@@ -252,6 +262,57 @@ Unchanged from the refined plan; now expressed as the fourth adapter family. Car
 
 **Differentiator note:** a brand on Provision+Build gives Grow clean first-party data (server-side tagging, CAPI from our own stack). Full-stack tenants should see measurably better Grow outcomes; instrument this from the start — it is the cross-sell argument.
 
+### 6.5 The Brand Graph — what a brand *is* (the systematized SOP)
+
+**Problem this solves:** onboarding a brand (Tanmatra.food) is chaos because there is no canonical object representing the brand. Its existence is scattered across a registrar (GoDaddy), hosting (GCP), analytics, Merchant Center, an ad stack, an email tool, a WhatsApp number, a catalog, brand assets. Nobody — human or system — can answer "what does this brand consist of, and what condition is each piece in."
+
+**The model.** A `brand` is not a name + tenant row. It owns a **Brand Graph**: a set of typed **Properties**, each a connected account or asset with a health state.
+
+```
+Brand
+└── Properties (typed nodes)
+    ├── domain         (registrar, expiry, DNS authority)        e.g. GoDaddy
+    ├── hosting        (where the site runs)                     e.g. GCP / external
+    ├── analytics      (GA4 / GTM / pixel / CAPI)
+    ├── merchant_feed  (Google Merchant Center)
+    ├── search_console (GSC property + verification)
+    ├── ads_account    (Google / Meta / Amazon)                  one per platform
+    ├── email          (provider, domain auth: SPF/DKIM/DMARC)
+    ├── whatsapp       (Business number, template status)
+    ├── catalog        (product source of truth)
+    └── content        (blog / CMS)
+```
+
+Each Property carries: `provider`, `connection_ref` (→ §3 Secret Manager, never the secret itself), `status` ∈ {absent | connected | sensing | healthy | degraded | broken}, `last_checked`, and `findings` (structured, from the most recent audit Op).
+
+**Onboarding becomes a state-fill, not a scramble.** Onboarding a brand = walking the graph and moving each Property from `absent` toward `healthy`. The "SOP" is no longer tribal knowledge in your head — it is the ordered list of Property types and the connect-or-provision Op that fills each. Tanmatra.food onboarding = the graph with most nodes `absent`; Abley's = the graph with `ads_account`, `merchant_feed`, and `search_console` present-but-`degraded`. Same object, different fill state. The onboarding dashboard is just a render of the graph.
+
+**Critically, this is mostly READ.** Populating the graph is the §6.3 "Sense" phase: scoped read credentials, inventory, health-check. No writes, no new governance machinery, no invariant pressure. It is the highest value-to-risk capability in the system — it makes onboarding legible and every other pillar "see" the brand, while risking nothing.
+
+**Hard prerequisite (do this before any code):** manually onboard ONE brand (Tanmatra.food) end to end and write down every step, account, and credential as you go. That written run IS the schema for this section. We do not systematize an SOP that has not been performed once by hand. The Brand Graph is designed *from* that document, not ahead of it.
+
+**Build status:** Property model + read-only Sense for 2–3 property types is a candidate **Slice 3** opener (it is literally Manage's read-only phase, §6.3). The full typed graph across all property types is **deferred** — it grows one property type at a time, each gated by "can I operate this for a paying brand."
+
+### 6.6 Presence — organic & owned-channel operations (distinct from paid Grow)
+
+**Problem this solves:** Abley's growth is blocked by Search Console, Merchant Center feed health, the WordPress blog, email deliverability, and reputation — none of which are bids or budgets. Forcing them into Grow would repeat the original defect of leaking one domain's vocabulary into another. They are **owned-property audit-and-improve loops**, not trust-tiered spend decisions, and they get their own adapter family.
+
+**Why a separate family, concretely.** Grow Ops change *spend* on *rented* platforms and need spend caps + reversibility. Presence Ops improve *owned* properties and are dominated by **audit → finding → recommended fix → (optional) governed change**. The risk profile, the gates, and the cadence all differ.
+
+**Presence scope (each is an adapter action, all sharing the kernel):**
+- `presence.search_console.audit` — coverage errors, query/CTR opportunities, indexing health (READ)
+- `presence.merchant_center.audit` — disapprovals, feed mismatches, policy flags (READ)
+- `presence.merchant_center.fix` — corrective feed change (WRITE — gated, reversible)
+- `presence.email.audit` — SPF/DKIM/DMARC + deliverability + list health (READ)
+- `presence.reputation.audit` — review/rating signals across surfaces (READ)
+- `presence.content.*` — blog/CMS publishing (overlaps Build; lives wherever the deploy target is)
+
+**The dominant pattern is read-only audit producing findings.** A Presence audit emits structured findings into the Brand Graph (§6.5) and, where a fix exists, *proposes* a governed Op — it does not silently change anything (§2.3). This means the entire READ half of Presence ships with **zero write risk** and immediately makes the OS useful to a brand like Abley's: "here is exactly what is wrong with your Merchant Center and Search Console, ranked, with the fix for each." That is sellable on its own, before a single write integration exists.
+
+**Paid channels that are NOT Google/Meta still belong to Grow, not Presence.** Amazon Ads is a Grow adapter action (it is paid spend, trust-tiered, capped) — it just isn't built yet. Listing it here only to be unambiguous: Presence = organic + owned; Grow = paid, regardless of platform.
+
+**Build status:** the **read-only audit half** (Search Console + Merchant Center audits for Abley's) is the strongest candidate for a near-term slice because it unblocks a real brand with no write risk and proves the family. Everything that *writes* to an owned property is **deferred** behind the same trust ladder as Manage (§6.3) — sense first, write later, tier by tier. Email sending, WhatsApp campaigns, and content publishing are each a live integration with real operational burden and are **not** near-term for a solo operator (§ the operating-capacity constraint).
+
 ---
 
 ## 7. Conversational interface
@@ -330,3 +391,27 @@ Items that look deferred but are actually cheap and IN scope now: execution trac
 - One roadmap. It lives in §9. Any other roadmap found in this repo is stale — delete it.
 - No fabricated precision: no example scores, costs, or dates that were not computed from the versioned config or real billing data.
 - Architecture changes are PRs to this file. If the code and this file disagree for more than a week, that is an incident, not a footnote.
+
+---
+
+## 13. Cadences — recurring responsibility as a first-class object
+
+**Problem this solves:** the work that actually establishes a brand is not one-shot Ops. It is "optimize Search Console weekly," "reconcile the feed," "run the campaign calendar," "the regular optimization tweaks." The kernel models a discrete Op beautifully and has **no model of an ongoing responsibility** — so recurring work lives in your memory, which does not scale past one or two brands.
+
+**The model — a Cadence is a scheduled Op generator, nothing more exotic.**
+```
+Cadence
+├── brand_id, domain                 # whose, which pillar
+├── action                           # the Op it generates, e.g. presence.search_console.audit
+├── schedule                         # cron-like (weekly, monthly) OR signal-driven
+├── status      ∈ {on_track | due | overdue | needs_attention}
+└── last_run, next_run, last_finding_ref
+```
+
+A Cadence does not execute anything. On schedule, it **proposes an Op** into the exact same governed loop (§4.1) — previewed, gated, approved/auto, audited. It is a producer of Ops, not a side channel. This keeps invariant §2.3 intact: cadences create no new way to touch client property.
+
+**Why this is the multiplier you actually need.** With cadences, "handling Abley's and Tanmatra.food and a new lead at the same time" becomes a **queue with status**, not a feat of memory: the system tells you what is `due` and `overdue` across all brands, each as a ready-to-approve card. This is the difference between operating 3 brands and operating 30 — and it is cheap, because it reuses the entire loop and adds only a scheduler + a status field.
+
+**Start dead-simple.** Cadences begin as read-only audit cadences (run the §6.6 audits weekly, surface findings). No autonomous writes on a timer until the relevant brand-domain has earned Tier 2 *and* a deterministic gate bounds the worst case (§2.1, §4.4). A recurring auto-write is the highest-trust action in the system and is **deferred** accordingly.
+
+**Build status:** the Cadence object + a read-only audit scheduler is a small, high-leverage addition that becomes worthwhile the moment you run the §6.6 audits for **two** brands manually and feel the duplication. Not before — a scheduler with nothing safe to schedule is premature. **Deferred until read-only audits exist and run for ≥2 brands.**
