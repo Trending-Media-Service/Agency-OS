@@ -37,12 +37,22 @@ def temp_git_remote(run_git):
     clone_path = os.path.join(temp_dir, "clone")
     run_git(["clone", remote_path, clone_path], check=True, capture_output=True)
     
-    # Create initial file
+    # Create initial files
     src_dir = os.path.join(clone_path, "src")
     os.makedirs(src_dir, exist_ok=True)
     app_js = os.path.join(src_dir, "App.js")
     with open(app_js, "w") as f:
         f.write("function App() {\n  return <Hero color=\"red\" />;\n}\n")
+        
+    # package.json
+    package_json = os.path.join(clone_path, "package.json")
+    with open(package_json, "w") as f:
+        f.write('{\n  "name": "brand-site",\n  "version": "1.0.0",\n  "scripts": {\n    "test:smoke": "node run_smoke.js"\n  }\n}\n')
+        
+    # run_smoke.js
+    run_smoke = os.path.join(clone_path, "run_smoke.js")
+    with open(run_smoke, "w") as f:
+        f.write('const baseUrl = process.env.BASE_URL || "http://localhost:3000";\nconsole.log(`Running smoke tests against ${baseUrl}...`);\nif (baseUrl.includes("fail-smoke")) {\n  console.error("Smoke tests failed: simulated failure");\n  process.exit(1);\n}\nconsole.log("Smoke tests passed");\nprocess.exit(0);\n')
         
     # Commit and push
     run_git(["config", "user.email", "test@test.com"], cwd=clone_path, check=True)
@@ -77,12 +87,14 @@ def mock_terraform_cli():
                     vars_dict = json.load(f)
 
             # Determine recipe
-            if "brand_id" in vars_dict:
+            if "db_connection_name" in vars_dict:
+                recipe = "n8n"
+            elif "brand_id" in vars_dict:
                 recipe = "brand-baseline"
             elif "domain" in vars_dict:
                 recipe = "web-host"
-            elif "db_connection_name" in vars_dict:
-                recipe = "n8n"
+            elif "db_name" in vars_dict:
+                recipe = "postgres-db"
             else:
                 recipe = "unknown"
 
@@ -102,6 +114,9 @@ def mock_terraform_cli():
                     mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
                 elif recipe == "n8n":
                     mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
+                elif recipe == "postgres-db":
+                    db_name = vars_dict.get("db_name", "brand-db")
+                    mock_res.stdout = f"Plan: 1 to add, 0 to change, 0 to destroy.\n+ neon_database {db_name}\n"
                 else:
                     mock_res.stdout = "Plan: 0 to add"
             elif subcomm == "apply":
@@ -130,6 +145,12 @@ def mock_terraform_cli():
                 elif recipe == "n8n":
                     outputs = {
                         "service_url": {"type": "string", "value": "https://n8n-service-123.run.app"}
+                    }
+                elif recipe == "postgres-db":
+                    db_name = vars_dict.get("db_name", "brand-db")
+                    outputs = {
+                        "connection_uri": {"type": "string", "value": f"postgresql://aos-user:mock-pass@neon-host.in/{db_name}"},
+                        "db_host": {"type": "string", "value": "neon-host.in"}
                     }
                 else:
                     outputs = {}

@@ -44,6 +44,27 @@ def test_build_adapter_preview(adapter, build_op):
     assert "diff" in preview_art.detail
     assert preview_art.detail["branch"] == "aos-build-test"
 
+
+def test_build_adapter_preview_smoke_failure(adapter, temp_git_remote):
+    fail_op = OpSpec(
+        id="op_build_fail",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="build",
+        action="build.deliver",
+        params={
+            "intent": "change hero color to blue",
+            "branch_name": "aos-build-fail-smoke",
+            "repo": temp_git_remote
+        },
+        severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+        cost_estimate=Money(amount_minor=1000, currency="INR"),
+    )
+    preview_art = adapter.preview(fail_op)
+    assert preview_art.kind == "build_error"
+    assert "Staging smoke tests failed" in preview_art.summary
+
+
 async def test_build_adapter_execute(adapter, build_op, temp_git_remote, run_git):
     branch_name = build_op.params["branch_name"]
     # 1. Prepare: Run harness to create and push the branch

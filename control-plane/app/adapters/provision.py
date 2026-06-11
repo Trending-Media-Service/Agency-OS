@@ -108,6 +108,26 @@ class ProvisionAdapter(Adapter):
                 )
             ]
 
+        # Check if this is a postgres database intent (e.g. "deploy database" or "provision db")
+        if any(w in normalized for w in ["database", "postgres", "db"]):
+            db_name = f"db_{brand_id}"
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.postgres_db.create",
+                    params={
+                        "recipe": "postgres-db",
+                        "version": "0.1.0",
+                        "db_name": db_name,
+                        "tier": "shared"
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+
         # Normal single web host intent (backwards compatibility)
         domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
         return [OpSpec(

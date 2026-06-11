@@ -58,6 +58,31 @@ class BuildAdapter(Adapter):
                 
             diff = harness.get_diff()
             op.params["diff"] = diff
+
+            # Run staging smoke tests inside the with block
+            staging_url = f"https://staging-{branch}.run.app"
+            package_json_path = os.path.join(harness.repo_path, "package.json")
+            if os.path.exists(package_json_path):
+                import json
+                try:
+                    with open(package_json_path, "r") as f:
+                        pkg = json.load(f)
+                    if "scripts" in pkg and "test:smoke" in pkg["scripts"]:
+                        logger.info(f"Running smoke tests for branch {branch} against {staging_url}")
+                        import subprocess
+                        env = os.environ.copy()
+                        env["BASE_URL"] = staging_url
+                        res = subprocess.run(["npm", "run", "test:smoke"], cwd=harness.repo_path, env=env, capture_output=True, text=True)
+                        if res.returncode != 0:
+                            logger.error(f"Smoke tests failed for branch {branch}:\nStdout: {res.stdout}\nStderr: {res.stderr}")
+                            return PreviewArtifact(
+                                kind="build_error", 
+                                summary=f"Staging smoke tests failed: {res.stderr.strip() or res.stdout.strip()}", 
+                                detail={"stdout": res.stdout, "stderr": res.stderr}
+                            )
+                except Exception as e:
+                    logger.error(f"Failed during smoke test execution: {e}")
+                    return PreviewArtifact(kind="build_error", summary=f"Smoke test execution error: {e}", detail={})
             
         staging_url = f"https://staging-{branch}.run.app"
         summary = f"Staging Preview: {staging_url}\n\nDiff:\n{diff}"

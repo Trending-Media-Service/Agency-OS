@@ -1,0 +1,24 @@
+name: postgres-db
+version: 0.1.0
+description: Provisions a serverless PostgreSQL database (Neon mock).
+inputs:
+  db_name:
+    type: string
+    description: Name of the database.
+  tier:
+    type: string
+    default: shared
+    description: Database tier (shared/dedicated).
+outputs:
+  connection_uri:
+    type: string
+    description: Full connection URI for the database.
+  db_host:
+    type: string
+    description: Hostname of the database.
+monthly_cost_estimate:
+  amount_minor: 0
+  currency: INR
+severity:
+  impact: 2
+  reversibility: COMPENSATABLE
