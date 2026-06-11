@@ -827,7 +827,7 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
     async with async_session() as s:
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
 
 
 
@@ -838,13 +838,13 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
         # - service_account_create: 150 paise (1.50 INR)
         # Total execution cost = 2150 paise
         op_total = await get_op_cost_total(s, op_id)
-        # Total cost for op_id should be planning (57) + execution (2150) = 2207 paise
-        assert op_total == 2207
+        # Total cost for op_id should be planning (57) + execution (2150) + recipe (250000) = 252207 paise
+        assert op_total == 252207
 
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
         assert tenant_rollup.get("api_call") == 2150
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
 
         # Verify actor attribution on costs
         from app.models import CostEntry

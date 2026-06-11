@@ -226,9 +226,29 @@ class ProvisionAdapter(Adapter):
                         
             # Simulate execution costs to test cost ledger ingestion
             costs = []
-            if verb == "create":
+            if verb in ("create", "apply"):
                 costs.append(CostSpec(kind="api_call", amount_minor=2000, currency="INR", meta={"service": "dns_provider", "action": "zone_register"}))
                 costs.append(CostSpec(kind="api_call", amount_minor=150, currency="INR", meta={"service": "gcp_iam", "action": "service_account_create"}))
+                
+                # Parse recipe cost estimate
+                recipe = op.params.get("recipe", "web-host")
+                version = op.params.get("version", "0.1.0")
+                recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
+                yaml_file = os.path.join(recipe_path, "recipe.yaml")
+                if os.path.exists(yaml_file):
+                    try:
+                        with open(yaml_file, "r") as f:
+                            recipe_meta = yaml.safe_load(f)
+                            cost_est = recipe_meta.get("cost_estimate_monthly")
+                            if cost_est:
+                                costs.append(CostSpec(
+                                    kind="gcp_resource",
+                                    amount_minor=cost_est.get("amount_minor", 0),
+                                    currency=cost_est.get("currency", "INR"),
+                                    meta={"recipe": recipe, "version": version}
+                                ))
+                    except Exception as e:
+                        logger.error(f"Failed to read cost estimate from recipe.yaml: {e}")
 
             return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
