@@ -12,9 +12,12 @@ from app.middleware import TenantIsolationMiddleware, TraceMiddleware
 from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
+from app.adapters.build import BuildAdapter
+from app.adapters.manage import ManageAdapter
+from app.adapters.grow import GrowAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
-from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Connection
 
 # Setup Sentry SDK if DSN is set
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -32,6 +35,9 @@ json_format = os.getenv("LOG_FORMAT", "text").lower() == "json"
 setup_logging(level=log_level, json_format=json_format)
 
 loop.register(ProvisionAdapter())
+loop.register(BuildAdapter())
+loop.register(ManageAdapter())
+loop.register(GrowAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -193,6 +199,88 @@ async def run_trust_snapshots(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok"}
 
 
+@app.post("/tasks/evaluate-trust")
+async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
+    """Background task evaluating campaign ROI and adjusting trust scores.
+
+    Bypasses RLS to query across all tenants/brands.
+    """
+    from .models import TrustEvent
+    from .kernel.services import compute_snapshots
+    from app.services.marketing import MockMarketingClient
+
+    # 1. Fetch all successful campaign creations
+    stmt = select(OpRow).where(
+        OpRow.action == "grow.campaign.create",
+        OpRow.state == "DONE"
+    )
+    res = await s.execute(stmt)
+    ops = res.scalars().all()
+
+    client = MockMarketingClient()
+    events_added = 0
+
+    for op in ops:
+        campaign_id = op.params.get("campaign_id")
+        tenant_id = op.tenant_id
+        brand_id = op.brand_id
+
+        # Fetch performance
+        perf = await client.get_performance(campaign_id)
+        if not perf:
+            continue
+
+        roi = perf["roi"]
+
+        kind = None
+        if roi >= 1.2:
+            kind = "verified_success"
+            delta = 5.0
+            reason = f"Campaign {campaign_id} ROI {roi:.2f} >= 1.2"
+        elif roi < 1.0:
+            kind = "verify_failure"
+            delta = -10.0
+            reason = f"Campaign {campaign_id} ROI {roi:.2f} < 1.0"
+
+        if not kind:
+            continue
+
+        # Check duplicate event
+        stmt_dup = select(TrustEvent).where(
+            TrustEvent.tenant_id == tenant_id,
+            TrustEvent.brand_id == brand_id,
+            TrustEvent.domain == "grow",
+            TrustEvent.kind == kind,
+            TrustEvent.reason.like(f"Campaign {campaign_id}%")
+        )
+        res_dup = await s.execute(stmt_dup)
+        dup = res_dup.scalar_one_or_none()
+        if dup:
+            logger.info(f"Trust event for campaign {campaign_id} ({kind}) already exists, skipping")
+            continue
+
+        # Record event
+        event = TrustEvent(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            kind=kind,
+            base_delta=delta,
+            reason=reason
+        )
+        s.add(event)
+        events_added += 1
+        logger.info(f"Recorded trust event for {brand_id}: {kind} (delta {delta})")
+
+    if events_added > 0:
+        await s.flush()
+        await compute_snapshots(s)
+        await s.commit()
+
+    return {"status": "ok", "events_added": events_added}
+
+
+
 @app.get("/webhooks/whatsapp")
 async def verify_whatsapp(
     hub_mode: str = Query(None, alias="hub.mode"),
@@ -221,4 +309,39 @@ async def whatsapp_webhook(
 
     background_tasks.add_task(process_whatsapp_webhook_payload, body, worker_session_maker)
     return {"status": "accepted"}
+
+
+@app.get("/brands/{brand_id}/status")
+async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Fetches Shopify connection status and metrics for a brand."""
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+        
+    stmt = select(Connection).where(
+        Connection.tenant_id == tid,
+        Connection.brand_id == brand_id,
+        Connection.provider == "shopify"
+    )
+    res = await s.execute(stmt)
+    conn = res.scalar_one_or_none()
+    if not conn:
+        return {
+            "brand_id": brand_id,
+            "shopify_connected": False,
+            "metrics": {}
+        }
+        
+    # Mock token retrieval from Secret Manager
+    mock_token = f"mocked-token-for-{conn.secret_ref}"
+    
+    from app.services.shopify import MockShopifyClient
+    client = MockShopifyClient(shop_url=conn.config.get("shop_url"), token=mock_token)
+    metrics = await client.get_metrics()
+    
+    return {
+        "brand_id": brand_id,
+        "shopify_connected": True,
+        "metrics": metrics
+    }
 

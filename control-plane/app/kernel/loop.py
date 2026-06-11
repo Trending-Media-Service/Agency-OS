@@ -19,8 +19,8 @@ class Adapter(Protocol):
     domain: str
     def plan(self, intent: str, tenant_id: str, brand_id: str) -> list[OpSpec]: ...
     def preview(self, op: OpSpec) -> PreviewArtifact: ...
-    def execute(self, op: OpSpec, idem_key: str) -> ExecResult: ...
-    def verify(self, op: OpSpec) -> VerifyResult: ...
+    async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult: ...
+    async def verify(self, op: OpSpec) -> VerifyResult: ...
     def compensate(self, op: OpSpec) -> list[OpSpec]: ...
 
 
@@ -115,10 +115,31 @@ def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str
 
 def apply_tweak(domain: str, action: str, params: dict, tweak_text: str) -> dict:
     new_params = dict(params)
-    # Match domain names like woktok.co, google.com, etc.
-    match = re.search(r'\b([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,})\b', tweak_text.lower())
-    if match:
-        new_params["domain"] = match.group(1)
+    normalized = tweak_text.lower()
+
+    # 1. Domain tweak
+    match_domain = re.search(r'\b([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,})\b', normalized)
+    if match_domain:
+        new_params["domain"] = match_domain.group(1)
+
+    # 2. Grow Budget tweak (e.g. "budget to 4000")
+    match_budget = re.search(r'budget\s*(?:to|:|=)?\s*([0-9]+(?:\.[0-9]+)?)', normalized)
+    if match_budget:
+        try:
+            budget_val = float(match_budget.group(1))
+            new_params["budget_minor"] = int(budget_val * 100)
+        except ValueError:
+            pass
+
+    # 3. Grow Bid tweak (e.g. "bid to 40")
+    match_bid = re.search(r'bid\s*(?:to|:|=)?\s*([0-9]+(?:\.[0-9]+)?)', normalized)
+    if match_bid:
+        try:
+            bid_val = float(match_bid.group(1))
+            new_params["bid_minor"] = int(bid_val * 100)
+        except ValueError:
+            pass
+
     return new_params
 
 
@@ -154,12 +175,16 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         for child in res_children.scalars().all():
             await transition(s, child, OpState.REJECTED, actor=actor, detail={"reason": "Parent Op rejected"})
     elif decision == "modify":
-        # Apply tweak to parameters
+        old_params = row.params.copy() if row.params else {}
         new_params = apply_tweak(row.domain, row.action, row.params, reason or "")
         row.params = new_params
 
-        # Transition back to PREVIEWED
-        await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or "", "params_before": row.params})
+        # Update cost_amount_minor if budget was tweaked
+        if "budget_minor" in new_params and row.cost_amount_minor is not None:
+            row.cost_amount_minor = new_params["budget_minor"]
+
+        # Transition back to PREVIEWED with correct old params
+        await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or "", "params_before": old_params})
 
         # Resolve tier from latest snapshot
         from ..models import TrustSnapshot
@@ -238,7 +263,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
             await transition(s, parent, OpState.EXECUTING, actor="kernel")
 
     await transition(s, row, OpState.EXECUTING, actor="kernel")
-    result = adapter.execute(spec, idem_key=row.idem_key)
+    result = await adapter.execute(spec, idem_key=row.idem_key, session=s)
     trace(s, row.id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
 
     # Record any execution costs returned by the adapter
@@ -267,7 +292,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
         return
 
     await transition(s, row, OpState.VERIFYING, actor="kernel")
-    verdict = adapter.verify(spec)
+    verdict = await adapter.verify(spec)
     trace(s, row.id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
@@ -316,7 +341,7 @@ async def _compensate(s: AsyncSession, row: OpRow, adapter: Adapter, spec: OpSpe
     
     # Execute compensations if returned
     for comp in comp_ops:
-        res = adapter.execute(comp, idem_key=comp.idem_key or f"comp-{row.id}")
+        res = await adapter.execute(comp, idem_key=comp.idem_key or f"comp-{row.id}", session=s)
         trace(s, row.id, "compensation_call", {"action": comp.action, "ok": res.ok, **res.detail})
 
     await transition(s, row, OpState.ROLLED_BACK, actor="kernel")

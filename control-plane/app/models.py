@@ -160,6 +160,7 @@ class Connection(Base):
     provider: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(16), default="read")  # read|write
     secret_ref: Mapped[str] = mapped_column(String(255))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 

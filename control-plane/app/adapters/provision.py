@@ -9,6 +9,7 @@ import importlib.util
 import uuid
 import re
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money, CostSpec
 from app.kernel.loop import Adapter
@@ -85,6 +86,28 @@ class ProvisionAdapter(Adapter):
 
             return [parent_spec, child1, child2]
 
+        # Check if this is an OSS tool intent (e.g. "install n8n" or "deploy n8n")
+        if "n8n" in normalized:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.n8n.create",
+                    params={
+                        "recipe": "n8n",
+                        "version": "0.1.0",
+                        "project_id": "aos-shared-tier",
+                        "db_connection_name": "aos-shared-tier:asia-south1:aos-shared-postgres",
+                        "db_name": f"db-{brand_id}",
+                        "db_user": f"user-{brand_id}",
+                        "db_password": "mock-password"
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=300_000, currency="INR"),
+                )
+            ]
+
         # Normal single web host intent (backwards compatibility)
         domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
         return [OpSpec(
@@ -118,7 +141,7 @@ class ProvisionAdapter(Adapter):
 
             return PreviewArtifact(kind="terraform_plan", summary=out, detail={"stdout": out})
 
-    def execute(self, op: OpSpec, idem_key: str) -> ExecResult:
+    async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Runs terraform apply or destroy based on the action."""
         action_parts = op.action.split(".")
         verb = action_parts[-1] # create | destroy
@@ -162,7 +185,7 @@ class ProvisionAdapter(Adapter):
 
             return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
-    def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec) -> VerifyResult:
         """Executes verification checks defined in checks.py using execute outputs."""
         action_parts = op.action.split(".")
         verb = action_parts[-1]

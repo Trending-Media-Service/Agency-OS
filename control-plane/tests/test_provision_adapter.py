@@ -60,8 +60,8 @@ def test_provision_adapter_preview(adapter, create_op):
     assert "stdout" in preview_art.detail
 
 
-def test_provision_adapter_execute_create(adapter, create_op):
-    res = adapter.execute(create_op, "idem_123")
+async def test_provision_adapter_execute_create(adapter, create_op):
+    res = await adapter.execute(create_op, "idem_123")
     assert res.ok is True
     # Verify outputs are captured
     assert res.detail["outputs"]["service_url"] == "https://web-woktok.in"
@@ -69,25 +69,27 @@ def test_provision_adapter_execute_create(adapter, create_op):
     assert res.detail["outputs"]["cert_id"] == "cert-123"
 
 
-def test_provision_adapter_execute_destroy(adapter, destroy_op):
-    res = adapter.execute(destroy_op, "idem_456")
+async def test_provision_adapter_execute_destroy(adapter, destroy_op):
+    res = await adapter.execute(destroy_op, "idem_456")
     assert res.ok is True
     # Verify destroy ran (mock_terraform_cli returns Apply/Destroy completed)
     assert "Destroy complete!" in res.detail["stdout"]
 
 
-def test_provision_adapter_verify_success(adapter, create_op):
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_success(adapter, create_op):
     # Execute first to write outputs (mocked, but verify reads mock output)
     # Verify runs checks.py
-    res = adapter.verify(create_op)
+    res = await adapter.verify(create_op)
     assert res.ok is True
     assert res.checks["dns_resolves"] is True
     assert res.checks["cert_issued"] is True
     assert res.checks["http_200"] is True
 
 
-def test_provision_adapter_verify_destroy(adapter, destroy_op):
-    res = adapter.verify(destroy_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_destroy(adapter, destroy_op):
+    res = await adapter.verify(destroy_op)
     assert res.ok is True
     assert res.checks["destroyed"] is True
 
@@ -123,16 +125,62 @@ def test_provision_adapter_brand_baseline_preview(adapter, brand_baseline_op):
     assert "+ database db-b1" in preview_art.summary
 
 
-def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_op):
-    res = adapter.execute(brand_baseline_op, "idem_789")
+async def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_op):
+    res = await adapter.execute(brand_baseline_op, "idem_789")
     assert res.ok is True
     assert res.detail["outputs"]["project_id"] == "aos-shared-tier"
     assert "shared-sa@aos-shared-tier" in res.detail["outputs"]["service_account_email"]
 
 
-def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
-    res = adapter.verify(brand_baseline_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
+    res = await adapter.verify(brand_baseline_op)
     assert res.ok is True
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
+
+
+@pytest.fixture
+def n8n_op(adapter):
+    ops = adapter.plan("install n8n", "t1", "b1")
+    assert len(ops) == 1
+    return ops[0]
+
+
+def test_provision_adapter_n8n_plan(adapter):
+    ops = adapter.plan("install n8n", "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.action == "provision.n8n.create"
+    assert op.params["recipe"] == "n8n"
+    assert op.params["project_id"] == "aos-shared-tier"
+    assert op.params["db_name"] == "db-b1"
+
+
+def test_provision_adapter_n8n_preview(adapter, n8n_op):
+    preview_art = adapter.preview(n8n_op)
+    assert preview_art.kind == "terraform_plan"
+    assert "Plan: 2 to add" in preview_art.summary
+    assert "+ cloud_run n8n-service" in preview_art.summary
+
+
+async def test_provision_adapter_n8n_execute(adapter, n8n_op):
+    res = await adapter.execute(n8n_op, "idem_n8n_123")
+    assert res.ok is True
+    assert res.detail["outputs"]["service_url"] == "https://n8n-service-123.run.app"
+
+
+@pytest.mark.asyncio
+async def test_provision_adapter_n8n_verify(adapter, n8n_op):
+    res = await adapter.verify(n8n_op)
+    assert res.ok is True
+    assert res.checks["http_200"] is True
+
+
+def test_provision_adapter_n8n_compensate(adapter, n8n_op):
+    compensations = adapter.compensate(n8n_op)
+    assert len(compensations) == 1
+    comp = compensations[0]
+    assert comp.action == "provision.n8n.destroy"
+    assert comp.params["recipe"] == "n8n"
 

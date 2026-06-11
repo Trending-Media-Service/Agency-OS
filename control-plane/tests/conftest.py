@@ -1,12 +1,66 @@
 import datetime as dt
 import os
 import pytest
+import subprocess
+import tempfile
+import shutil
+import pathlib
 from unittest.mock import patch, MagicMock
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.models import Base
+from httpx import ASGITransport, AsyncClient
+import app.main as mainmod
+from app.database import get_db, get_worker_db, get_worker_session_maker
+
+original_run = subprocess.run
+
+@pytest.fixture
+def run_git():
+    def _run(args, **kwargs):
+        # Force safe.bareRepository=all for all git commands in tests
+        cmd = ["git", "-c", "safe.bareRepository=all"] + args
+        return subprocess.run(cmd, **kwargs)
+    return _run
+
+@pytest.fixture
+def temp_git_remote(run_git):
+    """Creates a temporary git repository to act as a remote."""
+    temp_dir = tempfile.mkdtemp()
+    remote_path = os.path.join(temp_dir, "remote.git")
+    
+    # Initialize bare repo
+    run_git(["init", "--bare", remote_path], check=True, capture_output=True)
+    run_git(["-C", remote_path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True, capture_output=True)
+    
+    # Clone it locally to commit initial file
+    clone_path = os.path.join(temp_dir, "clone")
+    run_git(["clone", remote_path, clone_path], check=True, capture_output=True)
+    
+    # Create initial file
+    src_dir = os.path.join(clone_path, "src")
+    os.makedirs(src_dir, exist_ok=True)
+    app_js = os.path.join(src_dir, "App.js")
+    with open(app_js, "w") as f:
+        f.write("function App() {\n  return <Hero color=\"red\" />;\n}\n")
+        
+    # Commit and push
+    run_git(["config", "user.email", "test@test.com"], cwd=clone_path, check=True)
+    run_git(["config", "user.name", "Test User"], cwd=clone_path, check=True)
+    run_git(["add", "-A"], cwd=clone_path, check=True)
+    run_git(["commit", "-m", "initial commit"], cwd=clone_path, check=True)
+    run_git(["branch", "-M", "main"], cwd=clone_path, check=True)
+    run_git(["push", "origin", "main"], cwd=clone_path, check=True)
+    
+    yield remote_path
+    
+    shutil.rmtree(temp_dir)
 
 @pytest.fixture(autouse=True)
 def mock_terraform_cli():
     import json
     def mock_run(cmd, cwd=None, **kwargs):
+        if cmd[0] != "terraform":
+            return original_run(cmd, cwd=cwd, **kwargs)
         subcomm = cmd[1]
         mock_res = MagicMock()
         mock_res.returncode = 0
@@ -14,59 +68,120 @@ def mock_terraform_cli():
 
         if subcomm == "init":
             mock_res.stdout = "Success! Terraform has been initialized."
-        elif subcomm == "plan":
+        elif subcomm in ("plan", "apply", "output"):
             tfvars_path = os.path.join(cwd, "terraform.tfvars.json") if cwd else None
             vars_dict = {}
             if tfvars_path and os.path.exists(tfvars_path):
                 with open(tfvars_path, "r") as f:
                     vars_dict = json.load(f)
 
+            # Determine recipe
             if "brand_id" in vars_dict:
-                brand = vars_dict.get("brand_id", "example-brand")
-                mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                recipe = "brand-baseline"
+            elif "domain" in vars_dict:
+                recipe = "web-host"
+            elif "db_connection_name" in vars_dict:
+                recipe = "n8n"
             else:
-                domain = vars_dict.get("domain", "example.in")
-                mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
-        elif subcomm == "apply":
-            tfvars_path = os.path.join(cwd, "terraform.tfvars.json") if cwd else None
-            vars_dict = {}
-            if tfvars_path and os.path.exists(tfvars_path):
-                with open(tfvars_path, "r") as f:
-                    vars_dict = json.load(f)
-            if vars_dict.get("domain") == "fail.in":
-                mock_res.returncode = 1
-                mock_res.stderr = "Terraform apply failed: simulated error"
-                mock_res.stdout = "Apply failed!"
-            else:
-                mock_res.stdout = "Apply complete! Resources: 5 added, 0 changed, 0 destroyed."
+                recipe = "unknown"
+
+            if subcomm == "plan":
+                if recipe == "brand-baseline":
+                    brand = vars_dict.get("brand_id", "example-brand")
+                    mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                elif recipe == "web-host":
+                    domain = vars_dict.get("domain", "example.in")
+                    mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
+                elif recipe == "n8n":
+                    mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
+                else:
+                    mock_res.stdout = "Plan: 0 to add"
+            elif subcomm == "apply":
+                if vars_dict.get("domain") == "fail.in" or vars_dict.get("project_id") == "fail-project":
+                    mock_res.returncode = 1
+                    mock_res.stderr = "Terraform apply failed: simulated error"
+                    mock_res.stdout = "Apply failed!"
+                else:
+                    mock_res.stdout = "Apply complete! Resources: added, 0 changed, 0 destroyed."
+            elif subcomm == "output":
+                if recipe == "brand-baseline":
+                    brand = vars_dict.get("brand_id", "example-brand")
+                    tier = vars_dict.get("tier", "shared")
+                    outputs = {
+                        "project_id": {"type": "string", "value": f"aos-brand-{brand}" if tier == "dedicated" else "aos-shared-tier"},
+                        "service_account_email": {"type": "string", "value": f"aos-deployer-{brand}@aos-brand-{brand}.iam.gserviceaccount.com" if tier == "dedicated" else "shared-sa@aos-shared-tier.iam.gserviceaccount.com"},
+                        "db_connection_name": {"type": "string", "value": "" if tier == "dedicated" else "aos-shared-tier:asia-south1:aos-shared-postgres"}
+                    }
+                elif recipe == "web-host":
+                    domain = vars_dict.get("domain", "example.in")
+                    outputs = {
+                        "service_url": {"type": "string", "value": f"https://web-{domain}"},
+                        "dns_zone": {"type": "string", "value": f"zone-{domain}"},
+                        "cert_id": {"type": "string", "value": "cert-123"}
+                    }
+                elif recipe == "n8n":
+                    outputs = {
+                        "service_url": {"type": "string", "value": "https://n8n-service-123.run.app"}
+                    }
+                else:
+                    outputs = {}
+                mock_res.stdout = json.dumps(outputs)
         elif subcomm == "destroy":
             mock_res.stdout = "Destroy complete! Resources: 0 added, 0 changed, 5 destroyed."
-        elif subcomm == "output":
-            tfvars_path = os.path.join(cwd, "terraform.tfvars.json") if cwd else None
-            vars_dict = {}
-            if tfvars_path and os.path.exists(tfvars_path):
-                with open(tfvars_path, "r") as f:
-                    vars_dict = json.load(f)
-
-            if "brand_id" in vars_dict:
-                brand = vars_dict.get("brand_id", "example-brand")
-                tier = vars_dict.get("tier", "shared")
-                outputs = {
-                    "project_id": {"type": "string", "value": f"aos-brand-{brand}" if tier == "dedicated" else "aos-shared-tier"},
-                    "service_account_email": {"type": "string", "value": f"aos-deployer-{brand}@aos-brand-{brand}.iam.gserviceaccount.com" if tier == "dedicated" else "shared-sa@aos-shared-tier.iam.gserviceaccount.com"},
-                    "db_connection_name": {"type": "string", "value": "" if tier == "dedicated" else "aos-shared-tier:asia-south1:aos-shared-postgres"}
-                }
-            else:
-                domain = vars_dict.get("domain", "example.in")
-                outputs = {
-                    "service_url": {"type": "string", "value": f"https://web-{domain}"},
-                    "dns_zone": {"type": "string", "value": f"zone-{domain}"},
-                    "cert_id": {"type": "string", "value": "cert-123"}
-                }
-            mock_res.stdout = json.dumps(outputs)
         else:
             mock_res.stdout = ""
         return mock_res
 
     with patch("app.adapters.provision.subprocess.run", side_effect=mock_run) as mock:
         yield mock
+
+
+@pytest.fixture()
+async def db_file():
+    temp_dir = tempfile.mkdtemp()
+    db_path = pathlib.Path(temp_dir) / "test.db"
+    yield f"sqlite+aiosqlite:///{db_path}"
+    shutil.rmtree(temp_dir)
+
+
+@pytest.fixture()
+async def db_engine(db_file):
+    engine = create_async_engine(db_file)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture()
+async def session(db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        yield s
+
+
+@pytest.fixture()
+async def client(db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    async def override_get_db():
+        async with async_session() as s:
+            await s.begin()
+            try:
+                yield s
+                if s.in_transaction():
+                    await s.commit()
+            except Exception:
+                if s.in_transaction():
+                    await s.rollback()
+                raise
+
+    async def override_get_worker_session_maker():
+        return async_session
+
+    mainmod.app.dependency_overrides[get_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_db] = override_get_db
+    mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
+    async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
+        yield ac
+    mainmod.app.dependency_overrides.clear()
