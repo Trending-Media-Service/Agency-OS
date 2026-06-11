@@ -81,16 +81,19 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
     for spec in adapter.plan(body.text, tid, body.brand_id):
         row = await loop.propose(s, spec, actor="chat")
         gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
-        cards.append({
-            "op_id": row.id, "action": row.action, "state": row.state,
-            "requirement": requirement,
-            "preview": row.preview_summary,
-            "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
-                              if row.cost_amount_minor else None),
-            "violations": [v.as_dict() for v in gate.violations],
-        })
-        if row.state == "AWAITING_APPROVAL":
-            background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+        
+        # Only return card / send notification for parent-less (top-level) Ops
+        if row.parent_op_id is None:
+            cards.append({
+                "op_id": row.id, "action": row.action, "state": row.state,
+                "requirement": requirement,
+                "preview": row.preview_summary,
+                "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                                  if row.cost_amount_minor else None),
+                "violations": [v.as_dict() for v in gate.violations],
+            })
+            if row.state == "AWAITING_APPROVAL":
+                background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
     await s.commit()
     return {"cards": cards}
 

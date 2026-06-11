@@ -53,7 +53,7 @@ ALLOWED_TRANSITIONS: dict[OpState, set[OpState]] = {
     OpState.BLOCKED: set(),
     OpState.REJECTED: set(),
     OpState.EXPIRED: set(),
-    OpState.DONE: set(),
+    OpState.DONE: {OpState.COMPENSATING},
     OpState.ROLLED_BACK: set(),
     OpState.PARTIAL: {OpState.COMPENSATING, OpState.EXECUTING},  # operator-driven resume
 }
@@ -104,6 +104,7 @@ class OpSpec:
     severity: Severity
     cost_estimate: Optional[Money] = None
     parent_op_id: Optional[str] = None
+    sequence_order: int = 0
     statutory: bool = False          # §2.2 statutory firewall flag
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
 

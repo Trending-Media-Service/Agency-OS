@@ -59,6 +59,7 @@ class OpRow(Base):
     cost_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     preview_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     parent_op_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sequence_order: Mapped[int] = mapped_column(Integer, default=0)
     idem_key: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)

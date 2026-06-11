@@ -28,7 +28,17 @@ def mock_terraform_cli():
                 domain = vars_dict.get("domain", "example.in")
                 mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
         elif subcomm == "apply":
-            mock_res.stdout = "Apply complete! Resources: 5 added, 0 changed, 0 destroyed."
+            tfvars_path = os.path.join(cwd, "terraform.tfvars.json") if cwd else None
+            vars_dict = {}
+            if tfvars_path and os.path.exists(tfvars_path):
+                with open(tfvars_path, "r") as f:
+                    vars_dict = json.load(f)
+            if vars_dict.get("domain") == "fail.in":
+                mock_res.returncode = 1
+                mock_res.stderr = "Terraform apply failed: simulated error"
+                mock_res.stdout = "Apply failed!"
+            else:
+                mock_res.stdout = "Apply complete! Resources: 5 added, 0 changed, 0 destroyed."
         elif subcomm == "destroy":
             mock_res.stdout = "Destroy complete! Resources: 0 added, 0 changed, 5 destroyed."
         elif subcomm == "output":
