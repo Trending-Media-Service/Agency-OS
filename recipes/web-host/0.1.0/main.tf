@@ -1,5 +1,6 @@
 variable "domain" { type = string }
 variable "region" { type = string; default = "asia-south1" }
+variable "memory" { type = string; default = "512Mi" }
 variable "image" { type = string; default = "gcr.io/cloudrun/hello" } # default to hello world
 variable "project_id" { type = string } # Target project ID from brand-baseline
 variable "tier" { type = string; default = "shared" }

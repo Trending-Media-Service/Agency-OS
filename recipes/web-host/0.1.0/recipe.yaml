@@ -6,6 +6,7 @@ tier: shared            # shared | dedicated
 inputs:
   domain: {type: string, required: true}
   region: {type: string, default: asia-south1}
+  memory: {type: string, default: 512Mi}
 outputs: [service_url, dns_zone, cert_id]
 cost_estimate_monthly: {amount_minor: 250000, currency: INR}
 severity: {impact: 2, reversibility: COMPENSATABLE}

@@ -203,7 +203,7 @@ class ProvisionAdapter(Adapter):
                     pass
             else:
                 # Fallback: run apply/destroy with auto-approve
-                if verb == "create":
+                if verb in ("create", "apply"):
                     code, out, err = self._run_terraform(op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
                 elif verb == "destroy":
                     code, out, err = self._run_terraform(op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)

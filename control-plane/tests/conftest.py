@@ -106,19 +106,23 @@ def mock_terraform_cli():
                     with open(os.path.join(cwd, plan_filename), "w") as f:
                         f.write("mock_tfplan_content")
 
-                if recipe == "brand-baseline":
-                    brand = vars_dict.get("brand_id", "example-brand")
-                    mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
-                elif recipe == "web-host":
-                    domain = vars_dict.get("domain", "example.in")
-                    mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
-                elif recipe == "n8n":
-                    mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
-                elif recipe == "postgres-db":
-                    db_name = vars_dict.get("db_name", "brand-db")
-                    mock_res.stdout = f"Plan: 1 to add, 0 to change, 0 to destroy.\n+ neon_database {db_name}\n"
+                if os.environ.get("SIMULATE_DRIFT") == "1":
+                    mock_res.returncode = 2
+                    mock_res.stdout = "Note: Objects have changed outside Terraform.\n~ resource \"cloud_dns\" \"zone\" {\n    TTL = 300 -> 3600 (drifted)\n  }\nPlan: 0 to add, 1 to change, 0 to destroy."
                 else:
-                    mock_res.stdout = "Plan: 0 to add"
+                    if recipe == "brand-baseline":
+                        brand = vars_dict.get("brand_id", "example-brand")
+                        mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                    elif recipe == "web-host":
+                        domain = vars_dict.get("domain", "example.in")
+                        mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
+                    elif recipe == "n8n":
+                        mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
+                    elif recipe == "postgres-db":
+                        db_name = vars_dict.get("db_name", "brand-db")
+                        mock_res.stdout = f"Plan: 1 to add, 0 to change, 0 to destroy.\n+ neon_database {db_name}\n"
+                    else:
+                        mock_res.stdout = "Plan: 0 to add"
             elif subcomm == "apply":
                 if vars_dict.get("domain") == "fail.in" or vars_dict.get("project_id") == "fail-project":
                     mock_res.returncode = 1

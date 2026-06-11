@@ -5,7 +5,10 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
 from app.kernel.loop import Adapter
-from app.models import Connection
+import uuid
+import tempfile
+import os
+from app.models import Connection, OpRow
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,32 @@ class ManageAdapter(Adapter):
                 )
             ]
             
+        elif "drift" in words:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.drift.detect",
+                    params={},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+            
+        elif "logs" in words or "diagnostics" in words:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.diagnostics.check",
+                    params={"log_source": "cloud-run-logs"},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+
         return []
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
@@ -79,6 +108,12 @@ class ManageAdapter(Adapter):
         elif op.action == "manage.backup.delete":
             summary = f"Will delete database backup file: {op.params.get('backup_file')}"
             return PreviewArtifact(kind="db_backup_delete_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.drift.detect":
+            summary = "Will check all deployed infrastructure recipes for configuration drift (manual console edits)."
+            return PreviewArtifact(kind="drift_detect_preview", summary=summary, detail={})
+        elif op.action == "manage.diagnostics.check":
+            summary = f"Will scan environment runtime logs from source: {op.params.get('log_source')}"
+            return PreviewArtifact(kind="diagnostics_check_preview", summary=summary, detail=op.params)
         return PreviewArtifact(kind="unknown_preview", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
@@ -139,6 +174,126 @@ class ManageAdapter(Adapter):
             backup_file = op.params.get("backup_file")
             logger.info(f"Simulating DB backup deletion for file {backup_file}")
             return ExecResult(ok=True, detail={"message": f"Backup file {backup_file} deleted"})
+            
+        elif op.action == "manage.drift.detect":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session is required for drift detection"})
+            
+            stmt = select(OpRow).where(
+                OpRow.tenant_id == op.tenant_id,
+                OpRow.brand_id == op.brand_id,
+                OpRow.domain == "provision",
+                OpRow.state == "DONE"
+            )
+            res = await session.execute(stmt)
+            provisioned_ops = res.scalars().all()
+            
+            real_ops = [o for o in provisioned_ops if "recipe" in o.params]
+            
+            drifted_ops = []
+            drift_details = {}
+            
+            from app.adapters.provision import ProvisionAdapter
+            prov_adapter = ProvisionAdapter()
+            
+            for p_op in real_ops:
+                p_spec = OpSpec(
+                    id=p_op.id,
+                    tenant_id=p_op.tenant_id,
+                    brand_id=p_op.brand_id,
+                    domain=p_op.domain,
+                    action=p_op.action,
+                    params=p_op.params,
+                    severity=Severity(impact=p_op.impact, reversibility=Reversibility(p_op.reversibility)),
+                )
+                
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    prov_adapter._prepare_dir(p_spec, temp_dir)
+                    code, out, err = prov_adapter._run_terraform(p_spec, ["init", "-input=false", "-no-color"], temp_dir)
+                    if code != 0:
+                        logger.error(f"Drift check init failed for Op {p_op.id}: {err}")
+                        continue
+                        
+                    code, out, err = prov_adapter._run_terraform(p_spec, ["plan", "-detailed-exitcode", "-no-color", "-input=false"], temp_dir)
+                    if code == 2:
+                        logger.warning(f"Drift detected for Op {p_op.id} / Recipe {p_op.params.get('recipe')}")
+                        drifted_ops.append(p_op)
+                        drift_details[p_op.id] = out
+                        
+            if drifted_ops:
+                reconcile_ops = []
+                for d_op in drifted_ops:
+                    recon_id = uuid.uuid4().hex
+                    recon_spec = OpRow(
+                        id=recon_id,
+                        tenant_id=op.tenant_id,
+                        brand_id=op.brand_id,
+                        domain="provision",
+                        action="provision.reconcile.apply",
+                        params={
+                            **d_op.params,
+                            "target_op_id": d_op.id,
+                            "drift_diff": drift_details[d_op.id]
+                        },
+                        state="PROPOSED",
+                        impact=2,
+                        reversibility="COMPENSATABLE",
+                        preview_summary=f"Reconciliation: Overwrite manual drift changes in '{d_op.params.get('recipe')}' with git configuration.",
+                        idem_key=f"idem_reconcile_{recon_id}",
+                    )
+                    session.add(recon_spec)
+                    reconcile_ops.append(recon_id)
+                    
+                return ExecResult(
+                    ok=True,
+                    detail={
+                        "message": f"Drift detected in {len(drifted_ops)} resources. Reconciliation Ops created.",
+                        "drifted_op_ids": [o.id for o in drifted_ops],
+                        "reconcile_op_ids": reconcile_ops,
+                        "drift_details": drift_details
+                    }
+                )
+                
+            return ExecResult(ok=True, detail={"message": "No drift detected. Active configuration is clean."})
+            
+        elif op.action == "manage.diagnostics.check":
+            log_stream = op.params.get("log_stream", "")
+            logger.info("Scanning diagnostic log stream for error patterns")
+            
+            remediations = []
+            if "FATAL: Out of Memory" in log_stream or "OOM" in log_stream:
+                logger.warning("OOM detected in logs. Proposing scale up Op.")
+                recon_id = uuid.uuid4().hex
+                recon_spec = OpRow(
+                    id=recon_id,
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain="provision",
+                    action="provision.scale_memory.apply",
+                    params={
+                        "memory": "1Gi",
+                        "recipe": "web-host",
+                        "version": "0.1.0"
+                    },
+                    state="PROPOSED",
+                    impact=2,
+                    reversibility="COMPENSATABLE",
+                    preview_summary="Remediation: Increase Cloud Run instance memory limit to 1Gi to resolve Out Of Memory failures.",
+                    idem_key=f"idem_scale_{recon_id}",
+                )
+                session.add(recon_spec)
+                remediations.append(recon_id)
+                
+            if remediations:
+                return ExecResult(
+                    ok=True,
+                    detail={
+                        "message": "Errors detected in logs. Remediation Ops created.",
+                        "remediation_op_ids": remediations
+                    }
+                )
+                
+            return ExecResult(ok=True, detail={"message": "Diagnostics clean. No error patterns detected."})
             
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
