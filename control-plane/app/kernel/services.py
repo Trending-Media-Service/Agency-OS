@@ -401,18 +401,19 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
 
 async def emit_cost(s: AsyncSession, *, tenant_id: str, op_id: Optional[str] = None,
                     kind: str, amount_minor: int, currency: str = "INR",
-                    meta: Optional[dict] = None) -> None:
+                    meta: Optional[dict] = None, actor: Optional[str] = None) -> None:
     from ..models import CostEntry
     entry = CostEntry(
         op_id=op_id,
         tenant_id=tenant_id,
+        actor=actor,
         kind=kind,
         amount_minor=amount_minor,
         currency=currency,
         meta=meta or {},
     )
     s.add(entry)
-    await audit_append(s, tenant_id=tenant_id, actor="kernel", action=f"cost.{kind}",
+    await audit_append(s, tenant_id=tenant_id, actor=actor or "kernel", action=f"cost.{kind}",
                        op_id=op_id, payload={"amount_minor": amount_minor, "currency": currency})
 
 

@@ -131,6 +131,7 @@ class CostEntry(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     op_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str | None] = mapped_column(String(120), nullable=True)
     kind: Mapped[str] = mapped_column(String(40))  # llm_tokens|api_call|gcp_resource
     amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(8), default="INR")

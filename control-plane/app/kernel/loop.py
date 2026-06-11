@@ -268,6 +268,13 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
 
     # Record any execution costs returned by the adapter
     if hasattr(result, "costs") and result.costs:
+        # Resolve the actor who approved this execution
+        target_op_id = row.parent_op_id if row.parent_op_id else row.id
+        stmt_app = select(Approval).where(Approval.op_id == target_op_id, Approval.decision == "approve").limit(1)
+        res_app = await s.execute(stmt_app)
+        approval = res_app.scalar_one_or_none()
+        approver = approval.actor if approval else "kernel"
+
         from app.kernel.services import emit_cost
         for cost in result.costs:
             await emit_cost(
@@ -277,7 +284,8 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
                 kind=cost.kind,
                 amount_minor=cost.amount_minor,
                 currency=cost.currency,
-                meta=cost.meta
+                meta=cost.meta,
+                actor=approver
             )
     if not result.ok:
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",

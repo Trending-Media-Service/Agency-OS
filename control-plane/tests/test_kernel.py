@@ -846,6 +846,20 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
         assert tenant_rollup.get("api_call") == 2150
         assert tenant_rollup.get("gcp_resource") == 1240
 
+        # Verify actor attribution on costs
+        from app.models import CostEntry
+        # Planning cost (llm_tokens) should be attributed to 'chat'
+        res_plan = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "llm_tokens"))
+        plan_cost = res_plan.scalar_one()
+        assert plan_cost.actor == "chat"
+
+        # Execution costs (api_call) should be attributed to 'chandan' (who approved the Op)
+        res_exec = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "api_call"))
+        exec_costs = res_exec.scalars().all()
+        assert len(exec_costs) == 2
+        for cost in exec_costs:
+            assert cost.actor == "chandan"
+
 
 @pytest.mark.asyncio
 async def test_observability_and_trace_propagation(client, db_engine, capsys):

@@ -114,7 +114,8 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
             kind="llm_tokens",
             amount_minor=57,
             currency="INR",
-            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120}
+            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120},
+            actor="chat"
         )
 
         gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
