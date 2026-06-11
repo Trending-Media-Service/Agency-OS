@@ -3,7 +3,8 @@ import logging
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import OpRow
+from sqlalchemy.exc import IntegrityError
+from app.models import OpRow, ProcessedWebhookMessage
 from app.kernel import loop
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,18 @@ async def handle_whatsapp_text_reply(text_body: str, context_wamid: str | None, 
         logger.info(f"Ignored non-command WhatsApp text reply: {text_body}")
 
 
+async def mark_message_processed(message_id: str, session_maker) -> bool:
+    """Attempts to record message_id. Returns True if successfully recorded (new), False if duplicate."""
+    async with session_maker() as s:
+        try:
+            async with s.begin():
+                s.add(ProcessedWebhookMessage(message_id=message_id))
+            return True
+        except IntegrityError:
+            logger.info(f"Duplicate WhatsApp message ID ignored: {message_id}")
+            return False
+
+
 async def process_whatsapp_webhook_payload(body: dict, session_maker):
     """Parses and processes Meta webhook POST payload."""
     try:
@@ -202,9 +215,18 @@ async def process_whatsapp_webhook_payload(body: dict, session_maker):
                 value = change.get("value", {})
                 messages = value.get("messages", [])
                 for msg in messages:
+                    msg_id = msg.get("id")
+                    if not msg_id:
+                        continue
+
                     sender = msg.get("from")
                     if WHATSAPP_APPROVER_PHONE and sender != WHATSAPP_APPROVER_PHONE:
                         logger.warning(f"Received message from unauthorized sender: {sender}")
+                        continue
+
+                    # Deduplicate webhook messages
+                    is_new = await mark_message_processed(msg_id, session_maker)
+                    if not is_new:
                         continue
 
                     msg_type = msg.get("type")

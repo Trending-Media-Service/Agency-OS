@@ -162,6 +162,10 @@ class Connection(Base):
     secret_ref: Mapped[str] = mapped_column(String(255))
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+class ProcessedWebhookMessage(Base):
+    __tablename__ = "processed_webhook_messages"
+    message_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    processed_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 
 Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)

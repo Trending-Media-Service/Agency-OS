@@ -441,6 +441,86 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     assert "woktok.co" in str(payload)
 
 
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_webhook_idempotency(mock_client_class, client, db_engine):
+    from app.models import Approval
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_idemp_test"}]}
+    mock_client.post.return_value = mock_response
+
+    # Propose Op
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please"})
+    op_id = r.json()["cards"][0]["op_id"]
+
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_idemp_123",
+                                    "type": "button",
+                                    "button": {
+                                        "payload": f"approve_{op_id}",
+                                        "text": "Approve"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    # 1. Send webhook first time
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify Op is transitioned to DONE
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "DONE"
+
+    # Verify exactly one Approval row was created
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
+
+    # 2. Send EXACT SAME webhook second time (duplicate msg_id)
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify still exactly one Approval row exists (did not process again)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
+
+
 # ------------------------------------------------------------- trust engine E2E
 
 async def test_e2e_trust_tier_2_auto_approves(client, db_engine):
