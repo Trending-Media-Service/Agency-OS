@@ -198,10 +198,34 @@ async def test_whatsapp_webhook_verification(client):
     assert r.status_code == 403
 
 
+async def post_signed_webhook(client, payload, secret="test_secret"):
+    import hmac
+    import hashlib
+    import json
+    payload_bytes = json.dumps(payload).encode('utf-8')
+    sig = hmac.new(secret.encode('utf-8'), payload_bytes, hashlib.sha256).hexdigest()
+    headers = {"X-Hub-Signature-256": f"sha256={sig}", "Content-Type": "application/json"}
+    return await client.post("/webhooks/whatsapp", content=payload_bytes, headers=headers)
+
+
+async def test_whatsapp_webhook_invalid_signature(client):
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    payload = {"object": "whatsapp_business_account", "entry": []}
+
+    # Missing signature
+    r = await client.post("/webhooks/whatsapp", json=payload)
+    assert r.status_code == 401
+
+    # Wrong signature
+    r = await client.post("/webhooks/whatsapp", json=payload, headers={"X-Hub-Signature-256": "sha256=wrong"})
+    assert r.status_code == 401
+
+
 @patch("app.whatsapp.httpx.AsyncClient")
 async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -269,7 +293,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     }
 
     # Call the webhook (POST)
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
     assert r.json()["status"] == "accepted"
 
@@ -282,6 +306,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
 async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -330,7 +355,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is transitioned to REJECTED
@@ -342,6 +367,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
 async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -389,7 +415,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is re-gated and transitioned back to AWAITING_APPROVAL with updated params

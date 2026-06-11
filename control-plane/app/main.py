@@ -41,6 +41,7 @@ loop.register(GrowAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 app.add_middleware(TraceMiddleware)
@@ -288,7 +289,9 @@ async def verify_whatsapp(
     hub_verify_token: str = Query(None, alias="hub.verify_token"),
 ):
     """Webhook verification endpoint for Meta WhatsApp Cloud API."""
-    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
+    import hmac
+    if (hub_mode == "subscribe" and hub_verify_token and WHATSAPP_VERIFY_TOKEN and
+            hmac.compare_digest(hub_verify_token, WHATSAPP_VERIFY_TOKEN)):
         return Response(content=hub_challenge, media_type="text/plain")
     raise HTTPException(403, "Verification failed")
 
@@ -297,9 +300,35 @@ async def verify_whatsapp(
 async def whatsapp_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
+    x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
     worker_session_maker = Depends(get_worker_session_maker)
 ):
     """Webhook event receiver endpoint for Meta WhatsApp Cloud API."""
+    raw_body = await request.body()
+
+    # Verify signature if secret is configured
+    if WHATSAPP_APP_SECRET:
+        if not x_hub_signature_256:
+            logger.warning("Rejecting WhatsApp webhook: Missing X-Hub-Signature-256 header")
+            raise HTTPException(401, "Signature missing")
+
+        import hmac
+        import hashlib
+
+        expected_sig = x_hub_signature_256
+        if expected_sig.startswith("sha256="):
+            expected_sig = expected_sig[7:]
+
+        computed_sig = hmac.new(
+            WHATSAPP_APP_SECRET.encode("utf-8"),
+            raw_body,
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(computed_sig, expected_sig):
+            logger.warning("Rejecting WhatsApp webhook: Signature mismatch")
+            raise HTTPException(401, "Invalid signature")
+
     body = await request.json()
     logger.info(f"WhatsApp webhook received: {body}")
 
