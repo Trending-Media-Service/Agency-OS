@@ -11,7 +11,7 @@ import datetime as dt
 import uuid
 
 from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
 
 
 def _id() -> str:
@@ -41,6 +41,28 @@ class Brand(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+    properties: Mapped[list[BrandProperty]] = relationship(
+        "BrandProperty", back_populates="brand", cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+
+
+class BrandProperty(Base):
+    __tablename__ = "brand_properties"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    connection_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="absent")
+    last_checked: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    findings: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+    brand: Mapped[Brand] = relationship("Brand", back_populates="properties")
 
 
 class OpRow(Base):
