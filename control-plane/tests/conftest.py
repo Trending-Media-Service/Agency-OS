@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+os.environ["AOS_ENV"] = "test"
 import pytest
 import subprocess
 import tempfile

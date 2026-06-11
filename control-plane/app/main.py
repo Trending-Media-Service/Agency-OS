@@ -178,7 +178,37 @@ async def verify_audit(s: AsyncSession = Depends(get_db)):
     return {"ok": ok, "first_bad_id": first_bad}
 
 
-@app.post("/tasks/drain-outbox")
+WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
+AOS_ENV = os.getenv("AOS_ENV", "development")
+
+async def verify_worker_auth(request: Request, authorization: str | None = Header(default=None)):
+    if AOS_ENV == "test" or not WORKER_SA:
+        return
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing or invalid Authorization header")
+
+    token = authorization[7:]
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as google_requests
+        google_request = google_requests.Request()
+        aud_base = f"{request.url.scheme}://{request.url.netloc}{request.url.path}"
+        info = id_token.verify_oauth2_token(token, google_request, audience=aud_base)
+
+        if info.get("iss") not in ["accounts.google.com", "https://accounts.google.com"]:
+            raise ValueError("Wrong issuer")
+
+        email = info.get("email")
+        if email != WORKER_SA:
+            raise ValueError(f"Unauthorized service account: {email}")
+
+    except Exception as e:
+        logger.error(f"OIDC token verification failed: {e}")
+        raise HTTPException(401, f"Unauthorized: {e}")
+
+
+@app.post("/tasks/drain-outbox", dependencies=[Depends(verify_worker_auth)])
 async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
     """Background task endpoint to drain the outbox.
 
@@ -188,7 +218,7 @@ async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok", "processed_items": processed}
 
 
-@app.post("/tasks/trust-snapshots")
+@app.post("/tasks/trust-snapshots", dependencies=[Depends(verify_worker_auth)])
 async def run_trust_snapshots(s: AsyncSession = Depends(get_worker_db)):
     """Nightly job to calculate and persist trust snapshots for all brands.
 
@@ -200,7 +230,7 @@ async def run_trust_snapshots(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok"}
 
 
-@app.post("/tasks/evaluate-trust")
+@app.post("/tasks/evaluate-trust", dependencies=[Depends(verify_worker_auth)])
 async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
     """Background task evaluating campaign ROI and adjusting trust scores.
 
