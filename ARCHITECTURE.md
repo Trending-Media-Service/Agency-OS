@@ -63,6 +63,7 @@ GCP Organization
 - **Shared tier:** scale-to-zero Cloud Run services + per-tenant databases on a shared Cloud SQL instance (or Supabase/Neon for tiny tenants), inside `aos-shared-tier`. Exists because a dedicated project has a ~$30–60/month cost floor before traffic. Brands graduate to dedicated at a defined revenue/usage threshold. **The two tiers are the hosting price list.**
 - **Control-plane data isolation:** every table carries `tenant_id`; Postgres row-level security enforced; every request passes tenant-assertion middleware. App-level checks are defense-in-depth on top of project isolation, not a substitute for it.
 - **Service accounts:** per-brand, minimally scoped, short-lived tokens where the platform supports them. No standing org-wide credentials.
+- **Verification Trust Boundary (`checks.py`):** The post-apply verification phase executes `checks.py` scripts packaged with Terraform recipes. Because these scripts execute arbitrary Python code and perform network queries (HTTP/DNS smoke tests) from the background worker context (outbox drain), they represent an external execution boundary. All recipe files, specifically `checks.py`, must be audited and treated as trusted core codebase components. Never load or run recipes from untrusted third parties.
 
 ---
 
