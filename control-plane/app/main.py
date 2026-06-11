@@ -80,6 +80,19 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
     cards = []
     for spec in adapter.plan(body.text, tid, body.brand_id):
         row = await loop.propose(s, spec, actor="chat")
+        
+        # Record LLM planning cost (simulated gemini tokens)
+        from app.kernel.services import emit_cost
+        await emit_cost(
+            s,
+            tenant_id=tid,
+            op_id=row.id,
+            kind="llm_tokens",
+            amount_minor=57,
+            currency="INR",
+            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120}
+        )
+
         gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
         
         # Only return card / send notification for parent-less (top-level) Ops

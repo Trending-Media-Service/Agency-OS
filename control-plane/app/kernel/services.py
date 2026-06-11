@@ -282,3 +282,68 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
                 ts=now
             )
             s.add(snapshot)
+
+
+# ---------------------------------------------------------------- cost ledger (§4.5)
+
+async def emit_cost(s: AsyncSession, *, tenant_id: str, op_id: Optional[str] = None,
+                    kind: str, amount_minor: int, currency: str = "INR",
+                    meta: Optional[dict] = None) -> None:
+    from ..models import CostEntry
+    entry = CostEntry(
+        op_id=op_id,
+        tenant_id=tenant_id,
+        kind=kind,
+        amount_minor=amount_minor,
+        currency=currency,
+        meta=meta or {},
+    )
+    s.add(entry)
+    await audit_append(s, tenant_id=tenant_id, actor="kernel", action=f"cost.{kind}",
+                       op_id=op_id, payload={"amount_minor": amount_minor, "currency": currency})
+
+
+async def get_tenant_cost_rollup(s: AsyncSession, tenant_id: str,
+                                 start_time: Optional[dt.datetime] = None,
+                                 end_time: Optional[dt.datetime] = None) -> dict[str, int]:
+    """Returns total costs grouped by kind for a tenant."""
+    from sqlalchemy import func
+    from ..models import CostEntry
+    stmt = (
+        select(CostEntry.kind, func.sum(CostEntry.amount_minor))
+        .where(CostEntry.tenant_id == tenant_id)
+    )
+    if start_time:
+        stmt = stmt.where(CostEntry.ts >= start_time)
+    if end_time:
+        stmt = stmt.where(CostEntry.ts <= end_time)
+    stmt = stmt.group_by(CostEntry.kind)
+    
+    res = await s.execute(stmt)
+    return {kind: total for kind, total in res.all()}
+
+
+async def get_op_cost_total(s: AsyncSession, op_id: str) -> int:
+    """Returns the total cost accumulated by a single Op."""
+    from sqlalchemy import func
+    from ..models import CostEntry
+    stmt = (
+        select(func.sum(CostEntry.amount_minor))
+        .where(CostEntry.op_id == op_id)
+    )
+    res = await s.execute(stmt)
+    return res.scalar() or 0
+
+
+async def ingest_gcp_billing(s: AsyncSession, *, tenant_id: str, resource_id: str,
+                             amount_minor: int, currency: str = "INR",
+                             labels: Optional[dict] = None) -> None:
+    """Ingests a GCP billing record, attributing it to the tenant."""
+    await emit_cost(
+        s,
+        tenant_id=tenant_id,
+        kind="gcp_resource",
+        amount_minor=amount_minor,
+        currency=currency,
+        meta={"resource_id": resource_id, "labels": labels or {}}
+    )

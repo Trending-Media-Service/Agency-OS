@@ -10,7 +10,7 @@ import uuid
 import re
 from typing import Optional
 
-from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
+from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money, CostSpec
 from app.kernel.loop import Adapter
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,13 @@ class ProvisionAdapter(Adapter):
                     except Exception as e:
                         logger.error(f"Failed to parse terraform outputs: {e}")
                         
-            return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs})
+            # Simulate execution costs to test cost ledger ingestion
+            costs = []
+            if verb == "create":
+                costs.append(CostSpec(kind="api_call", amount_minor=2000, currency="INR", meta={"service": "dns_provider", "action": "zone_register"}))
+                costs.append(CostSpec(kind="api_call", amount_minor=150, currency="INR", meta={"service": "gcp_iam", "action": "service_account_create"}))
+
+            return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
     def verify(self, op: OpSpec) -> VerifyResult:
         """Executes verification checks defined in checks.py using execute outputs."""

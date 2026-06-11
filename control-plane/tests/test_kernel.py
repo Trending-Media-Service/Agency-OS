@@ -706,3 +706,80 @@ async def test_e2e_brand_bootstrap_saga_rollback(client, db_engine):
         assert parent_row.state == "ROLLED_BACK"
 
 
+@pytest.mark.asyncio
+async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    
+    # 1. Create a trust snapshot to pass gate tier resolution
+    async with async_session() as s:
+        s.add(TrustSnapshot(tenant_id="t1", brand_id="b1", domain="provision", tier=1, score=75.0))
+        await s.commit()
+
+    H = {"X-Tenant-ID": "t1"}
+
+    # 2. Submit intent (which will log simulated gemini planning tokens cost)
+    resp = await client.post("/intents", headers=H, json={
+        "domain": "provision",
+        "brand_id": "b1",
+        "text": "host my site ableys.com"
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    op_id = data["cards"][0]["op_id"]
+
+    # Verify that planning cost (llm_tokens) was logged and attributed to the Op ID
+    async with async_session() as s:
+        from app.kernel.services import get_tenant_cost_rollup, get_op_cost_total
+        op_total = await get_op_cost_total(s, op_id)
+        assert op_total == 57  # planning cost: 57 paise
+
+        tenant_rollup = await get_tenant_cost_rollup(s, "t1")
+        assert tenant_rollup.get("llm_tokens") == 57
+
+    # 3. Approve the Op to execute it
+    resp_dec = await client.post(f"/ops/{op_id}/decision", headers=H, json={
+        "decision": "approve",
+        "actor": "chandan",
+        "role": "owner",
+        "surface": "whatsapp"
+    })
+    assert resp_dec.status_code == 200
+
+    # 4. Ingest GCP billing record for this tenant (simulating GCP cost ledger ingestion)
+    async with async_session() as s:
+        from app.kernel.services import ingest_gcp_billing
+        await ingest_gcp_billing(
+            s,
+            tenant_id="t1",
+            resource_id="run-service-web-ableys-com",
+            amount_minor=1240,  # 12.40 INR
+            currency="INR",
+            labels={"tenant_id": "t1", "op_id": op_id}
+        )
+        await s.commit()
+
+    # 5. Verify the updated tenant rollup and total costs
+    async with async_session() as s:
+        tenant_rollup = await get_tenant_cost_rollup(s, "t1")
+        assert tenant_rollup.get("llm_tokens") == 57
+        assert tenant_rollup.get("gcp_resource") == 1240
+
+
+
+    # 6. Verify that execution costs were recorded
+    async with async_session() as s:
+        # After execution, child Op should return:
+        # - zone_register: 2000 paise (20 INR)
+        # - service_account_create: 150 paise (1.50 INR)
+        # Total execution cost = 2150 paise
+        op_total = await get_op_cost_total(s, op_id)
+        # Total cost for op_id should be planning (57) + execution (2150) = 2207 paise
+        assert op_total == 2207
+
+        tenant_rollup = await get_tenant_cost_rollup(s, "t1")
+        assert tenant_rollup.get("llm_tokens") == 57
+        assert tenant_rollup.get("api_call") == 2150
+        assert tenant_rollup.get("gcp_resource") == 1240
+
+
+
