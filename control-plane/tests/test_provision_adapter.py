@@ -60,8 +60,9 @@ def test_provision_adapter_preview(adapter, create_op):
     assert "stdout" in preview_art.detail
 
 
-def test_provision_adapter_execute_create(adapter, create_op):
-    res = adapter.execute(create_op, "idem_123")
+@pytest.mark.asyncio
+async def test_provision_adapter_execute_create(adapter, create_op):
+    res = await adapter.execute(create_op, "idem_123")
     assert res.ok is True
     # Verify outputs are captured
     assert res.detail["outputs"]["service_url"] == "https://web-woktok.in"
@@ -69,25 +70,28 @@ def test_provision_adapter_execute_create(adapter, create_op):
     assert res.detail["outputs"]["cert_id"] == "cert-123"
 
 
-def test_provision_adapter_execute_destroy(adapter, destroy_op):
-    res = adapter.execute(destroy_op, "idem_456")
+@pytest.mark.asyncio
+async def test_provision_adapter_execute_destroy(adapter, destroy_op):
+    res = await adapter.execute(destroy_op, "idem_456")
     assert res.ok is True
     # Verify destroy ran (mock_terraform_cli returns Apply/Destroy completed)
     assert "Destroy complete!" in res.detail["stdout"]
 
 
-def test_provision_adapter_verify_success(adapter, create_op):
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_success(adapter, create_op):
     # Execute first to write outputs (mocked, but verify reads mock output)
     # Verify runs checks.py
-    res = adapter.verify(create_op)
+    res = await adapter.verify(create_op)
     assert res.ok is True
     assert res.checks["dns_resolves"] is True
     assert res.checks["cert_issued"] is True
     assert res.checks["http_200"] is True
 
 
-def test_provision_adapter_verify_destroy(adapter, destroy_op):
-    res = adapter.verify(destroy_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_destroy(adapter, destroy_op):
+    res = await adapter.verify(destroy_op)
     assert res.ok is True
     assert res.checks["destroyed"] is True
 
@@ -123,15 +127,17 @@ def test_provision_adapter_brand_baseline_preview(adapter, brand_baseline_op):
     assert "+ database db-b1" in preview_art.summary
 
 
-def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_op):
-    res = adapter.execute(brand_baseline_op, "idem_789")
+@pytest.mark.asyncio
+async def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_op):
+    res = await adapter.execute(brand_baseline_op, "idem_789")
     assert res.ok is True
     assert res.detail["outputs"]["project_id"] == "aos-shared-tier"
     assert "shared-sa@aos-shared-tier" in res.detail["outputs"]["service_account_email"]
 
 
-def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
-    res = adapter.verify(brand_baseline_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
+    res = await adapter.verify(brand_baseline_op)
     assert res.ok is True
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True

@@ -9,6 +9,7 @@ import importlib.util
 import uuid
 import re
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money, CostSpec
 from app.kernel.loop import Adapter
@@ -118,7 +119,7 @@ class ProvisionAdapter(Adapter):
 
             return PreviewArtifact(kind="terraform_plan", summary=out, detail={"stdout": out})
 
-    def execute(self, op: OpSpec, idem_key: str) -> ExecResult:
+    async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Runs terraform apply or destroy based on the action."""
         action_parts = op.action.split(".")
         verb = action_parts[-1] # create | destroy
@@ -162,7 +163,7 @@ class ProvisionAdapter(Adapter):
 
             return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
-    def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec) -> VerifyResult:
         """Executes verification checks defined in checks.py using execute outputs."""
         action_parts = op.action.split(".")
         verb = action_parts[-1]

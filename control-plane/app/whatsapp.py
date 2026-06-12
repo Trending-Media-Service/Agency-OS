@@ -3,7 +3,8 @@ import logging
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import OpRow
+from sqlalchemy.exc import IntegrityError
+from app.models import OpRow, ProcessedWebhookMessage
 from app.kernel import loop
 
 logger = logging.getLogger(__name__)
@@ -76,24 +77,34 @@ async def send_approval_card(op: OpRow) -> bool:
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code == 200:
-                logger.info(f"WhatsApp approval card sent for Op {op.id}")
-                return True
+                data = resp.json()
+                try:
+                    wamid = data["messages"][0]["id"]
+                    logger.info(f"WhatsApp approval card sent for Op {op.id}, wamid: {wamid}")
+                    return wamid
+                except (KeyError, IndexError) as e:
+                    logger.error(f"Failed to parse wamid from WhatsApp response: {e}")
+                    return None
             else:
                 logger.error(f"Failed to send WhatsApp card: {resp.status_code} - {resp.text}")
-                return False
+                return None
     except Exception as e:
         logger.error(f"Error calling WhatsApp API: {e}")
-        return False
+        return None
 
 
 async def send_whatsapp_card_task(op_id: str, session_maker):
-    """Background task to fetch OpRow and send WhatsApp card."""
+    """Background task to fetch OpRow, send WhatsApp card, and record wamid trace."""
+    from app.models import OpTrace
     async with session_maker() as s:
-        row = await s.get(OpRow, op_id)
-        if row:
-            await send_approval_card(row)
-        else:
-            logger.error(f"Op {op_id} not found in background task")
+        async with s.begin():
+            row = await s.get(OpRow, op_id)
+            if row:
+                wamid = await send_approval_card(row)
+                if wamid:
+                    s.add(OpTrace(op_id=row.id, kind="whatsapp_card_sent", detail={"wamid": wamid}))
+            else:
+                logger.error(f"Op {op_id} not found in background task")
 
 
 async def execute_decision(op_id: str, decision: str, session_maker, reason: str | None = None):
@@ -138,31 +149,60 @@ async def handle_whatsapp_button_payload(payload: str, session_maker):
         await execute_decision(op_id, "reject", session_maker)
 
 
-async def handle_whatsapp_text_reply(text_body: str, session_maker):
-    """Handles text reply (e.g. modify command)."""
-    # Expected format: "modify <reason>" or "modify: <reason>" (case-insensitive)
+async def handle_whatsapp_text_reply(text_body: str, context_wamid: str | None, session_maker):
+    """Handles text reply (e.g. modify command), resolving to target Op using context_wamid if available."""
+    from app.models import OpTrace
     normalized = text_body.strip().lower()
     if normalized.startswith("modify"):
         # Extract the reason/modification text
         reason = text_body[len("modify"):].strip(" :")
+        op_id = None
 
-        # Query for the latest Op in AWAITING_APPROVAL state to apply the modification to
         async with session_maker() as s:
-            result = await s.execute(
-                select(OpRow)
-                .where(OpRow.state == "AWAITING_APPROVAL")
-                .order_by(OpRow.created_at.desc())
-                .limit(1)
-            )
-            row = result.scalar_one_or_none()
-            if not row:
-                logger.warning("Received modify command but no Op is AWAITING_APPROVAL")
-                return
-            op_id = row.id
+            if context_wamid:
+                # Try to resolve Op via context_wamid (quoted message ID)
+                stmt = (
+                    select(OpTrace.op_id)
+                    .where(
+                        OpTrace.kind == "whatsapp_card_sent",
+                        OpTrace.detail["wamid"].as_string() == context_wamid
+                    )
+                    .limit(1)
+                )
+                res = await s.execute(stmt)
+                op_id = res.scalar_one_or_none()
+                if op_id:
+                    logger.info(f"Resolved Op {op_id} from WhatsApp context message ID {context_wamid}")
+
+            if not op_id:
+                logger.warning("No context message ID or could not resolve Op. Falling back to latest awaiting Op.")
+                result = await s.execute(
+                    select(OpRow)
+                    .where(OpRow.state == "AWAITING_APPROVAL")
+                    .order_by(OpRow.created_at.desc())
+                    .limit(1)
+                )
+                row = result.scalar_one_or_none()
+                if not row:
+                    logger.warning("Received modify command but no Op is AWAITING_APPROVAL")
+                    return
+                op_id = row.id
 
         await execute_decision(op_id, "modify", session_maker, reason=reason)
     else:
         logger.info(f"Ignored non-command WhatsApp text reply: {text_body}")
+
+
+async def mark_message_processed(message_id: str, session_maker) -> bool:
+    """Attempts to record message_id. Returns True if successfully recorded (new), False if duplicate."""
+    async with session_maker() as s:
+        try:
+            async with s.begin():
+                s.add(ProcessedWebhookMessage(message_id=message_id))
+            return True
+        except IntegrityError:
+            logger.info(f"Duplicate WhatsApp message ID ignored: {message_id}")
+            return False
 
 
 async def process_whatsapp_webhook_payload(body: dict, session_maker):
@@ -175,9 +215,18 @@ async def process_whatsapp_webhook_payload(body: dict, session_maker):
                 value = change.get("value", {})
                 messages = value.get("messages", [])
                 for msg in messages:
+                    msg_id = msg.get("id")
+                    if not msg_id:
+                        continue
+
                     sender = msg.get("from")
                     if WHATSAPP_APPROVER_PHONE and sender != WHATSAPP_APPROVER_PHONE:
                         logger.warning(f"Received message from unauthorized sender: {sender}")
+                        continue
+
+                    # Deduplicate webhook messages
+                    is_new = await mark_message_processed(msg_id, session_maker)
+                    if not is_new:
                         continue
 
                     msg_type = msg.get("type")
@@ -187,6 +236,8 @@ async def process_whatsapp_webhook_payload(body: dict, session_maker):
                         await handle_whatsapp_button_payload(payload, session_maker)
                     elif msg_type == "text":
                         text_body = msg.get("text", {}).get("body", "")
-                        await handle_whatsapp_text_reply(text_body, session_maker)
+                        context = msg.get("context", {})
+                        context_wamid = context.get("id")
+                        await handle_whatsapp_text_reply(text_body, context_wamid, session_maker)
     except Exception as e:
         logger.error(f"Error processing WhatsApp webhook payload: {e}", exc_info=True)
