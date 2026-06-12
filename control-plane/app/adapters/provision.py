@@ -311,12 +311,16 @@ terraform {
     def _get_init_args(self, op: OpSpec) -> list[str]:
         args = ["init", "-input=false", "-no-color"]
         state_bucket = os.getenv("AOS_STATE_BUCKET")
-        if state_bucket:
-            recipe = op.params.get("recipe", "web-host")
-            identifier = op.params.get("domain") or op.params.get("custom_domain", "default")
-            prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
-            args.append(f"-backend-config=bucket={state_bucket}")
-            args.append(f"-backend-config=prefix={prefix}")
+        if not state_bucket:
+            if os.getenv("AOS_ENV") != "test":
+                raise ValueError("AOS_STATE_BUCKET environment variable must be set in production to prevent state corruption.")
+            return args
+
+        recipe = op.params.get("recipe", "web-host")
+        identifier = op.params.get("domain") or op.params.get("custom_domain", "default")
+        prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
+        args.append(f"-backend-config=bucket={state_bucket}")
+        args.append(f"-backend-config=prefix={prefix}")
         return args
 
     def _run_terraform(self, op: OpSpec, args: list[str], cwd: str) -> tuple[int, str, str]:
