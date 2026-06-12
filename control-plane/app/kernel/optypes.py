@@ -44,7 +44,7 @@ ALLOWED_TRANSITIONS: dict[OpState, set[OpState]] = {
         OpState.EXPIRED,
         OpState.PREVIEWED,  # A2UI modification re-enters preview after re-plan
     },
-    OpState.APPROVED: {OpState.EXECUTING},
+    OpState.APPROVED: {OpState.EXECUTING, OpState.BLOCKED},
     OpState.EXECUTING: {OpState.VERIFYING, OpState.FAILED, OpState.PARTIAL},
     OpState.VERIFYING: {OpState.DONE, OpState.FAILED, OpState.PARTIAL},
     OpState.FAILED: {OpState.COMPENSATING},

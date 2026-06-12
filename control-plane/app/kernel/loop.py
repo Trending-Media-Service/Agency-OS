@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 import re
 from typing import Optional, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent
+from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent, CircuitBreakerRow
 from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
                       Reversibility, Severity, VerifyResult, assert_transition)
 from .services import (GateResult, TRUST_CONFIG, approval_requirement, audit_append,
@@ -99,6 +103,139 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
     else:
         await transition(s, row, OpState.AWAITING_APPROVAL, actor=actor, detail={"tier": tier})
     return gate, requirement
+
+
+async def check_cooldown(s: AsyncSession, row: OpRow, window_seconds: int = 86400) -> bool:
+    """Returns True if execution is allowed (no cooldown active), False if blocked by cooldown."""
+    try:
+        # Resolve target ID from params
+        target_id = None
+        if "campaign_id" in row.params:
+            target_id = row.params["campaign_id"]
+        elif "db_name" in row.params:
+            target_id = row.params["db_name"]
+        elif "recipe" in row.params:
+            target_id = row.params["recipe"]
+        else:
+            target_id = json.dumps(row.params, sort_keys=True)
+
+        since_time = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=window_seconds)
+
+        # Query recent similar DONE ops: same brand, same domain, same action, after since_time
+        stmt = select(OpRow).where(
+            OpRow.tenant_id == row.tenant_id,
+            OpRow.brand_id == row.brand_id,
+            OpRow.domain == row.domain,
+            OpRow.action == row.action,
+            OpRow.state == "DONE",
+            OpRow.created_at >= since_time,
+            OpRow.id != row.id
+        )
+        res = await s.execute(stmt)
+        recent_ops = res.scalars().all()
+
+        for op in recent_ops:
+            # Check if target matches
+            op_target_id = None
+            if "campaign_id" in op.params:
+                op_target_id = op.params["campaign_id"]
+            elif "db_name" in op.params:
+                op_target_id = op.params["db_name"]
+            elif "recipe" in op.params:
+                op_target_id = op.params["recipe"]
+            else:
+                op_target_id = json.dumps(op.params, sort_keys=True)
+
+            if op_target_id == target_id:
+                logger.warning(f"Action blocked by cooldown limit: domain={row.domain}, action={row.action}, target={target_id}")
+                return False
+        return True
+    except Exception as e:
+        logger.error(f"Failsafe: Error checking cooldown status, allowing execution. Error: {e}")
+        return True
+
+
+async def is_circuit_tripped(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, reset_timeout_seconds: int = 900) -> bool:
+    """Returns True if circuit breaker is currently OPEN, False if CLOSED."""
+    try:
+        stmt = select(CircuitBreakerRow).where(
+            CircuitBreakerRow.tenant_id == tenant_id,
+            CircuitBreakerRow.brand_id == brand_id,
+            CircuitBreakerRow.domain == domain
+        )
+        res = await s.execute(stmt)
+        breaker = res.scalar_one_or_none()
+        if not breaker:
+            return False
+
+        if breaker.state == "OPEN":
+            # Auto-reset check
+            if breaker.tripped_at:
+                now = dt.datetime.now(dt.timezone.utc)
+                tripped = breaker.tripped_at.replace(tzinfo=None)
+                current = now.replace(tzinfo=None)
+                if (current - tripped).total_seconds() >= reset_timeout_seconds:
+                    logger.info(f"Circuit breaker reset timeout reached. Testing HALF_OPEN for domain {domain}")
+                    breaker.state = "CLOSED"
+                    breaker.consecutive_failures = 0
+                    await s.commit()
+                    return False
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failsafe: Error checking circuit breaker state, allowing execution. Error: {e}")
+        return False
+
+
+async def record_failure(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, max_failures: int = 3):
+    """Increments failures count and opens the circuit if threshold is reached."""
+    try:
+        stmt = select(CircuitBreakerRow).where(
+            CircuitBreakerRow.tenant_id == tenant_id,
+            CircuitBreakerRow.brand_id == brand_id,
+            CircuitBreakerRow.domain == domain
+        )
+        res = await s.execute(stmt)
+        breaker = res.scalar_one_or_none()
+        if not breaker:
+            breaker = CircuitBreakerRow(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=domain,
+                consecutive_failures=0,
+                state="CLOSED"
+            )
+            s.add(breaker)
+
+        breaker.consecutive_failures += 1
+        breaker.last_failure_at = dt.datetime.now(dt.timezone.utc)
+
+        if breaker.consecutive_failures >= max_failures:
+            breaker.state = "OPEN"
+            breaker.tripped_at = dt.datetime.now(dt.timezone.utc)
+            logger.error(f"Circuit breaker TRIPPED (OPEN) for domain {domain} due to {breaker.consecutive_failures} consecutive failures.")
+
+        await s.commit()
+    except Exception as e:
+        logger.error(f"Failed to record failure in circuit breaker: {e}")
+
+
+async def record_success(s: AsyncSession, tenant_id: str, brand_id: str, domain: str):
+    """Resets the circuit breaker metrics to CLOSED state on success."""
+    try:
+        stmt = select(CircuitBreakerRow).where(
+            CircuitBreakerRow.tenant_id == tenant_id,
+            CircuitBreakerRow.brand_id == brand_id,
+            CircuitBreakerRow.domain == domain
+        )
+        res = await s.execute(stmt)
+        breaker = res.scalar_one_or_none()
+        if breaker:
+            breaker.consecutive_failures = 0
+            breaker.state = "CLOSED"
+            await s.commit()
+    except Exception as e:
+        logger.error(f"Failed to record success in circuit breaker: {e}")
 
 
 def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, kind: str, reason: Optional[str] = None):
@@ -232,12 +369,38 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
         token = trace_context.set(item.trace_id)
         try:
             row = await s.get(OpRow, item.op_id)
+
+            # 1. Cooldown Check
+            is_cooldown_ok = await check_cooldown(s, row)
+            if not is_cooldown_ok:
+                item.status = "DEAD"
+                await transition(s, row, OpState.BLOCKED, actor="cooldown",
+                                 detail={"error": "Operation cooldown active. A similar action was recently completed."})
+                processed += 1
+                continue
+
+            # 2. Circuit Breaker Check
+            is_tripped = await is_circuit_tripped(s, row.tenant_id, row.brand_id, row.domain)
+            if is_tripped:
+                item.status = "DEAD"
+                await transition(s, row, OpState.BLOCKED, actor="circuit_breaker",
+                                 detail={"error": f"Adapter execution BLOCKED. Circuit breaker is OPEN for domain {row.domain}."})
+                processed += 1
+                continue
+
             item.status = "IN_FLIGHT"
             item.attempts += 1
             await _execute_and_verify(s, row)
             item.status = "DONE"
+
+            # Reset Circuit Breaker failures on success
+            await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
             trace(s, row.id, "retry", {"attempt": item.attempts, "error": str(exc)})
+            
+            # Record failure in Circuit Breaker
+            await record_failure(s, row.tenant_id, row.brand_id, row.domain)
+
             if item.attempts >= 5:
                 item.status = "DEAD"
                 if OpState(row.state) in (OpState.EXECUTING, OpState.VERIFYING):

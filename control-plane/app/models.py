@@ -228,6 +228,17 @@ class Order(Base):
 Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)
 
 
+class CircuitBreakerRow(Base):
+    __tablename__ = "circuit_breakers"
+    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    brand_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    domain: Mapped[str] = mapped_column(String(32), primary_key=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(16), default="CLOSED")  # CLOSED|OPEN
+    tripped_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    last_failure_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+
+
 def make_engine(url: str = "sqlite:///./agencyos.db"):
     if url.startswith("sqlite"):
         from sqlalchemy.pool import StaticPool
