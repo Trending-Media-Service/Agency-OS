@@ -163,7 +163,7 @@ class ProvisionAdapter(Adapter):
 
             return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
-    def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec) -> VerifyResult:
         """Executes verification checks defined in checks.py using execute outputs."""
         action_parts = op.action.split(".")
         verb = action_parts[-1]

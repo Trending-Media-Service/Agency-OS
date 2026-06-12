@@ -78,18 +78,20 @@ async def test_provision_adapter_execute_destroy(adapter, destroy_op):
     assert "Destroy complete!" in res.detail["stdout"]
 
 
-def test_provision_adapter_verify_success(adapter, create_op):
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_success(adapter, create_op):
     # Execute first to write outputs (mocked, but verify reads mock output)
     # Verify runs checks.py
-    res = adapter.verify(create_op)
+    res = await adapter.verify(create_op)
     assert res.ok is True
     assert res.checks["dns_resolves"] is True
     assert res.checks["cert_issued"] is True
     assert res.checks["http_200"] is True
 
 
-def test_provision_adapter_verify_destroy(adapter, destroy_op):
-    res = adapter.verify(destroy_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_verify_destroy(adapter, destroy_op):
+    res = await adapter.verify(destroy_op)
     assert res.ok is True
     assert res.checks["destroyed"] is True
 
@@ -133,8 +135,9 @@ async def test_provision_adapter_brand_baseline_execute(adapter, brand_baseline_
     assert "shared-sa@aos-shared-tier" in res.detail["outputs"]["service_account_email"]
 
 
-def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
-    res = adapter.verify(brand_baseline_op)
+@pytest.mark.asyncio
+async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_op):
+    res = await adapter.verify(brand_baseline_op)
     assert res.ok is True
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
