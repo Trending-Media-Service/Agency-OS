@@ -275,13 +275,13 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
         spend_amount = spend_minor / 100.0
 
         # Query database orders to calculate total revenue attributed
-        stmt_rev = select(func.sum(Order.amount)).where(
+        stmt_rev = select(func.sum(Order.amount_minor)).where(
             Order.tenant_id == tenant_id,
             Order.brand_id == brand_id,
             Order.attributed_campaign_id == campaign_id
         )
         res_rev = await s.execute(stmt_rev)
-        total_revenue = res_rev.scalar() or 0.0
+        total_revenue = (res_rev.scalar() or 0) / 100.0
         
         # Calculate real ROAS
         roas = total_revenue / spend_amount if spend_amount > 0 else 0.0

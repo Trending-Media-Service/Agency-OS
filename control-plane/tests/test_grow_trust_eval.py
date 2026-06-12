@@ -37,7 +37,7 @@ async def test_trust_evaluation_success_roi(client, session):
         idem_key="idem_grow_1"
     )
     session.add(op)
-    session.add(Order(tenant_id=tid, brand_id=bid, amount=12000.0, attributed_campaign_id=campaign_id))
+    session.add(Order(tenant_id=tid, brand_id=bid, amount_minor=1200000, attributed_campaign_id=campaign_id))
     await session.commit()
 
     # 4. Trigger trust evaluation task
@@ -93,7 +93,7 @@ async def test_trust_evaluation_poor_roi(client, session):
         idem_key="idem_grow_2"
     )
     session.add(op)
-    session.add(Order(tenant_id=tid, brand_id=bid, amount=4000.0, attributed_campaign_id=campaign_id))
+    session.add(Order(tenant_id=tid, brand_id=bid, amount_minor=400000, attributed_campaign_id=campaign_id))
     await session.commit()
 
     # 4. Trigger trust evaluation task
