@@ -66,8 +66,7 @@ async def test_provision_adapter_execute_create(adapter, create_op):
     assert res.ok is True
     # Verify outputs are captured
     assert res.detail["outputs"]["service_url"] == "https://web-woktok.in"
-    assert res.detail["outputs"]["dns_zone"] == "zone-woktok.in"
-    assert res.detail["outputs"]["cert_id"] == "cert-123"
+    assert "lb_ip" in res.detail["outputs"]
 
 
 @pytest.mark.asyncio
@@ -84,8 +83,6 @@ async def test_provision_adapter_verify_success(adapter, create_op):
     # Verify runs checks.py
     res = await adapter.verify(create_op)
     assert res.ok is True
-    assert res.checks["dns_resolves"] is True
-    assert res.checks["cert_issued"] is True
     assert res.checks["http_200"] is True
 
 

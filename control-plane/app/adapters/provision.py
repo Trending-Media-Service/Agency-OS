@@ -299,6 +299,8 @@ terraform {
         for key in inputs.keys():
             if key in op.params:
                 var_values[key] = op.params[key]
+            elif key == "custom_domain" and "domain" in op.params:
+                var_values["custom_domain"] = op.params["domain"]
                 
         vars_file = os.path.join(temp_dir, "terraform.tfvars.json")
         with open(vars_file, "w") as f:
