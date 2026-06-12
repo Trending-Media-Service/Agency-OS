@@ -32,22 +32,43 @@ async def calculate_campaign_poas(
     orders_q = await s.execute(select(Order).where(Order.tenant_id == tenant_id, Order.brand_id == brand_id))
     orders = orders_q.scalars().all()
 
-    order_lines_q = await s.execute(select(OrderLine).where(OrderLine.tenant_id == tenant_id))
+    order_lines_q = await s.execute(
+        select(OrderLine)
+        .join(Order, Order.id == OrderLine.order_id)
+        .where(OrderLine.tenant_id == tenant_id, Order.brand_id == brand_id)
+    )
     order_lines = order_lines_q.scalars().all()
 
-    refunds_q = await s.execute(select(Refund).where(Refund.tenant_id == tenant_id))
+    refunds_q = await s.execute(
+        select(Refund)
+        .join(OrderLine, OrderLine.id == Refund.order_line_id)
+        .join(Order, Order.id == OrderLine.order_id)
+        .where(Refund.tenant_id == tenant_id, Order.brand_id == brand_id)
+    )
     refunds = refunds_q.scalars().all()
 
-    fulfillment_q = await s.execute(select(FulfillmentCost).where(FulfillmentCost.tenant_id == tenant_id))
+    fulfillment_q = await s.execute(
+        select(FulfillmentCost)
+        .join(Order, Order.id == FulfillmentCost.order_id)
+        .where(FulfillmentCost.tenant_id == tenant_id, Order.brand_id == brand_id)
+    )
     fulfillment_costs = fulfillment_q.scalars().all()
 
     campaigns_q = await s.execute(select(Campaign).where(Campaign.tenant_id == tenant_id, Campaign.brand_id == brand_id))
     campaigns = campaigns_q.scalars().all()
 
-    spend_facts_q = await s.execute(select(SpendFact).where(SpendFact.tenant_id == tenant_id))
+    spend_facts_q = await s.execute(
+        select(SpendFact)
+        .join(Campaign, Campaign.id == SpendFact.campaign_id)
+        .where(SpendFact.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+    )
     spend_facts = spend_facts_q.scalars().all()
 
-    touchpoints_q = await s.execute(select(Touchpoint).where(Touchpoint.tenant_id == tenant_id))
+    touchpoints_q = await s.execute(
+        select(Touchpoint)
+        .join(Campaign, Campaign.id == Touchpoint.campaign_id)
+        .where(Touchpoint.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+    )
     touchpoints = touchpoints_q.scalars().all()
 
     # 2. Build refund mapping by order_line_id
@@ -102,19 +123,35 @@ async def calculate_campaign_poas(
         order_refund = 0
         estimated_cogs_flag = False
 
-        positive_lines = [l for l in lines if l["gross_revenue"] > 0]
-        sum_positive_gross_rev = sum(l["gross_revenue"] for l in positive_lines)
+        allocated_fulfillment_map = {}
+        if sum_positive_gross_rev > 0:
+            floored_allocations = []
+            leftover = total_fulfillment
+            for l in positive_lines:
+                val = (l["gross_revenue"] / sum_positive_gross_rev) * total_fulfillment
+                base = int(val)
+                rem = val - base
+                floored_allocations.append({
+                    "line_id": l["line_id"],
+                    "base": base,
+                    "rem": rem
+                })
+                leftover -= base
+            
+            floored_allocations.sort(key=lambda x: x["rem"], reverse=True)
+            for i in range(leftover):
+                floored_allocations[i]["base"] += 1
+            
+            allocated_fulfillment_map = {x["line_id"]: x["base"] for x in floored_allocations}
+        elif len(lines) > 0:
+            base = total_fulfillment // len(lines)
+            leftover = total_fulfillment % len(lines)
+            for idx, l in enumerate(lines):
+                allocated_fulfillment_map[l["line_id"]] = base + (1 if idx < leftover else 0)
 
         for line in lines:
             refunded = refund_map.get(line["line_id"], 0)
-            allocated_fulfillment = 0
-            if sum_positive_gross_rev > 0:
-                if line["gross_revenue"] > 0:
-                    allocated_fulfillment = int(
-                        (line["gross_revenue"] / sum_positive_gross_rev) * total_fulfillment
-                    )
-            elif len(lines) > 0:
-                allocated_fulfillment = int(total_fulfillment / len(lines))
+            allocated_fulfillment = allocated_fulfillment_map.get(line["line_id"], 0)
 
             line_contribution = line["gross_margin"] - refunded - allocated_fulfillment
             order_contribution += line_contribution
