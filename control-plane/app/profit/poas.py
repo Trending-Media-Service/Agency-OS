@@ -123,6 +123,9 @@ async def calculate_campaign_poas(
         order_refund = 0
         estimated_cogs_flag = False
 
+        positive_lines = [l for l in lines if l["gross_revenue"] > 0]
+        sum_positive_gross_rev = sum(l["gross_revenue"] for l in positive_lines)
+
         allocated_fulfillment_map = {}
         if sum_positive_gross_rev > 0:
             floored_allocations = []
