@@ -259,6 +259,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_approval"}]}
     mock_client.post.return_value = mock_response
 
     # 1. Propose Op (Submit intent)
@@ -338,6 +339,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_rejection"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
@@ -398,6 +400,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_modify"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
