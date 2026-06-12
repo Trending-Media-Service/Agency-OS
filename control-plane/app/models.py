@@ -10,8 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, Date, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
 
 
 def _id() -> str:
@@ -41,6 +41,51 @@ class Brand(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+    properties: Mapped[list[BrandProperty]] = relationship(
+        "BrandProperty", back_populates="brand", cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+
+    cadences: Mapped[list[Cadence]] = relationship(
+        "Cadence", back_populates="brand", cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+
+
+class BrandProperty(Base):
+    __tablename__ = "brand_properties"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    connection_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="absent")
+    last_checked: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    findings: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+    brand: Mapped[Brand] = relationship("Brand", back_populates="properties")
+
+
+class Cadence(Base):
+    __tablename__ = "cadences"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(120))
+    schedule: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="on_track")
+    last_run: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    next_run: Mapped[dt.datetime] = mapped_column()
+    last_finding_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+    brand: Mapped[Brand] = relationship("Brand", back_populates="cadences")
 
 
 class OpRow(Base):
@@ -131,6 +176,7 @@ class CostEntry(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     op_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str | None] = mapped_column(String(120), nullable=True)
     kind: Mapped[str] = mapped_column(String(40))  # llm_tokens|api_call|gcp_resource
     amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(8), default="INR")
@@ -160,10 +206,101 @@ class Connection(Base):
     provider: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(16), default="read")  # read|write
     secret_ref: Mapped[str] = mapped_column(String(255))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+class ProcessedWebhookMessage(Base):
+    __tablename__ = "processed_webhook_messages"
+    message_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    processed_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(String(32), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+    attributed_campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    placed_at: Mapped[dt.datetime] = mapped_column(default=_now)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 
+class OrderLine(Base):
+    __tablename__ = "order_lines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    unit_price_minor: Mapped[int] = mapped_column(Integer)
+    line_discount_minor: Mapped[int] = mapped_column(Integer, default=0)
+    qty: Mapped[int] = mapped_column(Integer, default=1)
+    unit_cost_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Refund(Base):
+    __tablename__ = "refunds"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_line_id: Mapped[str] = mapped_column(ForeignKey("order_lines.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class FulfillmentCost(Base):
+    __tablename__ = "fulfillment_costs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    shipping_cost_minor: Mapped[int] = mapped_column(Integer, default=0)
+    marketplace_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    platform: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class SpendFact(Base):
+    __tablename__ = "spend_facts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    date: Mapped[dt.date] = mapped_column(Date)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Touchpoint(Base):
+    __tablename__ = "touchpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(16))  # click|impression
+    occurred_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
 Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)
+
+
+class CircuitBreakerRow(Base):
+    __tablename__ = "circuit_breakers"
+    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    brand_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    domain: Mapped[str] = mapped_column(String(32), primary_key=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(16), default="CLOSED")  # CLOSED|OPEN
+    tripped_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    last_failure_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
 
 
 def make_engine(url: str = "sqlite:///./agencyos.db"):
