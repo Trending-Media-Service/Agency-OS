@@ -76,7 +76,7 @@ async def test_grow_capi_and_budget_reallocation_saga(grow_adapter, session: Asy
         id="ord_g1",
         tenant_id="t1",
         brand_id="b1",
-        amount=4000.0,
+        amount_minor=400000,
         currency="INR",
         attributed_campaign_id="camp-b1-google-sales"
     )
@@ -88,7 +88,7 @@ async def test_grow_capi_and_budget_reallocation_saga(grow_adapter, session: Asy
         id="ord_m1",
         tenant_id="t1",
         brand_id="b1",
-        amount=12000.0,
+        amount_minor=1200000,
         currency="INR",
         attributed_campaign_id="camp-b1-meta-sales"
     )

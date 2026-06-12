@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, create_engine
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, Date, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
 
 
@@ -219,10 +219,74 @@ class Order(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
-    amount: Mapped[float] = mapped_column()
+    amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(8), default="INR")
     attributed_campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    placed_at: Mapped[dt.datetime] = mapped_column(default=_now)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class OrderLine(Base):
+    __tablename__ = "order_lines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    unit_price_minor: Mapped[int] = mapped_column(Integer)
+    line_discount_minor: Mapped[int] = mapped_column(Integer, default=0)
+    qty: Mapped[int] = mapped_column(Integer, default=1)
+    unit_cost_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Refund(Base):
+    __tablename__ = "refunds"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_line_id: Mapped[str] = mapped_column(ForeignKey("order_lines.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class FulfillmentCost(Base):
+    __tablename__ = "fulfillment_costs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    shipping_cost_minor: Mapped[int] = mapped_column(Integer, default=0)
+    marketplace_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    platform: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class SpendFact(Base):
+    __tablename__ = "spend_facts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    date: Mapped[dt.date] = mapped_column(Date)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class Touchpoint(Base):
+    __tablename__ = "touchpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(16))  # click|impression
+    occurred_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
 
 Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)
