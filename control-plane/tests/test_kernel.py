@@ -30,55 +30,7 @@ NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
 
 
-@pytest.fixture()
-async def db_file():
-    temp_dir = tempfile.mkdtemp()
-    db_path = pathlib.Path(temp_dir) / "test.db"
-    yield f"sqlite+aiosqlite:///{db_path}"
-    shutil.rmtree(temp_dir)
 
-
-@pytest.fixture()
-async def db_engine(db_file):
-    engine = create_async_engine(db_file)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield engine
-    await engine.dispose()
-
-
-@pytest.fixture()
-async def session(db_engine):
-    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
-    async with async_session() as s:
-        yield s
-
-
-@pytest.fixture()
-async def client(db_engine):
-    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
-
-    async def override_get_db():
-        async with async_session() as s:
-            await s.begin()
-            try:
-                yield s
-                if s.in_transaction():
-                    await s.commit()
-            except Exception:
-                if s.in_transaction():
-                    await s.rollback()
-                raise
-
-    def override_get_worker_session_maker():
-        return async_session
-
-    mainmod.app.dependency_overrides[get_db] = override_get_db
-    mainmod.app.dependency_overrides[get_worker_db] = override_get_db
-    mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
-    async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
-        yield ac
-    mainmod.app.dependency_overrides.clear()
 
 
 def _spec(**kw) -> OpSpec:
