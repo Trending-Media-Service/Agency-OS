@@ -108,7 +108,7 @@ class ProvisionAdapter(Adapter):
             self._prepare_dir(op, temp_dir)
 
             # Run init
-            code, out, err = self._run_terraform(op, ["init", "-input=false", "-no-color"], temp_dir)
+            code, out, err = self._run_terraform(op, self._get_init_args(op), temp_dir)
             if code != 0:
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Init failed: {err}", detail={"stderr": err})
 
@@ -128,7 +128,7 @@ class ProvisionAdapter(Adapter):
             self._prepare_dir(op, temp_dir)
             
             # Run init
-            code, out, err = self._run_terraform(op, ["init", "-input=false", "-no-color"], temp_dir)
+            code, out, err = self._run_terraform(op, self._get_init_args(op), temp_dir)
             if code != 0:
                 return ExecResult(ok=False, detail={"error": f"Init failed: {err}"})
                 
@@ -182,7 +182,7 @@ class ProvisionAdapter(Adapter):
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
             # Run init
-            code, out, err = self._run_terraform(op, ["init", "-input=false", "-no-color"], temp_dir)
+            code, out, err = self._run_terraform(op, self._get_init_args(op), temp_dir)
             if code != 0:
                 return VerifyResult(ok=False, checks={}, detail={"error": f"Init failed for verify: {err}"})
 
@@ -301,10 +301,23 @@ terraform {
                 var_values[key] = op.params[key]
             elif key == "custom_domain" and "domain" in op.params:
                 var_values["custom_domain"] = op.params["domain"]
+            elif key == "project_id" and "project_id" not in op.params:
+                var_values["project_id"] = f"aos-brand-{op.brand_id}"
                 
         vars_file = os.path.join(temp_dir, "terraform.tfvars.json")
         with open(vars_file, "w") as f:
             json.dump(var_values, f)
+
+    def _get_init_args(self, op: OpSpec) -> list[str]:
+        args = ["init", "-input=false", "-no-color"]
+        state_bucket = os.getenv("AOS_STATE_BUCKET")
+        if state_bucket:
+            recipe = op.params.get("recipe", "web-host")
+            identifier = op.params.get("domain") or op.params.get("custom_domain", "default")
+            prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
+            args.append(f"-backend-config=bucket={state_bucket}")
+            args.append(f"-backend-config=prefix={prefix}")
+        return args
 
     def _run_terraform(self, op: OpSpec, args: list[str], cwd: str) -> tuple[int, str, str]:
         """Runs terraform CLI and captures outputs."""

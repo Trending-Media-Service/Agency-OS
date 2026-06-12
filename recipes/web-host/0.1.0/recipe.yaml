@@ -1,4 +1,5 @@
 # Recipe contract (ARCHITECTURE.md §6.1). Terraform module lands via Slice 1 issue.
+# Note: Terraform state is prefixed per-brand (provision/{tenant_id}/{brand_id}/web-host/{domain}/state)
 name: web-host
 version: 0.1.0
 description: Cloud Run service + optional Global Load Balancer for custom domain
