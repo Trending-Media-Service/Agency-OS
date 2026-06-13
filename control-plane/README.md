@@ -21,6 +21,8 @@ The governance kernel from `/ARCHITECTURE.md`. Run:
 | Provision adapter | STUB (fake terraform plan; real recipe executor = issue) |
 | WhatsApp surface | REAL (Meta Cloud API client + webhook receiver; mock in tests) |
 | Trust wiring into /intents tier | NOT WIRED (tier passed explicitly until trust events flow) |
+| North-star approval-latency metric | REAL (`Approval.latency_ms` populated; `GET /metrics/approval-latency`) |
+| Policy ruleset parameterization (`RulesetParams`/`build_rules`) | REAL (gate thresholds tunable; defaults byte-identical) |
 
 SQLite by default (`AOS_DB_URL` overrides). Postgres + RLS is a tracked issue —
 every table already carries `tenant_id` so it bolts on without schema change.

@@ -15,7 +15,7 @@ from typing import Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .optypes import OpSpec, Reversibility
+from .optypes import OpSpec, OpState, Reversibility
 
 GENESIS = "0" * 64
 
@@ -173,46 +173,64 @@ def _statutory_check(op: OpSpec) -> Optional[Violation]:
 
 STATUTORY_MARKERS = (".tax.", ".gst.", ".vat.", ".statutory.")
 
-DEFAULT_RULES: list[Rule] = [
-    Rule(
-        id="statutory_firewall",
-        applies=lambda op: op.statutory or any(m in op.action for m in STATUTORY_MARKERS),
-        check=_statutory_check,
-        blocking=False,  # never auto-approve; does not block human-approved execution
-    ),
-    Rule(
-        id="provision_cost_ceiling",
-        applies=lambda op: op.domain == "provision" and op.cost_estimate is not None,
-        check=lambda op: Violation(
-            rule_id="provision_cost_ceiling",
-            limit="<= 10,000.00 INR/month",
-            attempted=str(op.cost_estimate),
-            delta=f"+{(op.cost_estimate.amount_minor - 1_000_000) / 100:.2f} INR over ceiling",
-            message="Estimated monthly cost exceeds the provisioning ceiling; raise the "
-                    "ceiling via a policy-change Op or reduce the plan.",
-        ) if op.cost_estimate.amount_minor > 1_000_000 else None,
-    ),
-    Rule(
-        id="grow_bid_cap",
-        applies=lambda op: op.action == "grow.bid.adjust",
-        check=lambda op: Violation(
-            rule_id="grow_bid_cap", limit="new_bid <= 1000.00 INR",
-            attempted=f"{op.params.get('new_bid_minor', 0) / 100:.2f} INR",
-            delta=f"+{(op.params.get('new_bid_minor', 0) - 100_000) / 100:.2f} INR over cap",
-            message="Bid exceeds the per-adjustment cap.",
-        ) if op.params.get("new_bid_minor", 0) > 100_000 else None,
-    ),
-    Rule(
-        id="grow_budget_transfer_cap",
-        applies=lambda op: op.action == "grow.budget.reallocate",
-        check=lambda op: Violation(
-            rule_id="grow_budget_transfer_cap", limit="amount <= 50,000.00 INR",
-            attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
-            delta=f"+{(op.params.get('amount_minor', 0) - 5_000_000) / 100:.2f} INR over cap",
-            message="Budget transfer exceeds the per-action cap.",
-        ) if op.params.get("amount_minor", 0) > 5_000_000 else None,
-    ),
-]
+@dataclass(frozen=True)
+class RulesetParams:
+    """Tunable gate thresholds in minor units (§4.3). Defaults reproduce the
+    historical hardcoded limits EXACTLY — see build_rules — so the existing
+    policy tests are the regression lock. Making the ruleset constructible from
+    stored params is the precursor to versioned, replayable policy (FLAGSHIP-2/3)."""
+    provision_cost_ceiling_minor: int = 1_000_000        # 10,000.00 INR/month
+    grow_bid_cap_minor: int = 100_000                    # 1000.00 INR per adjustment
+    grow_budget_transfer_cap_minor: int = 5_000_000      # 50,000.00 INR per action
+
+
+def build_rules(p: RulesetParams) -> list[Rule]:
+    """Construct the deterministic rule set from tunable params. Behavior with
+    RulesetParams() defaults is byte-identical to the historical DEFAULT_RULES."""
+    return [
+        Rule(
+            id="statutory_firewall",
+            applies=lambda op: op.statutory or any(m in op.action for m in STATUTORY_MARKERS),
+            check=_statutory_check,
+            blocking=False,  # never auto-approve; does not block human-approved execution
+        ),
+        Rule(
+            id="provision_cost_ceiling",
+            applies=lambda op: op.domain == "provision" and op.cost_estimate is not None,
+            check=lambda op: Violation(
+                rule_id="provision_cost_ceiling",
+                limit=f"<= {p.provision_cost_ceiling_minor / 100:,.2f} INR/month",
+                attempted=str(op.cost_estimate),
+                delta=f"+{(op.cost_estimate.amount_minor - p.provision_cost_ceiling_minor) / 100:.2f} INR over ceiling",
+                message="Estimated monthly cost exceeds the provisioning ceiling; raise the "
+                        "ceiling via a policy-change Op or reduce the plan.",
+            ) if op.cost_estimate.amount_minor > p.provision_cost_ceiling_minor else None,
+        ),
+        Rule(
+            id="grow_bid_cap",
+            applies=lambda op: op.action == "grow.bid.adjust",
+            check=lambda op: Violation(
+                rule_id="grow_bid_cap", limit=f"new_bid <= {p.grow_bid_cap_minor / 100:.2f} INR",
+                attempted=f"{op.params.get('new_bid_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('new_bid_minor', 0) - p.grow_bid_cap_minor) / 100:.2f} INR over cap",
+                message="Bid exceeds the per-adjustment cap.",
+            ) if op.params.get("new_bid_minor", 0) > p.grow_bid_cap_minor else None,
+        ),
+        Rule(
+            id="grow_budget_transfer_cap",
+            applies=lambda op: op.action == "grow.budget.reallocate",
+            check=lambda op: Violation(
+                rule_id="grow_budget_transfer_cap", limit=f"amount <= {p.grow_budget_transfer_cap_minor / 100:,.2f} INR",
+                attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
+                message="Budget transfer exceeds the per-action cap.",
+            ) if op.params.get("amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+        ),
+    ]
+
+
+# Active ruleset. With default params this is the historical DEFAULT_RULES verbatim.
+DEFAULT_RULES: list[Rule] = build_rules(RulesetParams())
 
 
 def evaluate_gates(op: OpSpec, rules: Optional[list[Rule]] = None) -> GateResult:
@@ -347,3 +365,39 @@ async def ingest_gcp_billing(s: AsyncSession, *, tenant_id: str, resource_id: st
         currency=currency,
         meta={"resource_id": resource_id, "labels": labels or {}}
     )
+
+
+# ---------------------------------------------------------------- metrics (north-star §1/§4.6)
+
+async def approval_latency_rollup(s: AsyncSession, tenant_id: str, *,
+                                  domain: Optional[str] = None,
+                                  since: Optional[dt.datetime] = None) -> dict:
+    """Median/p90 approval latency (ms) — the architecture's north-star metric (§1).
+    Read-only aggregate over Approval.latency_ms, tenant-scoped via the Op join.
+    Expired cards are reported as a latency failure, not silently dropped (§4.6)."""
+    from sqlalchemy import func
+    from ..models import Approval, OpRow
+    stmt = (select(Approval.latency_ms)
+            .join(OpRow, OpRow.id == Approval.op_id)
+            .where(OpRow.tenant_id == tenant_id, Approval.latency_ms.isnot(None)))
+    if domain:
+        stmt = stmt.where(OpRow.domain == domain)
+    if since:
+        stmt = stmt.where(Approval.ts >= since)
+    res = await s.execute(stmt)
+    vals = sorted(v for (v,) in res.all() if v is not None)
+
+    exp_stmt = select(func.count()).select_from(OpRow).where(
+        OpRow.tenant_id == tenant_id, OpRow.state == OpState.EXPIRED.value)
+    if domain:
+        exp_stmt = exp_stmt.where(OpRow.domain == domain)
+    expired = (await s.execute(exp_stmt)).scalar() or 0
+
+    def _pct(pct: float) -> Optional[int]:
+        if not vals:
+            return None
+        k = max(0, min(len(vals) - 1, int(round((pct / 100.0) * (len(vals) - 1)))))
+        return vals[k]
+
+    return {"count": len(vals), "median_ms": _pct(50), "p90_ms": _pct(90),
+            "expired_cards": expired}
