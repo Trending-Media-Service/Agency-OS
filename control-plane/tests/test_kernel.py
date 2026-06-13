@@ -33,6 +33,7 @@ NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
 
 
+
 def _spec(**kw) -> OpSpec:
     base = dict(tenant_id="t1", brand_id="b1", domain="provision",
                 action="provision.web_host.create",
@@ -197,10 +198,34 @@ async def test_whatsapp_webhook_verification(client):
     assert r.status_code == 403
 
 
+async def post_signed_webhook(client, payload, secret="test_secret"):
+    import hmac
+    import hashlib
+    import json
+    payload_bytes = json.dumps(payload).encode('utf-8')
+    sig = hmac.new(secret.encode('utf-8'), payload_bytes, hashlib.sha256).hexdigest()
+    headers = {"X-Hub-Signature-256": f"sha256={sig}", "Content-Type": "application/json"}
+    return await client.post("/webhooks/whatsapp", content=payload_bytes, headers=headers)
+
+
+async def test_whatsapp_webhook_invalid_signature(client):
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    payload = {"object": "whatsapp_business_account", "entry": []}
+
+    # Missing signature
+    r = await client.post("/webhooks/whatsapp", json=payload)
+    assert r.status_code == 401
+
+    # Wrong signature
+    r = await client.post("/webhooks/whatsapp", json=payload, headers={"X-Hub-Signature-256": "sha256=wrong"})
+    assert r.status_code == 401
+
+
 @patch("app.whatsapp.httpx.AsyncClient")
 async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -211,7 +236,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_approval"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_approval_test"}]}
     mock_client.post.return_value = mock_response
 
     # 1. Propose Op (Submit intent)
@@ -269,7 +294,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     }
 
     # Call the webhook (POST)
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
     assert r.json()["status"] == "accepted"
 
@@ -282,6 +307,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
 async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -291,7 +317,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_rejection"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_rejection_test"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
@@ -331,7 +357,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is transitioned to REJECTED
@@ -343,6 +369,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
 async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -352,7 +379,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_modify"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_modify_test"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
@@ -380,6 +407,9 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
                                     "type": "text",
                                     "text": {
                                         "body": "modify use woktok.co"
+                                    },
+                                    "context": {
+                                        "id": "mock_wamid_modify_test"
                                     }
                                 }
                             ]
@@ -391,7 +421,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is re-gated and transitioned back to AWAITING_APPROVAL with updated params
@@ -409,6 +439,86 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     payload = kwargs["json"]
     # Check that the second card references the modified domain
     assert "woktok.co" in str(payload)
+
+
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_webhook_idempotency(mock_client_class, client, db_engine):
+    from app.models import Approval
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_idemp_test"}]}
+    mock_client.post.return_value = mock_response
+
+    # Propose Op
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please"})
+    op_id = r.json()["cards"][0]["op_id"]
+
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_idemp_123",
+                                    "type": "button",
+                                    "button": {
+                                        "payload": f"approve_{op_id}",
+                                        "text": "Approve"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    # 1. Send webhook first time
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify Op is transitioned to DONE
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "DONE"
+
+    # Verify exactly one Approval row was created
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
+
+    # 2. Send EXACT SAME webhook second time (duplicate msg_id)
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify still exactly one Approval row exists (did not process again)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
 
 
 # ------------------------------------------------------------- trust engine E2E
@@ -717,7 +827,7 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
     async with async_session() as s:
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
 
 
 
@@ -728,13 +838,27 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
         # - service_account_create: 150 paise (1.50 INR)
         # Total execution cost = 2150 paise
         op_total = await get_op_cost_total(s, op_id)
-        # Total cost for op_id should be planning (57) + execution (2150) = 2207 paise
-        assert op_total == 2207
+        # Total cost for op_id should be planning (57) + execution (2150) + recipe (250000) = 252207 paise
+        assert op_total == 252207
 
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
         assert tenant_rollup.get("api_call") == 2150
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
+
+        # Verify actor attribution on costs
+        from app.models import CostEntry
+        # Planning cost (llm_tokens) should be attributed to 'chat'
+        res_plan = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "llm_tokens"))
+        plan_cost = res_plan.scalar_one()
+        assert plan_cost.actor == "chat"
+
+        # Execution costs (api_call) should be attributed to 'chandan' (who approved the Op)
+        res_exec = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "api_call"))
+        exec_costs = res_exec.scalars().all()
+        assert len(exec_costs) == 2
+        for cost in exec_costs:
+            assert cost.actor == "chandan"
 
 
 @pytest.mark.asyncio
