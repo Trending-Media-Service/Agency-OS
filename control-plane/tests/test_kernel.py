@@ -809,5 +809,43 @@ async def test_observability_and_trace_propagation(client, db_engine, capsys):
         assert outbox_item.trace_id == "tr-http-555"
 
 
+@pytest.mark.asyncio
+async def test_dashboard_endpoint(client, db_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.models import OpRow
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Pre-seed an Op awaiting approval
+        s.add(OpRow(
+            id="op_dash_1", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="AWAITING_APPROVAL", params={},
+            preview_summary="special site preview", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_dash_1"
+        ))
+        await s.commit()
+
+    # 1. Query dashboard with tenant_id query param
+    r = await client.get("/dashboard?tenant_id=t1")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    assert "special site preview" in r.text
+    assert "op_dash_1" in r.text
+    assert "provision.web_host.create" in r.text
+
+    # 2. Query dashboard with X-Tenant-Id header
+    r_hdr = await client.get("/dashboard", headers={"X-Tenant-Id": "t1"})
+    assert r_hdr.status_code == 200
+    assert "special site preview" in r_hdr.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_401_missing_tenant(client):
+    r = await client.get("/dashboard")
+    assert r.status_code == 401
+    assert "X-Tenant-Id header or tenant_id query parameter required" in r.text
+
+
+
 
 
