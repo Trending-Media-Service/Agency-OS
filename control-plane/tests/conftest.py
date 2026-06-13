@@ -89,6 +89,8 @@ def mock_terraform_cli():
             # Determine recipe
             if "db_connection_name" in vars_dict:
                 recipe = "n8n"
+            elif "gtm_container_config" in vars_dict:
+                recipe = "sgtm-capi"
             elif "domain" in vars_dict or "custom_domain" in vars_dict:
                 recipe = "web-host"
             elif "project_id" in vars_dict:
@@ -120,6 +122,8 @@ def mock_terraform_cli():
                     elif recipe == "web-host":
                         domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
+                    elif recipe == "sgtm-capi":
+                        mock_res.stdout = "Plan: 5 to add, 0 to change, 0 to destroy.\n+ google_cloud_run_service sgtm\n+ google_secret_manager_secret capi_token\n+ google_secret_manager_secret capi_pixel"
                     elif recipe == "n8n":
                         mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
                     elif recipe == "postgres-db":
@@ -149,6 +153,11 @@ def mock_terraform_cli():
                     outputs = {
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
                         "lb_ip": {"type": "string", "value": "34.120.15.22"}
+                    }
+                elif recipe == "sgtm-capi":
+                    outputs = {
+                        "sgtm_url": {"type": "string", "value": "https://sgtm-container-123.run.app"},
+                        "dns_verified": {"type": "bool", "value": True}
                     }
                 elif recipe == "webapp-postgres":
                     outputs = {
