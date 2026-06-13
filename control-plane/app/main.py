@@ -13,6 +13,7 @@ from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
 from app.adapters.presence import PresenceAdapter
+from app.adapters.grow import GrowAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence
@@ -34,6 +35,7 @@ setup_logging(level=log_level, json_format=json_format)
 
 loop.register(ProvisionAdapter())
 loop.register(PresenceAdapter())
+loop.register(GrowAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
