@@ -280,9 +280,34 @@ def apply_tweak(domain: str, action: str, params: dict, tweak_text: str) -> dict
     return new_params
 
 
+async def _decision_latency_ms(s: AsyncSession, op_id: str) -> Optional[int]:
+    """Ms from card delivery (WhatsApp) — else the AWAITING_APPROVAL transition —
+    to the decision. The north-star clock (§1). Best-effort: None if no marker.
+    Read-only; does not affect the decision."""
+    res = await s.execute(select(OpTrace).where(OpTrace.op_id == op_id).order_by(OpTrace.id))
+    traces = res.scalars().all()
+    start = None
+    for t in traces:  # prefer the actual card-delivery time when present
+        if t.kind == "whatsapp_card_sent":
+            start = t.ts
+    if start is None:
+        for t in traces:
+            if t.kind == "transition" and (t.detail or {}).get("to") == OpState.AWAITING_APPROVAL.value:
+                start = t.ts
+                break
+    if start is None:
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    if start.tzinfo is None:  # sqlite stores naive; treat as UTC
+        start = start.replace(tzinfo=dt.timezone.utc)
+    return max(0, int((now - start).total_seconds() * 1000))
+
+
 async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role: str,
            surface: str, reason: Optional[str] = None,
            latency_ms: Optional[int] = None) -> None:
+    if latency_ms is None:  # populate the north-star metric (§1); never gates
+        latency_ms = await _decision_latency_ms(s, row.id)
     s.add(Approval(op_id=row.id, actor=actor, role=role, surface=surface,
                    decision=decision, reason=reason, latency_ms=latency_ms))
     if decision == "approve":

@@ -17,7 +17,7 @@ from app.adapters.grow import GrowAdapter
 from app.adapters.manage import ManageAdapter
 from app.adapters.build import BuildAdapter
 from .kernel import loop
-from .kernel.services import audit_verify
+from .kernel.services import audit_verify, approval_latency_rollup
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
 
 # Setup Sentry SDK if DSN is set
@@ -182,6 +182,17 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
 async def verify_audit(s: AsyncSession = Depends(get_db)):
     ok, first_bad = await audit_verify(s)
     return {"ok": ok, "first_bad_id": first_bad}
+
+
+@app.get("/metrics/approval-latency")
+async def approval_latency(domain: str | None = None, window_days: int | None = None,
+                           s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """North-star metric (§1): median/p90 approval latency, tenant-scoped. Read-only."""
+    import datetime as _dt
+    since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=window_days)
+             if window_days else None)
+    rollup = await approval_latency_rollup(s, tid, domain=domain, since=since)
+    return {"tenant_id": tid, "domain": domain, "window_days": window_days, **rollup}
 
 
 WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
