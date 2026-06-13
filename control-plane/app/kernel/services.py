@@ -325,6 +325,18 @@ DEFAULT_RULES: list[Rule] = [
         check=_secret_scan_check,
         blocking=True
     ),
+    Rule(
+        id="statutory_region_lock",
+        applies=lambda op: op.domain == "provision" and (op.statutory or "region" in op.params),
+        check=lambda op: Violation(
+            rule_id="statutory_region_lock",
+            limit="region == asia-south1",
+            attempted=op.params.get("region", "unknown"),
+            delta="Non-compliant region",
+            message="Statutory isolation rule: Resource must be deployed in asia-south1 (India) for data residency and GST compliance."
+        ) if op.params.get("region") not in ("asia-south1", None) else None,
+        blocking=False
+    ),
 ]
 
 

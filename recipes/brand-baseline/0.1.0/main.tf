@@ -29,7 +29,10 @@ resource "google_project_service" "services" {
     "run.googleapis.com",
     "dns.googleapis.com",
     "secretmanager.googleapis.com",
-    "billingbudgets.googleapis.com"
+    "billingbudgets.googleapis.com",
+    "sqladmin.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com"
   ]) : []
   project = google_project.brand_project[0].project_id
   service = each.key
@@ -41,6 +44,51 @@ resource "google_service_account" "dedicated_sa" {
   account_id   = "aos-deployer-${var.brand_id}"
   display_name = "AOS Deployer for Brand ${var.brand_id}"
   project      = google_project.brand_project[0].project_id
+}
+
+# IAM roles for the service account at the project level
+resource "google_project_iam_member" "dedicated_sa_roles" {
+  for_each = var.tier == "dedicated" ? toset([
+    "roles/run.admin",
+    "roles/cloudsql.client",
+    "roles/secretmanager.secretAccessor",
+    "roles/logging.logWriter",
+    "roles/storage.admin"
+  ]) : []
+  project = google_project.brand_project[0].project_id
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.dedicated_sa[0].email}"
+}
+
+# Budget guard
+resource "google_billing_budget" "budget_guard" {
+  count           = (var.tier == "dedicated" && var.billing_account != "") ? 1 : 0
+  billing_account = var.billing_account
+  display_name    = "brand-${var.brand_id}-tmg-guard"
+
+  budget_filter {
+    projects = ["projects/${google_project.brand_project[0].project_id}"]
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "INR"
+      units         = tostring(var.budget_amount)
+    }
+  }
+
+  threshold_rules {
+    threshold_percent = 0.5
+    spend_basis       = "CURRENT_SPEND"
+  }
+  threshold_rules {
+    threshold_percent = 0.9
+    spend_basis       = "CURRENT_SPEND"
+  }
+  threshold_rules {
+    threshold_percent = 1.0
+    spend_basis       = "CURRENT_SPEND"
+  }
 }
 
 # Shared database & user inside the central shared instance

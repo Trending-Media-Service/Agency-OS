@@ -42,6 +42,9 @@ class ProvisionAdapter(Adapter):
             parent_id = uuid.uuid4().hex
 
             # 1. Parent Saga wrapper Op
+            has_db = any(w in normalized for w in ["database", "postgres", "db"])
+            preview_summary = f"Saga: Onboard Brand '{brand_name}' with Database\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy multi-service app + Cloud SQL Postgres (webapp-postgres)" if has_db else f"Saga: Onboard Brand '{brand_name}'\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy Cloud Run web host ({domain_name})"
+
             parent_spec = OpSpec(
                 id=parent_id,
                 tenant_id=tenant_id,
@@ -52,7 +55,7 @@ class ProvisionAdapter(Adapter):
                     "brand_name": brand_name,
                     "domain": domain_name,
                     "recipe": "brand-bootstrap",
-                    "preview_summary": f"Saga: Onboard Brand '{brand_name}'\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy Cloud Run web host ({domain_name})"
+                    "preview_summary": preview_summary
                 },
                 severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
                 cost_estimate=Money(amount_minor=250_000, currency="INR"), # sum of children
@@ -71,18 +74,37 @@ class ProvisionAdapter(Adapter):
                 cost_estimate=Money(amount_minor=0, currency="INR"),
             )
 
-            # 3. Child 2: web-host recipe (Cloud Run deployment)
-            child2 = OpSpec(
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                domain=self.domain,
-                action="provision.web_host.create",
-                params={"domain": domain_name, "recipe": "web-host", "version": "0.1.0"},
-                severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
-                parent_op_id=parent_id,
-                sequence_order=2,
-                cost_estimate=Money(amount_minor=250_000, currency="INR"),
-            )
+            # 3. Child 2: web-host or webapp-postgres recipe
+            if has_db:
+                child2 = OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.webapp_postgres.create",
+                    params={
+                        "project_id": f"brand-{brand_name}-tmg",
+                        "brand_id": brand_id,
+                        "tenant_id": tenant_id,
+                        "recipe": "webapp-postgres",
+                        "version": "0.1.0"
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    parent_op_id=parent_id,
+                    sequence_order=2,
+                    cost_estimate=Money(amount_minor=250_000, currency="INR"),
+                )
+            else:
+                child2 = OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.web_host.create",
+                    params={"domain": domain_name, "recipe": "web-host", "version": "0.1.0"},
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    parent_op_id=parent_id,
+                    sequence_order=2,
+                    cost_estimate=Money(amount_minor=250_000, currency="INR"),
+                )
 
             return [parent_spec, child1, child2]
 

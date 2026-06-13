@@ -142,3 +142,52 @@ async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_o
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
 
+
+def test_provision_adapter_plan_bootstrap_with_database(adapter):
+    ops = adapter.plan("bootstrap brand woktok.co with postgres database", "t1", "b1")
+    assert len(ops) == 3
+    parent, child1, child2 = ops
+    assert parent.action == "provision.brand_bootstrap.create"
+    assert "webapp-postgres" in parent.params["preview_summary"]
+    assert child1.action == "provision.brand_baseline.create"
+    assert child2.action == "provision.webapp_postgres.create"
+    assert child2.params["recipe"] == "webapp-postgres"
+    assert child2.params["project_id"] == "brand-woktok.co-tmg"
+
+
+@pytest.mark.asyncio
+async def test_provision_adapter_webapp_postgres_execute_and_verify(adapter):
+    from unittest.mock import patch, MagicMock
+    op = OpSpec(
+        id="op_webapp_1",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="provision",
+        action="provision.webapp_postgres.create",
+        params={
+            "project_id": "brand-woktok.co-tmg",
+            "brand_id": "b1",
+            "tenant_id": "t1",
+            "recipe": "webapp-postgres",
+            "version": "0.1.0"
+        },
+        severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=250_000, currency="INR")
+    )
+    # Execute (simulate apply)
+    res = await adapter.execute(op, "idem_webapp_1")
+    assert res.ok is True
+    assert res.detail["outputs"]["frontend_url"] == "https://tanmatra-mock-url.run.app"
+    assert res.detail["outputs"]["db_connection_name"] == "aos-brand-b1:asia-south2:brand-b1-db"
+
+    # Verify (simulate check running checks.py)
+    with patch("urllib.request.urlopen") as mock_url:
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_url.return_value.__enter__.return_value = mock_resp
+
+        res_v = await adapter.verify(op)
+        assert res_v.ok is True
+        assert res_v.checks["http_200"] is True
+        assert res_v.checks["db_reachable"] is True
+

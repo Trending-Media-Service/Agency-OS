@@ -89,10 +89,12 @@ def mock_terraform_cli():
             # Determine recipe
             if "db_connection_name" in vars_dict:
                 recipe = "n8n"
+            elif "domain" in vars_dict or "custom_domain" in vars_dict:
+                recipe = "web-host"
+            elif "project_id" in vars_dict:
+                recipe = "webapp-postgres"
             elif "brand_id" in vars_dict:
                 recipe = "brand-baseline"
-            elif "domain" in vars_dict:
-                recipe = "web-host"
             elif "db_name" in vars_dict:
                 recipe = "postgres-db"
             else:
@@ -113,6 +115,8 @@ def mock_terraform_cli():
                     if recipe == "brand-baseline":
                         brand = vars_dict.get("brand_id", "example-brand")
                         mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                    elif recipe == "webapp-postgres":
+                        mock_res.stdout = "Plan: 8 to add, 0 to change, 0 to destroy.\n+ sql_instance postgres\n+ secret db_url\n+ artifact_registry repo"
                     elif recipe == "web-host":
                         domain = vars_dict.get("domain", "example.in")
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
@@ -145,6 +149,12 @@ def mock_terraform_cli():
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
                         "dns_zone": {"type": "string", "value": f"zone-{domain}"},
                         "cert_id": {"type": "string", "value": "cert-123"}
+                    }
+                elif recipe == "webapp-postgres":
+                    outputs = {
+                        "frontend_url": {"type": "string", "value": "https://tanmatra-mock-url.run.app"},
+                        "api_url": {"type": "string", "value": "https://wellness-foods-mock-url.run.app"},
+                        "db_connection_name": {"type": "string", "value": "aos-brand-b1:asia-south2:brand-b1-db"}
                     }
                 elif recipe == "n8n":
                     outputs = {
