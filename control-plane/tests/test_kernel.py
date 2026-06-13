@@ -809,5 +809,53 @@ async def test_observability_and_trace_propagation(client, db_engine, capsys):
         assert outbox_item.trace_id == "tr-http-555"
 
 
+@pytest.mark.asyncio
+async def test_recipe_promotion_endpoint(client):
+    import shutil
+    
+    # 1. Setup mock experimental recipe folder
+    RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
+    exp_path = os.path.join(RECIPES_ROOT, "experimental", "test-promo", "0.1.0")
+    prod_path = os.path.join(RECIPES_ROOT, "test-promo", "0.1.0")
+    
+    os.makedirs(exp_path, exist_ok=True)
+    with open(os.path.join(exp_path, "recipe.yaml"), "w") as f:
+        f.write("name: test-promo\nversion: 0.1.0")
+    with open(os.path.join(exp_path, "main.tf"), "w") as f:
+        f.write("output \"test\" { value = 1 }")
+        
+    try:
+        # 2. Execute promotion
+        H = {"X-Tenant-Id": "t1"}
+        r = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo"})
+        assert r.status_code == 200, f"Promo failed: {r.status_code} - {r.text}"
+        data = r.json()
+        assert data["status"] == "promoted"
+        assert data["recipe_name"] == "test-promo"
+        
+        # 3. Assert files copied
+        assert os.path.exists(os.path.join(prod_path, "recipe.yaml"))
+        assert os.path.exists(os.path.join(prod_path, "main.tf"))
+        
+        # 4. Assert 404 for non-existent recipe promotion
+        r_404 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "missing-recipe"})
+        assert r_404.status_code == 404
+        
+        # 5. Assert 400 for missing file promotion
+        exp_bad = os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad", "0.1.0")
+        os.makedirs(exp_bad, exist_ok=True)
+        with open(os.path.join(exp_bad, "recipe.yaml"), "w") as f:
+            f.write("bad recipe")
+        r_400 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo-bad"})
+        assert r_400.status_code == 400
+        
+    finally:
+        # Cleanup mock folders
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo"), ignore_errors=True)
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad"), ignore_errors=True)
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "test-promo"), ignore_errors=True)
+
+
+
 
 
