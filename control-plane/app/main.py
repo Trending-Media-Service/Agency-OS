@@ -169,6 +169,44 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
             "preview": row.preview_summary, "trace": traces}
 
 
+@app.get("/ops")
+async def list_ops(
+    state: str | None = None,
+    domain: str | None = None,
+    brand_id: str | None = None,
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    stmt = select(OpRow).where(OpRow.tenant_id == tid)
+    if state:
+        stmt = stmt.where(OpRow.state == state)
+    if domain:
+        stmt = stmt.where(OpRow.domain == domain)
+    if brand_id:
+        stmt = stmt.where(OpRow.brand_id == brand_id)
+        
+    stmt = stmt.order_by(OpRow.id.desc()).offset(offset).limit(limit)
+    res = await s.execute(stmt)
+    rows = res.scalars().all()
+    
+    return [
+        {
+            "op_id": row.id,
+            "tenant_id": row.tenant_id,
+            "brand_id": row.brand_id,
+            "domain": row.domain,
+            "action": row.action,
+            "state": row.state,
+            "preview": row.preview_summary,
+            "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                              if row.cost_amount_minor else None),
+        }
+        for row in rows
+    ]
+
+
 @app.get("/audit/verify")
 async def verify_audit(s: AsyncSession = Depends(get_db)):
     ok, first_bad = await audit_verify(s)

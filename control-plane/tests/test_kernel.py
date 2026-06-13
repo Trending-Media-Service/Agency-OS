@@ -809,5 +809,90 @@ async def test_observability_and_trace_propagation(client, db_engine, capsys):
         assert outbox_item.trace_id == "tr-http-555"
 
 
+@pytest.mark.asyncio
+async def test_ops_list_endpoint_and_filtering(client, db_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.models import OpRow
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Pre-seed Ops for tenant t1
+        s.add(OpRow(
+            id="op_t1_1", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="PENDING", params={},
+            preview_summary="preview 1", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_1"
+        ))
+        s.add(OpRow(
+            id="op_t1_2", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="APPROVED", params={},
+            preview_summary="preview 2", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_2"
+        ))
+        s.add(OpRow(
+            id="op_t1_3", tenant_id="t1", brand_id="b2", domain="dns",
+            action="dns.record.create", state="PENDING", params={},
+            preview_summary="preview 3", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_3"
+        ))
+        # Pre-seed Op for tenant t2 (should be hidden due to RLS/scoping)
+        s.add(OpRow(
+            id="op_t2_1", tenant_id="t2", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="PENDING", params={},
+            preview_summary="preview 4", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t2_1"
+        ))
+        await s.commit()
+
+    # 1. Query all ops for tenant t1
+    H1 = {"X-Tenant-Id": "t1"}
+    r = await client.get("/ops", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 3
+    # Ordered desc by ID
+    assert data[0]["op_id"] == "op_t1_3"
+    assert data[1]["op_id"] == "op_t1_2"
+    assert data[2]["op_id"] == "op_t1_1"
+
+    # 2. Test pagination (limit=2, offset=1)
+    r = await client.get("/ops?limit=2&offset=1", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["op_id"] == "op_t1_2"
+    assert data[1]["op_id"] == "op_t1_1"
+
+    # 3. Test filtering by state=APPROVED
+    r = await client.get("/ops?state=APPROVED", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["op_id"] == "op_t1_2"
+
+    # 4. Test filtering by domain=dns
+    r = await client.get("/ops?domain=dns", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["op_id"] == "op_t1_3"
+
+    # 5. Test filtering by brand_id=b1
+    r = await client.get("/ops?brand_id=b1", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["op_id"] == "op_t1_2"
+    assert data[1]["op_id"] == "op_t1_1"
+
+
+@pytest.mark.asyncio
+async def test_ops_list_endpoint_401_failure(client):
+    r = await client.get("/ops")
+    assert r.status_code == 401
+    assert "X-Tenant-ID header is missing" in r.text
+
+
+
 
 

@@ -39,7 +39,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
 
     if not tenant_id:
       return JSONResponse(
-          status_code=status.HTTP_400_BAD_REQUEST,
+          status_code=status.HTTP_401_UNAUTHORIZED,
           content={"detail": "X-Tenant-ID header is missing."},
       )
 
