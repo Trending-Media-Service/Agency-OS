@@ -400,7 +400,7 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
 
 
 async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
-    from ..models import Brand, TrustEvent, TrustSnapshot
+    from ..models import Brand, TrustEvent, TrustSnapshot, BrandProperty
     now = now or dt.datetime.now(dt.timezone.utc)
 
     # Get all brands
@@ -410,6 +410,18 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
     domains = ["provision", "build", "manage", "grow"]
 
     for brand in brands:
+        # Query BrandProperty feed health signals
+        stmt_prop = select(BrandProperty).where(
+            BrandProperty.tenant_id == brand.tenant_id,
+            BrandProperty.brand_id == brand.id,
+            BrandProperty.type == "merchant_feed"
+        )
+        q_prop = await s.execute(stmt_prop)
+        prop = q_prop.scalar_one_or_none()
+        gmc_mismatches = 0
+        if prop and isinstance(prop.findings, dict):
+            gmc_mismatches = prop.findings.get("disapproved_products", 0)
+
         for domain in domains:
             # Fetch events
             res_ev = await s.execute(
@@ -423,7 +435,12 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
             event_tuples = [(e.kind, e.ts) for e in events]
 
             # Default signals (can hook up to real integration metrics later)
-            signals = {"gtm_present": True, "pixel_present": True, "capi_dedup_rate": 0.9}
+            signals = {
+                "gtm_present": True,
+                "pixel_present": True,
+                "capi_dedup_rate": 0.9,
+                "gmc_critical_mismatches": gmc_mismatches
+            }
 
             score = trust_score(signals, event_tuples, now)
             tier = tier_for(score)
