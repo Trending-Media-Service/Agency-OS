@@ -129,6 +129,52 @@ def test_tier2_auto_approval_only_within_bounds():
 
     assert approval_requirement(ok_op, tier=0, gate=gate) == "BLOCKED"  # lockout
 
+
+def test_build_rules_parameterizes_thresholds():
+    """RulesetParams() reproduces the defaults (the 3 policy tests above are the
+    regression lock); raising a limit relaxes the gate. Precursor to policy what-if."""
+    from app.kernel.services import build_rules, RulesetParams
+    op = _spec(cost_estimate=Money(2_000_000))  # 20,000 > default 10,000 ceiling
+    assert evaluate_gates(op).blocked  # default ruleset still blocks
+    relaxed = build_rules(RulesetParams(provision_cost_ceiling_minor=2_500_000))
+    assert not evaluate_gates(op, rules=relaxed).blocked  # parameterized ceiling lets it pass
+
+
+async def test_decision_latency_is_measured(db_engine):
+    """North-star clock (§1): latency_ms populated from the AWAITING_APPROVAL marker."""
+    from app.models import Approval
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        row = await loop.propose(s, _spec(), actor="test")
+        row.state = "AWAITING_APPROVAL"
+        s.add(OpTrace(op_id=row.id, kind="transition", detail={"to": "AWAITING_APPROVAL"},
+                      ts=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)))
+        await s.commit()
+    async with async_session() as s:
+        db_row = await s.get(OpRow, row.id)
+        await loop.decide(s, db_row, decision="approve", actor="c", role="owner", surface="web")
+        await s.commit()
+    async with async_session() as s:
+        appr = (await s.execute(select(Approval).where(Approval.op_id == row.id))).scalar_one()
+        assert appr.latency_ms is not None and appr.latency_ms >= 2000
+
+
+async def test_approval_latency_rollup_is_tenant_scoped(db_engine):
+    from app.models import Approval
+    from app.kernel.services import approval_latency_rollup
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        for tid, lat in [("t1", 1000), ("t1", 3000), ("t2", 9999)]:
+            r = await loop.propose(s, _spec(tenant_id=tid), actor="t")
+            s.add(Approval(op_id=r.id, actor="a", role="owner", surface="web",
+                           decision="approve", latency_ms=lat))
+        await s.commit()
+    async with async_session() as s:
+        roll = await approval_latency_rollup(s, "t1")
+        assert roll["count"] == 2                      # t2's approval excluded
+        assert roll["median_ms"] in (1000, 3000)
+        assert roll["expired_cards"] == 0
+
 # ------------------------------------------------------------ e2e heartbeat
 
 async def test_e2e_governed_loop(client, db_engine):

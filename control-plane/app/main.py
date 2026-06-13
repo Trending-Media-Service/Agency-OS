@@ -13,7 +13,7 @@ from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
 from .kernel import loop
-from .kernel.services import audit_verify
+from .kernel.services import approval_latency_rollup, audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
 
 # Setup Sentry SDK if DSN is set
@@ -173,6 +173,17 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
 async def verify_audit(s: AsyncSession = Depends(get_db)):
     ok, first_bad = await audit_verify(s)
     return {"ok": ok, "first_bad_id": first_bad}
+
+
+@app.get("/metrics/approval-latency")
+async def approval_latency(domain: str | None = None, window_days: int | None = None,
+                           s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """North-star metric (§1): median/p90 approval latency, tenant-scoped. Read-only."""
+    import datetime as _dt
+    since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=window_days)
+             if window_days else None)
+    rollup = await approval_latency_rollup(s, tid, domain=domain, since=since)
+    return {"tenant_id": tid, "domain": domain, "window_days": window_days, **rollup}
 
 
 @app.post("/tasks/drain-outbox")
