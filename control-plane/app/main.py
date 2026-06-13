@@ -67,6 +67,93 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_db)):
     return {"tenant_id": t.id, "brand_id": b.id}
 
 
+class ChatIn(BaseModel):
+    brand_id: str
+    text: str
+
+
+@app.post("/chat")
+async def chat(body: ChatIn, background_tasks: BackgroundTasks,
+               s: AsyncSession = Depends(get_db),
+               worker_session_maker = Depends(get_worker_session_maker),
+               tid: str = Depends(tenant_id)):
+    """Conversational intent routing endpoint. Translates text to structured adapter intents."""
+    normalized = body.text.lower()
+    
+    if "static" in normalized:
+        words = body.text.replace(",", " ").split()
+        domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
+        intent_text = f"static website hosting for {domain}"
+        domain_name = "provision"
+    elif any(w in normalized for w in ["email", "dns", "mx", "spf", "dkim"]):
+        words = body.text.replace(",", " ").split()
+        domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
+        intent_text = f"configure email dns routing for domain {domain}"
+        domain_name = "provision"
+    elif any(w in normalized for w in ["bootstrap", "onboard"]):
+        intent_text = body.text
+        domain_name = "provision"
+    else:
+        intent_text = body.text
+        domain_name = "provision"
+
+    adapter = loop.REGISTRY.get(domain_name)
+    if not adapter:
+        raise HTTPException(400, f"no adapter for domain {domain_name!r}")
+
+    # Derive tier from the latest TrustSnapshot for this brand and domain
+    stmt = (
+        select(TrustSnapshot.tier)
+        .where(
+            TrustSnapshot.tenant_id == tid,
+            TrustSnapshot.brand_id == body.brand_id,
+            TrustSnapshot.domain == domain_name
+        )
+        .order_by(TrustSnapshot.ts.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    tier = res.scalar_one_or_none()
+    if tier is None:
+        tier = 1
+
+    cards = []
+    for spec in adapter.plan(intent_text, tid, body.brand_id):
+        row = await loop.propose(s, spec, actor="chat")
+        
+        # Record LLM planning cost (simulated gemini tokens)
+        from app.kernel.services import emit_cost
+        await emit_cost(
+            s,
+            tenant_id=tid,
+            op_id=row.id,
+            kind="llm_tokens",
+            amount_minor=57,
+            currency="INR",
+            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120}
+        )
+
+        gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
+        
+        if row.parent_op_id is None:
+            cards.append({
+                "op_id": row.id, "action": row.action, "state": row.state,
+                "requirement": requirement,
+                "preview": row.preview_summary,
+                "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                                  if row.cost_amount_minor else None),
+                "violations": [v.as_dict() for v in gate.violations],
+            })
+            if row.state == "AWAITING_APPROVAL":
+                background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+    
+    await s.commit()
+    return {
+        "reply": f"Understood. I have initiated the planning for your request: '{intent_text}'. Please approve the generated proposal.",
+        "cards": cards
+    }
+
+
 class IntentIn(BaseModel):
     brand_id: str
     text: str
