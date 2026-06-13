@@ -66,8 +66,7 @@ async def test_provision_adapter_execute_create(adapter, create_op):
     assert res.ok is True
     # Verify outputs are captured
     assert res.detail["outputs"]["service_url"] == "https://web-woktok.in"
-    assert res.detail["outputs"]["dns_zone"] == "zone-woktok.in"
-    assert res.detail["outputs"]["cert_id"] == "cert-123"
+    assert res.detail["outputs"]["lb_ip"] == "34.120.15.22"
 
 
 @pytest.mark.asyncio
@@ -84,8 +83,6 @@ async def test_provision_adapter_verify_success(adapter, create_op):
     # Verify runs checks.py
     res = await adapter.verify(create_op)
     assert res.ok is True
-    assert res.checks["dns_resolves"] is True
-    assert res.checks["cert_issued"] is True
     assert res.checks["http_200"] is True
 
 
@@ -190,4 +187,13 @@ async def test_provision_adapter_webapp_postgres_execute_and_verify(adapter):
         assert res_v.ok is True
         assert res_v.checks["http_200"] is True
         assert res_v.checks["db_reachable"] is True
+
+
+def test_provision_adapter_state_bucket_fails_closed_in_prod(adapter, create_op):
+    from unittest.mock import patch
+    import os
+    with patch.dict(os.environ, {"AOS_ENV": "production", "AOS_STATE_BUCKET": ""}):
+        with pytest.raises(ValueError) as exc:
+            adapter.preview(create_op)
+        assert "AOS_STATE_BUCKET environment variable must be set in production" in str(exc.value)
 

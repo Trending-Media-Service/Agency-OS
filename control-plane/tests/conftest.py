@@ -118,7 +118,7 @@ def mock_terraform_cli():
                     elif recipe == "webapp-postgres":
                         mock_res.stdout = "Plan: 8 to add, 0 to change, 0 to destroy.\n+ sql_instance postgres\n+ secret db_url\n+ artifact_registry repo"
                     elif recipe == "web-host":
-                        domain = vars_dict.get("domain", "example.in")
+                        domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
                     elif recipe == "n8n":
                         mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
@@ -128,7 +128,8 @@ def mock_terraform_cli():
                     else:
                         mock_res.stdout = "Plan: 0 to add"
             elif subcomm == "apply":
-                if vars_dict.get("domain") == "fail.in" or vars_dict.get("project_id") == "fail-project":
+                domain = vars_dict.get("domain") or vars_dict.get("custom_domain")
+                if domain == "fail.in" or vars_dict.get("project_id") == "fail-project":
                     mock_res.returncode = 1
                     mock_res.stderr = "Terraform apply failed: simulated error"
                     mock_res.stdout = "Apply failed!"
@@ -144,11 +145,10 @@ def mock_terraform_cli():
                         "db_connection_name": {"type": "string", "value": "" if tier == "dedicated" else "aos-shared-tier:asia-south1:aos-shared-postgres"}
                     }
                 elif recipe == "web-host":
-                    domain = vars_dict.get("domain", "example.in")
+                    domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                     outputs = {
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
-                        "dns_zone": {"type": "string", "value": f"zone-{domain}"},
-                        "cert_id": {"type": "string", "value": "cert-123"}
+                        "lb_ip": {"type": "string", "value": "34.120.15.22"}
                     }
                 elif recipe == "webapp-postgres":
                     outputs = {
