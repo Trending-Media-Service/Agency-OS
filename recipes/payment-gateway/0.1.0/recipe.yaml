@@ -1,0 +1,15 @@
+name: payment-gateway
+version: 0.1.0
+description: Provisions Stripe or Razorpay webhook integrations, capturing events securely.
+inputs:
+  project_id: {type: string, required: true}
+  provider: {type: string, default: stripe} # or razorpay
+  webhook_url: {type: string, required: true}
+outputs: [webhook_id, webhook_secret_ref, status]
+cost_estimate_monthly: {amount_minor: 0, currency: INR}
+severity: {impact: 2, reversibility: REVERSIBLE}
+reversibility_map:
+  webhook: REVERSIBLE
+  secret: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [webhook_configured, secrets_configured]

@@ -91,6 +91,8 @@ def mock_terraform_cli():
                 recipe = "n8n"
             elif "gtm_container_config" in vars_dict:
                 recipe = "sgtm-capi"
+            elif "webhook_url" in vars_dict:
+                recipe = "payment-gateway"
             elif "domain" in vars_dict or "custom_domain" in vars_dict:
                 recipe = "web-host"
             elif "project_id" in vars_dict:
@@ -126,6 +128,8 @@ def mock_terraform_cli():
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
                     elif recipe == "sgtm-capi":
                         mock_res.stdout = "Plan: 5 to add, 0 to change, 0 to destroy.\n+ google_cloud_run_service sgtm\n+ google_secret_manager_secret capi_token\n+ google_secret_manager_secret capi_pixel"
+                    elif recipe == "payment-gateway":
+                        mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_secret_manager_secret webhook_secret\n+ random_id webhook_id"
                     elif recipe == "n8n":
                         mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
                     elif recipe == "postgres-db":
@@ -160,6 +164,13 @@ def mock_terraform_cli():
                     outputs = {
                         "sgtm_url": {"type": "string", "value": "https://sgtm-container-123.run.app"},
                         "dns_verified": {"type": "bool", "value": True}
+                    }
+                elif recipe == "payment-gateway":
+                    provider = vars_dict.get("provider", "stripe")
+                    outputs = {
+                        "webhook_id": {"type": "string", "value": "wh_stripe_12345"},
+                        "webhook_secret_ref": {"type": "string", "value": f"projects/123/secrets/payment-{provider}-webhook-signing-key"},
+                        "status": {"type": "string", "value": "active"}
                     }
                 elif recipe == "webapp-postgres":
                     outputs = {

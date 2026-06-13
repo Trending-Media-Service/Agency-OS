@@ -106,3 +106,33 @@ async def test_compliant_region_and_billing_ledger(prov_adapter, session: AsyncS
     rollups = await get_tenant_cost_rollup(session, "t2")
     assert rollups["gcp_resource"] == 250_000
     assert rollups["api_call"] == 2150 # 2000 + 150
+
+
+@pytest.mark.asyncio
+async def test_statutory_refund_gate():
+    # Op exceeding limit
+    op_bad = OpSpec(
+        tenant_id="t1", brand_id="b1", domain="payment",
+        action="payment.refund",
+        params={"amount_minor": 1_500_000, "reason": "item return"}, # 15k INR > 10k Limit
+        severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+        cost_estimate=Money(0)
+    )
+    gate_bad = evaluate_gates(op_bad)
+    assert len(gate_bad.violations) == 1
+    v = gate_bad.violations[0]
+    assert v.rule_id == "statutory_refund_gate"
+    assert "Refund exceeds statutory threshold" in v.message
+    assert gate_bad.blocked is True
+
+    # Op under limit
+    op_good = OpSpec(
+        tenant_id="t1", brand_id="b1", domain="payment",
+        action="payment.refund",
+        params={"amount_minor": 500_000, "reason": "item return"}, # 5k INR <= 10k Limit
+        severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+        cost_estimate=Money(0)
+    )
+    gate_good = evaluate_gates(op_good)
+    assert len(gate_good.violations) == 0
+    assert gate_good.blocked is False

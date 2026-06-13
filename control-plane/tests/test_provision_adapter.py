@@ -254,3 +254,33 @@ def test_provision_adapter_brand_baseline_dedicated_with_data_warehouse(adapter)
     assert "+ bigquery dataset moat_warehouse" in preview_art.summary
 
 
+@pytest.mark.asyncio
+async def test_provision_adapter_payment_gateway_lifecycle(adapter):
+    op = OpSpec(
+        id="op_pay_999", tenant_id="t1", brand_id="b1", domain="provision",
+        action="provision.payment_gateway.create",
+        params={
+            "project_id": "aos-brand-b1", "provider": "razorpay",
+            "webhook_url": "https://api.woktok.in/webhooks/razorpay",
+            "recipe": "payment-gateway", "version": "0.1.0"
+        },
+        severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+        cost_estimate=Money(0)
+    )
+    # 1. Preview
+    preview_art = adapter.preview(op)
+    assert preview_art.kind == "terraform_plan"
+    assert "+ google_secret_manager_secret webhook_secret" in preview_art.summary
+
+    # 2. Execute
+    res = await adapter.execute(op, "idem_pay_999")
+    assert res.ok is True
+    assert res.detail["outputs"]["webhook_id"] == "wh_stripe_12345"
+
+    # 3. Verify
+    ver = await adapter.verify(op)
+    assert ver.ok is True
+    assert ver.checks["webhook_configured"] is True
+    assert ver.checks["secrets_configured"] is True
+
+

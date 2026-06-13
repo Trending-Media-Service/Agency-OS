@@ -277,6 +277,7 @@ class RulesetParams:
     provision_cost_ceiling_minor: int = 1_000_000        # 10,000.00 INR/month
     grow_bid_cap_minor: int = 100_000                    # 1000.00 INR per adjustment
     grow_budget_transfer_cap_minor: int = 5_000_000      # 50,000.00 INR per action
+    statutory_refund_limit_minor: int = 1_000_000         # 10,000.00 INR per refund
 
 
 def build_rules(p: RulesetParams) -> list[Rule]:
@@ -320,6 +321,18 @@ def build_rules(p: RulesetParams) -> list[Rule]:
                 delta=f"+{(op.params.get('amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
                 message="Budget transfer exceeds the per-action cap.",
             ) if op.params.get("amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+        ),
+        Rule(
+            id="statutory_refund_gate",
+            applies=lambda op: op.domain == "payment" and op.action == "payment.refund",
+            check=lambda op: Violation(
+                rule_id="statutory_refund_gate",
+                limit=f"<= {p.statutory_refund_limit_minor / 100:,.2f} INR",
+                attempted=f"{op.params.get('amount_minor', 0) / 100:,.2f} INR",
+                delta=f"+{(op.params.get('amount_minor', 0) - p.statutory_refund_limit_minor) / 100:.2f} INR over limit",
+                message="Refund exceeds statutory threshold. Manual GST invoice validation required."
+            ) if op.params.get("amount_minor", 0) > p.statutory_refund_limit_minor else None,
+            blocking=True
         ),
         Rule(
             id="build_protected_paths",
