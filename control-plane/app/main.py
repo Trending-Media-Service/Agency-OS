@@ -14,7 +14,7 @@ from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_paylo
 from app.adapters.provision import ProvisionAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
-from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence
 
 # Setup Sentry SDK if DSN is set
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -183,6 +183,78 @@ async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
     """
     processed = await loop.drain_once(s)
     return {"status": "ok", "processed_items": processed}
+
+
+@app.post("/tasks/process-cadences")
+async def process_cadences(s: AsyncSession = Depends(get_worker_db)):
+    """Periodic task to scan and propose recurring audit Ops from Cadences.
+
+    Bypasses RLS by using get_worker_db to execute across all tenants.
+    """
+    import datetime as dt
+    from app.kernel import loop
+    from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    # Query due cadences
+    stmt = select(Cadence).where(Cadence.next_run <= now, Cadence.status.in_(["on_track", "due", "active"]))
+    res = await s.execute(stmt)
+    due_cadences = res.scalars().all()
+
+    proposed_ops_count = 0
+    for cadence in due_cadences:
+        # Determine schedule delta
+        if cadence.schedule == "daily":
+            delta = dt.timedelta(days=1)
+        elif cadence.schedule == "weekly":
+            delta = dt.timedelta(days=7)
+        elif cadence.schedule == "monthly":
+            delta = dt.timedelta(days=30)
+        else:
+            logger.error(f"Unknown schedule type: {cadence.schedule} for cadence {cadence.id}")
+            continue
+
+        # Compile OpSpec
+        op_spec = OpSpec(
+            tenant_id=cadence.tenant_id,
+            brand_id=cadence.brand_id,
+            domain=cadence.domain,
+            action=cadence.action,
+            params={"brand_id": cadence.brand_id, "cadence_id": cadence.id},
+            severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+            cost_estimate=Money(0)
+        )
+
+        # Propose in DB
+        row = await loop.propose(s, op_spec, actor="scheduler")
+
+        # Fetch brand trust score to determine current tier
+        stmt_tier = (
+            select(TrustSnapshot.tier)
+            .where(
+                TrustSnapshot.tenant_id == cadence.tenant_id,
+                TrustSnapshot.brand_id == cadence.brand_id,
+                TrustSnapshot.domain == cadence.domain
+            )
+            .order_by(TrustSnapshot.ts.desc())
+            .limit(1)
+        )
+        q_tier = await s.execute(stmt_tier)
+        tier = q_tier.scalar()
+        if tier is None:
+            tier = 1
+
+        await loop.preview_and_gate(s, row, tier=tier)
+        # Update Cadence scheduling fields
+        cadence.last_run = now
+        cadence.next_run = now + delta
+        cadence.status = "on_track"
+
+        proposed_ops_count += 1
+
+    await s.commit()
+    return {"status": "ok", "proposed_ops_count": proposed_ops_count}
 
 
 @app.post("/tasks/trust-snapshots")
