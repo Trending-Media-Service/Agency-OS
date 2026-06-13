@@ -42,6 +42,7 @@ loop.register(ManageAdapter())
 loop.register(BuildAdapter())
 
 logger = logging.getLogger(__name__)
+RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
 
@@ -193,6 +194,54 @@ async def approval_latency(domain: str | None = None, window_days: int | None = 
              if window_days else None)
     rollup = await approval_latency_rollup(s, tid, domain=domain, since=since)
     return {"tenant_id": tid, "domain": domain, "window_days": window_days, **rollup}
+
+
+class RecipePromoteIn(BaseModel):
+    recipe_name: str
+    version: str = "0.1.0"
+
+
+@app.post("/recipes/promote")
+async def promote_recipe(body: RecipePromoteIn):
+    """Promotes an experimental recipe to the production catalog and commits it to version control."""
+    import shutil
+    import subprocess
+
+    experimental_path = os.path.join(RECIPES_ROOT, "experimental", body.recipe_name, body.version)
+    production_path = os.path.join(RECIPES_ROOT, body.recipe_name, body.version)
+
+    if not os.path.exists(experimental_path):
+        raise HTTPException(404, f"experimental recipe {body.recipe_name} v{body.version} not found")
+
+    required_files = ["recipe.yaml", "main.tf"]
+    for rf in required_files:
+        if not os.path.exists(os.path.join(experimental_path, rf)):
+            raise HTTPException(400, f"missing required file {rf} in experimental recipe")
+
+    os.makedirs(os.path.dirname(production_path), exist_ok=True)
+
+    if os.path.exists(production_path):
+         shutil.rmtree(production_path)
+    shutil.copytree(experimental_path, production_path)
+
+    try:
+        repo_dir = os.path.abspath(os.path.join(RECIPES_ROOT, ".."))
+        subprocess.run(["git", "add", f"recipes/{body.recipe_name}/{body.version}/"], cwd=repo_dir, check=True, capture_output=True)
+        commit_res = subprocess.run(
+            ["git", "commit", "-m", f"prod(catalog): promote {body.recipe_name} {body.version} to production", "-m", "TAG=agy"],
+            cwd=repo_dir, check=True, capture_output=True
+        )
+        commit_stdout = commit_res.stdout.decode()
+    except Exception as e:
+        commit_stdout = f"Git commit skipped or failed: {e}"
+
+    return {
+        "status": "promoted",
+        "recipe_name": body.recipe_name,
+        "version": body.version,
+        "catalog_path": f"recipes/{body.recipe_name}/{body.version}",
+        "commit": commit_stdout
+    }
 
 
 WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
