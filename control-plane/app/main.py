@@ -15,6 +15,7 @@ from app.adapters.provision import ProvisionAdapter
 from app.adapters.presence import PresenceAdapter
 from app.adapters.grow import GrowAdapter
 from app.adapters.manage import ManageAdapter
+from app.adapters.build import BuildAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
@@ -38,6 +39,7 @@ loop.register(ProvisionAdapter())
 loop.register(PresenceAdapter())
 loop.register(GrowAdapter())
 loop.register(ManageAdapter())
+loop.register(BuildAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -117,7 +119,8 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
             kind="llm_tokens",
             amount_minor=57,
             currency="INR",
-            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120}
+            meta={"model": "gemini-1.5-pro", "prompt_tokens": 450, "completion_tokens": 120},
+            actor="chat"
         )
 
         gate, requirement = await loop.preview_and_gate(s, row, tier=tier)

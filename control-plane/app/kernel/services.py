@@ -173,6 +173,100 @@ def _statutory_check(op: OpSpec) -> Optional[Violation]:
 
 STATUTORY_MARKERS = (".tax.", ".gst.", ".vat.", ".statutory.")
 
+PROTECTED_PATHS = ["control-plane/", ".github/", "recipes/", "OWNERS", "METADATA"]
+APPROVED_DEPENDENCIES = ["react", "react-dom", "next", "tailwindcss", "lucide-react"]
+
+def _parse_diff_files(diff: str) -> list[str]:
+    """Helper to extract modified file paths from a git diff."""
+    files = []
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" ")
+            if len(parts) >= 4:
+                file_a = parts[2][2:]
+                files.append(file_a)
+    return files
+
+def _protected_paths_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    modified_files = _parse_diff_files(diff)
+
+    violated = []
+    for f in modified_files:
+        for p in PROTECTED_PATHS:
+            if f.startswith(p):
+                violated.append(f)
+                break
+
+    if violated:
+        return Violation(
+            rule_id="build_protected_paths",
+            limit="No modifications to protected paths",
+            attempted=", ".join(violated),
+            delta="n/a",
+            message=f"Attempted to modify protected paths: {', '.join(violated)}. "
+                    f"Protected prefixes are: {', '.join(PROTECTED_PATHS)}"
+        )
+    return None
+
+def _dependency_allowlist_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    in_package_json = False
+    added_deps = []
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git a/package.json b/package.json"):
+            in_package_json = True
+            continue
+        elif line.startswith("diff --git"):
+            in_package_json = False
+            continue
+
+        if in_package_json and line.startswith("+") and not line.startswith("+++"):
+            match = re.search(r'"([^"]+)"\s*:\s*"([^"]+)"', line)
+            if match:
+                dep_name = match.group(1)
+                if dep_name not in ["name", "version", "description", "main", "license", "author"]:
+                    added_deps.append(dep_name)
+
+    unapproved = [d for d in added_deps if d not in APPROVED_DEPENDENCIES]
+    if unapproved:
+        return Violation(
+            rule_id="build_dependency_allowlist",
+            limit=f"Only approved dependencies: {', '.join(APPROVED_DEPENDENCIES)}",
+            attempted=", ".join(unapproved),
+            delta="n/a",
+            message=f"Attempted to add unapproved dependencies: {', '.join(unapproved)}. "
+                    f"Please request approval for these packages."
+        )
+    return None
+
+def _secret_scan_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    secret_patterns = [
+        (r'AIza[0-9A-Za-z-_]{35}', "Google API Key"),
+        (r'sk-proj-[0-9A-Za-z]{40}', "OpenAI Project API Key"),
+        (r'-----BEGIN PRIVATE KEY-----', "Private Key"),
+        (r'(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']{8,}["\']', "Potential hardcoded secret")
+    ]
+    violations = []
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            for pattern, name in secret_patterns:
+                if re.search(pattern, line):
+                    violations.append(name)
+                    break
+    if violations:
+        return Violation(
+            rule_id="build_secret_scan",
+            limit="No hardcoded secrets allowed",
+            attempted=", ".join(set(violations)),
+            delta="n/a",
+            message=f"Detected potential secrets in diff: {', '.join(set(violations))}. "
+                    f"Use Secret Manager instead of hardcoding credentials."
+        )
+    return None
+
 DEFAULT_RULES: list[Rule] = [
     Rule(
         id="statutory_firewall",
@@ -211,6 +305,24 @@ DEFAULT_RULES: list[Rule] = [
             delta=f"+{(op.params.get('amount_minor', 0) - 5_000_000) / 100:.2f} INR over cap",
             message="Budget transfer exceeds the per-action cap.",
         ) if op.params.get("amount_minor", 0) > 5_000_000 else None,
+    ),
+    Rule(
+        id="build_protected_paths",
+        applies=lambda op: op.domain == "build" and "diff" in op.params,
+        check=_protected_paths_check,
+        blocking=True
+    ),
+    Rule(
+        id="build_dependency_allowlist",
+        applies=lambda op: op.domain == "build" and "diff" in op.params,
+        check=_dependency_allowlist_check,
+        blocking=True
+    ),
+    Rule(
+        id="build_secret_scan",
+        applies=lambda op: op.domain == "build" and "diff" in op.params,
+        check=_secret_scan_check,
+        blocking=True
     ),
 ]
 
@@ -288,18 +400,19 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
 
 async def emit_cost(s: AsyncSession, *, tenant_id: str, op_id: Optional[str] = None,
                     kind: str, amount_minor: int, currency: str = "INR",
-                    meta: Optional[dict] = None) -> None:
+                    meta: Optional[dict] = None, actor: Optional[str] = None) -> None:
     from ..models import CostEntry
     entry = CostEntry(
         op_id=op_id,
         tenant_id=tenant_id,
+        actor=actor,
         kind=kind,
         amount_minor=amount_minor,
         currency=currency,
         meta=meta or {},
     )
     s.add(entry)
-    await audit_append(s, tenant_id=tenant_id, actor="kernel", action=f"cost.{kind}",
+    await audit_append(s, tenant_id=tenant_id, actor=actor or "kernel", action=f"cost.{kind}",
                        op_id=op_id, payload={"amount_minor": amount_minor, "currency": currency})
 
 
