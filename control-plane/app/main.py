@@ -14,9 +14,10 @@ from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_paylo
 from app.adapters.provision import ProvisionAdapter
 from app.adapters.presence import PresenceAdapter
 from app.adapters.grow import GrowAdapter
+from app.adapters.manage import ManageAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
-from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
 
 # Setup Sentry SDK if DSN is set
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -36,6 +37,7 @@ setup_logging(level=log_level, json_format=json_format)
 loop.register(ProvisionAdapter())
 loop.register(PresenceAdapter())
 loop.register(GrowAdapter())
+loop.register(ManageAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -578,4 +580,39 @@ async def whatsapp_webhook(
 
     background_tasks.add_task(process_whatsapp_webhook_payload, body, worker_session_maker)
     return {"status": "accepted"}
+
+
+@app.get("/brands/{brand_id}/status")
+async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Fetches Shopify connection status and metrics for a brand."""
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+
+    stmt = select(Connection).where(
+        Connection.tenant_id == tid,
+        Connection.brand_id == brand_id,
+        Connection.provider == "shopify"
+    )
+    res = await s.execute(stmt)
+    conn = res.scalar_one_or_none()
+    if not conn:
+        return {
+            "brand_id": brand_id,
+            "shopify_connected": False,
+            "metrics": {}
+        }
+
+    # Mock token retrieval from Secret Manager
+    mock_token = f"mocked-token-for-{conn.secret_ref}"
+
+    from app.services.shopify import MockShopifyClient
+    client = MockShopifyClient(shop_url=conn.config.get("shop_url"), token=mock_token)
+    metrics = await client.get_metrics()
+
+    return {
+        "brand_id": brand_id,
+        "shopify_connected": True,
+        "metrics": metrics
+    }
 

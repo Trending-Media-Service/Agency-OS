@@ -86,6 +86,48 @@ class ProvisionAdapter(Adapter):
 
             return [parent_spec, child1, child2]
 
+        # Check if this is an OSS tool intent (e.g. "install n8n" or "deploy n8n")
+        if "n8n" in normalized:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.n8n.create",
+                    params={
+                        "recipe": "n8n",
+                        "version": "0.1.0",
+                        "project_id": "aos-shared-tier",
+                        "db_connection_name": "aos-shared-tier:asia-south1:aos-shared-postgres",
+                        "db_name": f"db-{brand_id}",
+                        "db_user": f"user-{brand_id}",
+                        "db_password": "mock-password"
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=300_000, currency="INR"),
+                )
+            ]
+
+        # Check if this is a postgres database intent (e.g. "deploy database" or "provision db")
+        if any(w in normalized for w in ["database", "postgres", "db"]):
+            db_name = f"db_{brand_id}"
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.postgres_db.create",
+                    params={
+                        "recipe": "postgres-db",
+                        "version": "0.1.0",
+                        "db_name": db_name,
+                        "tier": "shared"
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+
         # Normal single web host intent (backwards compatibility)
         domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
         return [OpSpec(
@@ -104,6 +146,9 @@ class ProvisionAdapter(Adapter):
             summary = op.params.get("preview_summary", "Brand bootstrap sequential saga")
             return PreviewArtifact(kind="saga_preview", summary=summary, detail={})
 
+        action_parts = op.action.split(".")
+        verb = action_parts[-1]
+
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
 
@@ -112,18 +157,33 @@ class ProvisionAdapter(Adapter):
             if code != 0:
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Init failed: {err}", detail={"stderr": err})
 
-            # Run plan
-            code, out, err = self._run_terraform(op, ["plan", "-no-color", "-input=false"], temp_dir)
+            # Run plan (use -destroy if verb is destroy)
+            plan_args = ["plan", "-no-color", "-input=false", "-out=tfplan"]
+            if verb == "destroy":
+                plan_args.append("-destroy")
+
+            code, out, err = self._run_terraform(op, plan_args, temp_dir)
             if code != 0:
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Plan failed: {err}", detail={"stderr": err})
+
+            # Save plan persistently
+            persistent_plan_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../tfplans"))
+            os.makedirs(persistent_plan_dir, exist_ok=True)
+            plan_file_path = os.path.join(persistent_plan_dir, f"{op.id}.tfplan")
+            shutil.copy2(os.path.join(temp_dir, "tfplan"), plan_file_path)
+            logger.info(f"Saved terraform plan to {plan_file_path}")
 
             return PreviewArtifact(kind="terraform_plan", summary=out, detail={"stdout": out})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
-        """Runs terraform apply or destroy based on the action."""
+        """Runs terraform apply or destroy based on the action, using saved plan if available."""
         action_parts = op.action.split(".")
         verb = action_parts[-1] # create | destroy
         
+        persistent_plan_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../tfplans"))
+        plan_file_path = os.path.join(persistent_plan_dir, f"{op.id}.tfplan")
+        has_saved_plan = os.path.exists(plan_file_path)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
             
@@ -132,14 +192,23 @@ class ProvisionAdapter(Adapter):
             if code != 0:
                 return ExecResult(ok=False, detail={"error": f"Init failed: {err}"})
                 
-            if verb == "create":
-                # Run apply
-                code, out, err = self._run_terraform(op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
-            elif verb == "destroy":
-                # Run destroy
-                code, out, err = self._run_terraform(op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)
+            if has_saved_plan:
+                # Copy plan to temp dir and apply it
+                shutil.copy2(plan_file_path, os.path.join(temp_dir, "tfplan"))
+                logger.info(f"Applying saved terraform plan for Op {op.id}")
+                code, out, err = self._run_terraform(op, ["apply", "-input=false", "-no-color", "tfplan"], temp_dir)
+                try:
+                    os.remove(plan_file_path)
+                except OSError:
+                    pass
             else:
-                return ExecResult(ok=False, detail={"error": f"Unknown action verb: {verb}"})
+                # Fallback: run apply/destroy with auto-approve
+                if verb in ("create", "apply"):
+                    code, out, err = self._run_terraform(op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
+                elif verb == "destroy":
+                    code, out, err = self._run_terraform(op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)
+                else:
+                    return ExecResult(ok=False, detail={"error": f"Unknown action verb: {verb}"})
                 
             if code != 0:
                 return ExecResult(ok=False, detail={"error": f"Execution failed: {err}", "stdout": out})
@@ -157,9 +226,29 @@ class ProvisionAdapter(Adapter):
                         
             # Simulate execution costs to test cost ledger ingestion
             costs = []
-            if verb == "create":
+            if verb in ("create", "apply"):
                 costs.append(CostSpec(kind="api_call", amount_minor=2000, currency="INR", meta={"service": "dns_provider", "action": "zone_register"}))
                 costs.append(CostSpec(kind="api_call", amount_minor=150, currency="INR", meta={"service": "gcp_iam", "action": "service_account_create"}))
+                
+                # Parse recipe cost estimate
+                recipe = op.params.get("recipe", "web-host")
+                version = op.params.get("version", "0.1.0")
+                recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
+                yaml_file = os.path.join(recipe_path, "recipe.yaml")
+                if os.path.exists(yaml_file):
+                    try:
+                        with open(yaml_file, "r") as f:
+                            recipe_meta = yaml.safe_load(f)
+                            cost_est = recipe_meta.get("cost_estimate_monthly")
+                            if cost_est:
+                                costs.append(CostSpec(
+                                    kind="gcp_resource",
+                                    amount_minor=cost_est.get("amount_minor", 0),
+                                    currency=cost_est.get("currency", "INR"),
+                                    meta={"recipe": recipe, "version": version}
+                                ))
+                    except Exception as e:
+                        logger.error(f"Failed to read cost estimate from recipe.yaml: {e}")
 
             return ExecResult(ok=True, detail={"stdout": out, "outputs": outputs}, costs=costs)
 
