@@ -139,3 +139,11 @@ async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_o
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
 
+
+def test_provision_adapter_state_bucket_fails_closed_in_prod(adapter, create_op):
+    with patch.dict(os.environ, {"AOS_ENV": "production", "AOS_STATE_BUCKET": ""}):
+        with pytest.raises(ValueError) as exc:
+            adapter.preview(create_op)
+        assert "AOS_STATE_BUCKET environment variable must be set in production" in str(exc.value)
+
+
