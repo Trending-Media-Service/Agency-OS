@@ -1,0 +1,16 @@
+name: static-host
+version: 0.1.0
+description: Deploy static web hosting using GCP storage bucket, load balancer, and custom DNS mapping
+inputs:
+  domain: {type: string, required: true}
+  project_id: {type: string, required: true}
+  bucket_name: {type: string, required: true}
+  region: {type: string, default: asia-south2}
+outputs: [bucket_url, cdn_url]
+cost_estimate_monthly: {amount_minor: 50_000, currency: INR}
+severity: {impact: 1, reversibility: COMPENSATABLE}
+reversibility_map:
+  bucket: REVERSIBLE
+  dns_records: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [http_200, cdn_up]

@@ -89,6 +89,10 @@ def mock_terraform_cli():
             # Determine recipe
             if "db_connection_name" in vars_dict:
                 recipe = "n8n"
+            elif "dkim_record" in vars_dict:
+                recipe = "email-dns"
+            elif "bucket_name" in vars_dict:
+                recipe = "static-host"
             elif "brand_id" in vars_dict:
                 recipe = "brand-baseline"
             elif "domain" in vars_dict:
@@ -116,6 +120,10 @@ def mock_terraform_cli():
                     elif recipe == "web-host":
                         domain = vars_dict.get("domain", "example.in")
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
+                    elif recipe == "email-dns":
+                        mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_dns_record_set mx\n+ google_dns_record_set spf\n+ google_dns_record_set dkim"
+                    elif recipe == "static-host":
+                        mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ google_storage_bucket static_bucket\n+ google_storage_bucket_iam_member public_read"
                     elif recipe == "n8n":
                         mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
                     elif recipe == "postgres-db":
@@ -145,6 +153,17 @@ def mock_terraform_cli():
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
                         "dns_zone": {"type": "string", "value": f"zone-{domain}"},
                         "cert_id": {"type": "string", "value": "cert-123"}
+                    }
+                elif recipe == "email-dns":
+                    outputs = {
+                        "dns_verified": {"type": "bool", "value": True}
+                    }
+                elif recipe == "static-host":
+                    bucket = vars_dict.get("bucket_name", "brand-bucket")
+                    domain = vars_dict.get("domain", "brand.in")
+                    outputs = {
+                        "bucket_url": {"type": "string", "value": f"https://storage.googleapis.com/{bucket}"},
+                        "cdn_url": {"type": "string", "value": f"https://static-{domain}"}
                     }
                 elif recipe == "n8n":
                     outputs = {

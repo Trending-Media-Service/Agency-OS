@@ -142,3 +142,79 @@ async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_o
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
 
+
+@pytest.mark.asyncio
+async def test_provision_adapter_email_dns_and_static_host_lifecycle(adapter):
+    # 1. Test email-dns create
+    op_dns = OpSpec(
+        id="op_dns_123", tenant_id="t1", brand_id="b1", domain="provision",
+        action="provision.email_dns.create",
+        params={
+            "domain": "woktok.co", "project_id": "aos-brand-b1",
+            "dkim_record": "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQ",
+            "recipe": "email-dns", "version": "0.1.0"
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    res_dns = await adapter.execute(op_dns, "idem_dns")
+    assert res_dns.ok is True
+    assert res_dns.detail["outputs"]["dns_verified"] is True
+    
+    ver_dns = await adapter.verify(op_dns)
+    assert ver_dns.ok is True
+    assert ver_dns.checks["mx_valid"] is True
+    assert ver_dns.checks["spf_valid"] is True
+    
+    # 2. Test static-host create
+    op_static = OpSpec(
+        id="op_static_123", tenant_id="t1", brand_id="b1", domain="provision",
+        action="provision.static_host.create",
+        params={
+            "domain": "static.woktok.co", "project_id": "aos-brand-b1",
+            "bucket_name": "woktok-static-bucket",
+            "recipe": "static-host", "version": "0.1.0"
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=50_000, currency="INR")
+    )
+    res_static = await adapter.execute(op_static, "idem_static")
+    assert res_static.ok is True
+    assert "woktok-static-bucket" in res_static.detail["outputs"]["bucket_url"]
+    
+    ver_static = await adapter.verify(op_static)
+    assert ver_static.ok is True
+    assert ver_static.checks["http_200"] is True
+    assert ver_static.checks["cdn_up"] is True
+
+
+@pytest.mark.asyncio
+async def test_provision_adapter_failed_check_and_compensation(adapter):
+    # 1. Test failed-check (verify returns false)
+    op_dns_fail = OpSpec(
+        id="op_dns_fail", tenant_id="t1", brand_id="b1", domain="provision",
+        action="provision.email_dns.create",
+        params={
+            "domain": "fail-verify.in", "project_id": "aos-brand-b1",
+            "dkim_record": "mock-key",
+            "recipe": "email-dns", "version": "0.1.0"
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    res = await adapter.execute(op_dns_fail, "idem_dns_fail")
+    assert res.ok is True
+
+    ver = await adapter.verify(op_dns_fail)
+    assert ver.ok is False
+    assert ver.checks["mx_valid"] is False
+
+    # 2. Test compensation planning (generates compensating destroy Op)
+    compensations = adapter.compensate(op_dns_fail)
+    assert len(compensations) == 1
+    comp = compensations[0]
+    assert comp.action == "provision.email_dns.destroy"
+    assert comp.parent_op_id == op_dns_fail.id
+    assert comp.params == op_dns_fail.params
+    assert comp.severity.reversibility == Reversibility.IRREVERSIBLE
+
