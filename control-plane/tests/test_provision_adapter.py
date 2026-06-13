@@ -142,3 +142,35 @@ async def test_provision_adapter_brand_baseline_verify(adapter, brand_baseline_o
     assert res.checks["sa_exists"] is True
     assert res.checks["db_reachable"] is True
 
+
+@pytest.mark.asyncio
+async def test_provision_adapter_sgtm_capi_lifecycle(adapter):
+    op = OpSpec(
+        id="op_sgtm_123", tenant_id="t1", brand_id="b1", domain="provision",
+        action="provision.sgtm_capi.create",
+        params={
+            "domain": "sgtm.woktok.co", "project_id": "aos-brand-b1",
+            "gtm_container_config": "aBcDeFg12345",
+            "capi_pixel_id": "123456789", "capi_access_token": "EAAxxYYzz",
+            "recipe": "sgtm-capi", "version": "0.1.0"
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=350_000, currency="INR")
+    )
+    # 1. Preview
+    preview_art = adapter.preview(op)
+    assert preview_art.kind == "terraform_plan"
+    assert "google_cloud_run_service sgtm" in preview_art.summary
+    assert "google_secret_manager_secret capi_token" in preview_art.summary
+
+    # 2. Execute
+    res = await adapter.execute(op, "idem_sgtm")
+    assert res.ok is True
+    assert "sgtm-container-123" in res.detail["outputs"]["sgtm_url"]
+
+    # 3. Verify
+    ver = await adapter.verify(op)
+    assert ver.ok is True
+    assert ver.checks["sgtm_healthy"] is True
+    assert ver.checks["secrets_configured"] is True
+

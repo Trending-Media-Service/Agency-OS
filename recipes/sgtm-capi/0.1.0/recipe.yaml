@@ -1,0 +1,18 @@
+name: sgtm-capi
+version: 0.1.0
+description: Deploy Server-side GTM tagging container with Facebook Conversions API (CAPI) credential stores
+inputs:
+  domain: {type: string, required: true}
+  project_id: {type: string, required: true}
+  gtm_container_config: {type: string, required: true}
+  capi_pixel_id: {type: string, required: true}
+  capi_access_token: {type: string, required: true}
+  region: {type: string, default: asia-south2}
+outputs: [sgtm_url, dns_verified]
+cost_estimate_monthly: {amount_minor: 350_000, currency: INR}
+severity: {impact: 1, reversibility: COMPENSATABLE}
+reversibility_map:
+  cloud_run: REVERSIBLE
+  secrets: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [sgtm_healthy, secrets_configured]
