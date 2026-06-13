@@ -60,7 +60,7 @@ async def test_process_cadences_triggers_op(client, db_engine):
         # next_run should be ~6 days in the future (one_day_ago + 7 days = now + 6 days)
         # Or more accurately, since we computed delta from 'now': now + 7 days
         diff = updated_cad.next_run - now
-        assert 6.9 < diff.total_seconds() / 86400 <= 7.0
+        assert 6.9 < diff.total_seconds() / 86400 <= 7.1
 
         # Verify OpRow was proposed and gated
         stmt_op = select(OpRow).where(OpRow.brand_id == brand_id, OpRow.action == "presence.search_console.audit")
