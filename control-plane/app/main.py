@@ -12,6 +12,7 @@ from app.middleware import TenantIsolationMiddleware, TraceMiddleware
 from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
+from app.adapters.presence import PresenceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot
@@ -32,6 +33,7 @@ json_format = os.getenv("LOG_FORMAT", "text").lower() == "json"
 setup_logging(level=log_level, json_format=json_format)
 
 loop.register(ProvisionAdapter())
+loop.register(PresenceAdapter())
 
 logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
