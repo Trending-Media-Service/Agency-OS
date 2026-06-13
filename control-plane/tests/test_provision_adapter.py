@@ -229,3 +229,28 @@ async def test_provision_adapter_sgtm_capi_lifecycle(adapter):
     assert ver.checks["sgtm_healthy"] is True
     assert ver.checks["secrets_configured"] is True
 
+
+def test_provision_adapter_brand_baseline_dedicated_with_data_warehouse(adapter):
+    op = OpSpec(
+        id="op_dw_123",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="provision",
+        action="provision.brand_baseline.create",
+        params={
+            "brand_id": "b1",
+            "tenant_id": "t1",
+            "tier": "dedicated",
+            "recipe": "brand-baseline",
+            "version": "0.1.0",
+            "enable_data_warehouse": True
+        },
+        severity=Severity(impact=3, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR"),
+    )
+    # Preview
+    preview_art = adapter.preview(op)
+    assert preview_art.kind == "terraform_plan"
+    assert "+ bigquery dataset moat_warehouse" in preview_art.summary
+
+

@@ -11,6 +11,7 @@ inputs:
   billing_account: {type: string, required: false}
   folder_id: {type: string, required: false}
   shared_postgres_instance: {type: string, default: aos-shared-postgres}
+  enable_data_warehouse: {type: boolean, default: false}
 outputs: [project_id, service_account_email, db_connection_name]
 cost_estimate_monthly: {amount_minor: 0, currency: INR} # shared is free baseline, dedicated project costs depend on services
 severity: {impact: 3, reversibility: COMPENSATABLE}

@@ -116,7 +116,9 @@ def mock_terraform_cli():
                 else:
                     if recipe == "brand-baseline":
                         brand = vars_dict.get("brand_id", "example-brand")
-                        mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                        enable_dw = vars_dict.get("enable_data_warehouse", False)
+                        bq_part = "\n+ bigquery dataset moat_warehouse" if enable_dw else ""
+                        mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}{bq_part}"
                     elif recipe == "webapp-postgres":
                         mock_res.stdout = "Plan: 8 to add, 0 to change, 0 to destroy.\n+ sql_instance postgres\n+ secret db_url\n+ artifact_registry repo"
                     elif recipe == "web-host":

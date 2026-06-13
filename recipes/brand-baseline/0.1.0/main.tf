@@ -6,6 +6,7 @@ variable "budget_amount" { type = number; default = 1000 }
 variable "billing_account" { type = string; default = "" }
 variable "folder_id" { type = string; default = "" }
 variable "shared_postgres_instance" { type = string; default = "aos-shared-postgres" }
+variable "enable_data_warehouse" { type = bool; default = false }
 
 # Random password for database user
 resource "random_password" "db_password" {
@@ -106,6 +107,14 @@ resource "google_sql_user" "shared_user" {
   project  = "aos-shared-tier"
   password = random_password.db_password[0].result
 }
+
+resource "google_bigquery_dataset" "moat_warehouse" {
+  count      = (var.tier == "dedicated" && var.enable_data_warehouse) ? 1 : 0
+  dataset_id = "moat_warehouse"
+  project    = google_project.brand_project[0].project_id
+  location   = var.region
+}
+
 
 # Output variables mapping to recipe outputs
 output "project_id" {
