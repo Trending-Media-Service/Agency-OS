@@ -235,6 +235,11 @@ class ProvisionAdapter(Adapter):
             )]
         return []
 
+    def _state_identifier(self, op: OpSpec) -> str:
+        """Single source for the per-Op Terraform state path segment, so the
+        generated backend.tf and the `-backend-config` init flag never diverge."""
+        return op.params.get("domain") or op.params.get("custom_domain") or "default"
+
     def _prepare_dir(self, op: OpSpec, temp_dir: str):
         """Copies recipe files and writes backend.tf & variables."""
         recipe = op.params.get("recipe", "web-host")
@@ -259,8 +264,8 @@ class ProvisionAdapter(Adapter):
         
         if state_bucket:
             # GCS backend configuration
-            # Key identifier is domain name (if exists) or recipe name
-            identifier = op.params.get("domain", "default")
+            # Key identifier unified via _state_identifier (see helper)
+            identifier = self._state_identifier(op)
             prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
             hcl = f"""
 terraform {{
@@ -317,7 +322,7 @@ terraform {
             return args
 
         recipe = op.params.get("recipe", "web-host")
-        identifier = op.params.get("domain") or op.params.get("custom_domain", "default")
+        identifier = self._state_identifier(op)
         prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
         args.append(f"-backend-config=bucket={state_bucket}")
         args.append(f"-backend-config=prefix={prefix}")

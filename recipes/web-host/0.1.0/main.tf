@@ -6,9 +6,9 @@ terraform {
       version = "~> 6.8"
     }
   }
-  backend "gcs" {
-    bucket = "aos-tfstate-tmg"
-  }
+  # NOTE: the GCS backend is injected per-Op by the ProvisionAdapter (generated
+  # backend.tf + `-backend-config` bucket/prefix). Do NOT declare a backend here
+  # — a second backend block causes a "Duplicate backend configuration" init error.
 }
 
 provider "google" {
