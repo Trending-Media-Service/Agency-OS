@@ -129,6 +129,9 @@ class ProvisionAdapter(Adapter):
             if tier == "dedicated":
                 baseline_params["billing_account"] = "012E0F-7A4F33-26EDD8"
                 baseline_params["folder_id"] = "338402544084" # tenants folder ID
+                tmg_project = next((w for w in words if "-tmg" in w), "")
+                if tmg_project:
+                    baseline_params["custom_project_id"] = tmg_project
 
             child1 = OpSpec(
                 tenant_id=tenant_id,
@@ -495,7 +498,7 @@ class ProvisionAdapter(Adapter):
         if state_bucket:
             # GCS backend configuration
             # Key identifier is domain name (if exists) or recipe name
-            identifier = op.params.get("domain", "default")
+            identifier = op.params.get("domain") or op.params.get("custom_domain") or "default"
             prefix = f"provision/{op.tenant_id}/{op.brand_id}/{recipe}/{identifier}/state"
             hcl = f"""
 terraform {{

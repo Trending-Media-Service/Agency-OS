@@ -1,5 +1,15 @@
 variable "brand_id" { type = string }
 variable "tenant_id" { type = string }
+variable "custom_project_id" {
+  type    = string
+  default = ""
+}
+
+locals {
+  is_dedicated = var.tier == "dedicated"
+  use_custom   = var.custom_project_id != ""
+  project_id   = local.use_custom ? var.custom_project_id : (local.is_dedicated ? google_project.brand_project[0].project_id : "aos-shared-tier")
+}
 variable "tier" {
   type    = string
   default = "shared"
@@ -34,12 +44,12 @@ resource "random_password" "db_password" {
 
 # Dedicated project creation
 resource "random_id" "project_suffix" {
-  count       = var.tier == "dedicated" ? 1 : 0
+  count       = (var.tier == "dedicated" && var.custom_project_id == "") ? 1 : 0
   byte_length = 4
 }
 
 resource "google_project" "brand_project" {
-  count           = var.tier == "dedicated" ? 1 : 0
+  count           = (var.tier == "dedicated" && var.custom_project_id == "") ? 1 : 0
   name            = "brand-${var.brand_id}"
   project_id      = "aos-${var.brand_id}-${random_id.project_suffix[0].hex}"
   folder_id       = var.folder_id != "" ? var.folder_id : null
@@ -52,12 +62,11 @@ resource "google_project_service" "services" {
     "run.googleapis.com",
     "dns.googleapis.com",
     "secretmanager.googleapis.com",
-    "billingbudgets.googleapis.com",
     "sqladmin.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com"
   ]) : []
-  project = google_project.brand_project[0].project_id
+  project = local.project_id
   service = each.key
 }
 
@@ -66,7 +75,7 @@ resource "google_service_account" "dedicated_sa" {
   count        = var.tier == "dedicated" ? 1 : 0
   account_id   = "aos-deployer-${var.brand_id}"
   display_name = "AOS Deployer for Brand ${var.brand_id}"
-  project      = google_project.brand_project[0].project_id
+  project      = local.project_id
 }
 
 # IAM roles for the service account at the project level
@@ -78,19 +87,19 @@ resource "google_project_iam_member" "dedicated_sa_roles" {
     "roles/logging.logWriter",
     "roles/storage.admin"
   ]) : []
-  project = google_project.brand_project[0].project_id
+  project = local.project_id
   role    = each.key
   member  = "serviceAccount:${google_service_account.dedicated_sa[0].email}"
 }
 
 # Budget guard
 resource "google_billing_budget" "budget_guard" {
-  count           = (var.tier == "dedicated" && var.billing_account != "") ? 1 : 0
+  count           = (var.tier == "dedicated" && var.billing_account != "" && var.custom_project_id == "") ? 1 : 0
   billing_account = var.billing_account
   display_name    = "brand-${var.brand_id}-tmg-guard"
 
   budget_filter {
-    projects = ["projects/${google_project.brand_project[0].project_id}"]
+    projects = ["projects/${local.project_id}"]
   }
 
   amount {
@@ -134,7 +143,7 @@ resource "google_sql_user" "shared_user" {
 
 # Output variables mapping to recipe outputs
 output "project_id" {
-  value = var.tier == "dedicated" ? google_project.brand_project[0].project_id : "aos-shared-tier"
+  value = local.project_id
 }
 
 output "service_account_email" {
