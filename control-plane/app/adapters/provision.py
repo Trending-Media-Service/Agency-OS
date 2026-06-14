@@ -488,7 +488,7 @@ class ProvisionAdapter(Adapter):
             d = os.path.join(temp_dir, item)
             if os.path.isdir(s):
                 shutil.copytree(s, d)
-            elif item.endswith(".tf"): # Only copy HCL files
+            elif not item.startswith(".") and item not in ("recipe.yaml", "checks.py"):
                 shutil.copy2(s, d)
                 
         # Generate backend.tf
