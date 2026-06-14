@@ -6,9 +6,6 @@ terraform {
       version = "~> 6.8"
     }
   }
-  backend "gcs" {
-    bucket = "aos-tfstate-tmg"
-  }
 }
 
 provider "google" {
