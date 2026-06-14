@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import subprocess
 import pytest
+from unittest.mock import patch
 from app.adapters.build_agent import BuildAgentHarness
 
 def test_build_agent_harness_flow(temp_git_remote, run_git):
@@ -47,3 +48,39 @@ def test_build_agent_harness_flow(temp_git_remote, run_git):
         assert "color=\"blue\"" in content
     finally:
         shutil.rmtree(temp_dir)
+
+
+@pytest.mark.asyncio
+@patch("app.services.llm.VertexAIClient.generate_edits")
+async def test_build_agent_harness_dynamic_edits(mock_generate, temp_git_remote, run_git):
+    from unittest.mock import patch
+    branch_name = "test-agent-dynamic"
+    
+    # 1. Setup mock response to create a new file and delete an existing one
+    mock_generate.return_value = {
+        "explanation": "Create new helper and clean old code",
+        "edits": [
+            {
+                "path": "src/Helper.js",
+                "action": "create",
+                "content": "export const help = () => 'done';"
+            },
+            {
+                "path": "src/App.js",
+                "action": "delete",
+                "content": ""
+            }
+        ]
+    }
+    
+    with BuildAgentHarness(repo_url=temp_git_remote, branch_name=branch_name) as harness:
+        assert harness.clone_and_checkout() is True
+        assert harness.apply_edits("do updates") is True
+        
+        # Verify Helper.js was created
+        assert os.path.exists(os.path.join(harness.repo_path, "src/Helper.js"))
+        with open(os.path.join(harness.repo_path, "src/Helper.js"), "r") as f:
+            assert f.read() == "export const help = () => 'done';"
+            
+        # Verify App.js was deleted
+        assert not os.path.exists(os.path.join(harness.repo_path, "src/App.js"))

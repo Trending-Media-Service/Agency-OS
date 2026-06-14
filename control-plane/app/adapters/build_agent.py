@@ -56,44 +56,61 @@ class BuildAgentHarness:
             return False
 
     def apply_edits(self, intent: str) -> bool:
-        """Calls LLM (mocked) to get edits and applies them."""
+        """Calls Vertex AI Gemini model to get codebase edits and applies them."""
         if not hasattr(self, 'repo_path'):
             raise RuntimeError("Repo must be cloned first")
 
         logger.info(f"Applying edits for intent: {intent}")
         
-        # MOCK LLM CALL
-        # In real implementation:
-        # 1. Prepare prompt with codebase context (or files to edit)
-        # 2. Call Claude/Gemini (via Vertex AI or direct API)
-        # 3. Parse LLM response (diff or new content)
-        # 4. Apply to files
+        # 1. Scan repo files to construct context
+        context_parts = []
+        for root, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in [".git", "node_modules", "build", "dist"]]
+            for file in files:
+                if file.endswith((".js", ".jsx", ".ts", ".tsx", ".json", ".html", ".css", ".yaml", ".tf")):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, self.repo_path)
+                    try:
+                        with open(full_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        context_parts.append(f"--- START FILE: {rel_path} ---\n{content}\n--- END FILE: {rel_path} ---")
+                    except Exception as e:
+                        logger.warning(f"Skipping file {rel_path} from context: {e}")
         
-        # Simulating an edit to a file 'src/App.js' (assuming it exists or creating it)
+        context_str = "\n\n".join(context_parts)
+
+        # 2. Call Vertex AI Client
+        from app.services.llm import VertexAIClient
+        client = VertexAIClient()
         try:
-            src_dir = os.path.join(self.repo_path, "src")
-            os.makedirs(src_dir, exist_ok=True)
-            app_js_path = os.path.join(src_dir, "App.js")
+            result = client.generate_edits(intent, context_str)
+        except Exception as e:
+            logger.error(f"Failed to generate edits from LLM: {e}")
+            return False
+
+        # 3. Apply edits
+        try:
+            edits = result.get("edits", [])
+            explanation = result.get("explanation", "")
+            logger.info(f"LLM explanation: {explanation}")
             
-            # Create a basic file if it doesn't exist
-            if not os.path.exists(app_js_path):
-                with open(app_js_path, "w") as f:
-                    f.write("function App() {\n  return <Hero color=\"red\" />;\n}\n")
-            
-            # Apply edit (replace red with blue)
-            with open(app_js_path, "r") as f:
-                content = f.read()
-            
-            if "color=\"red\"" in content:
-                new_content = content.replace("color=\"red\"", "color=\"blue\"")
-                with open(app_js_path, "w") as f:
-                    f.write(new_content)
-                logger.info("Mock edit applied to src/App.js")
-                return True
-            else:
-                logger.warning("Target string not found in src/App.js, mock edit skipped")
-                # Even if string not found, we return True for mock success
-                return True
+            for edit in edits:
+                path = edit.get("path")
+                action = edit.get("action")
+                content = edit.get("content")
+                
+                target_path = os.path.join(self.repo_path, path)
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                
+                if action == "delete":
+                    if os.path.exists(target_path):
+                        os.remove(target_path)
+                        logger.info(f"Deleted file: {path}")
+                else: # modify or create
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    logger.info(f"Written file ({action}): {path}")
+            return True
         except Exception as e:
             logger.error(f"Failed to apply edits: {e}")
             return False
