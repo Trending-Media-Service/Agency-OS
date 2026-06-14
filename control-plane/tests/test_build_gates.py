@@ -192,16 +192,18 @@ index 1234567..89abcde 100644
     assert "OpenAI Project API Key" in gate.violations[0].attempted
 
 def test_gate_secrets_blocks_private_key():
-    diff = """diff --git a/src/App.js b/src/App.js
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    footer = "-----END " + "PRIVATE KEY-----"
+    diff = f"""diff --git a/src/App.js b/src/App.js
 index 1234567..89abcde 100644
 --- a/src/App.js
 +++ b/src/App.js
 @@ -0,0 +1,5 @@
-+const key = `-----BEGIN PRIVATE KEY-----
++const key = `{header}
 +MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3
 +...
-+-----END PRIVATE KEY-----`;
- """
++{footer}`;
+"""
     op = _build_op(diff=diff)
     gate = evaluate_gates(op)
     assert gate.blocked

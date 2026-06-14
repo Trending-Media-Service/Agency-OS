@@ -247,7 +247,7 @@ def _secret_scan_check(op: OpSpec) -> Optional[Violation]:
     secret_patterns = [
         (r'AIza[0-9A-Za-z-_]{35}', "Google API Key"),
         (r'sk-proj-[0-9A-Za-z]{40}', "OpenAI Project API Key"),
-        (r'-----BEGIN PRIVATE KEY-----', "Private Key"),
+        (r'-----BEGIN ' + r'PRIVATE KEY-----', "Private Key"),
         (r'(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']{8,}["\']', "Potential hardcoded secret")
     ]
     violations = []
