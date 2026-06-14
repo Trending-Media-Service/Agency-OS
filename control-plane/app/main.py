@@ -5,6 +5,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from fastapi.responses import HTMLResponse
 
 from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.tasks import enqueue_drain
@@ -285,6 +286,7 @@ async def promote_recipe(body: RecipePromoteIn):
 WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
 AOS_ENV = os.getenv("AOS_ENV", "development")
 
+
 async def verify_worker_auth(request: Request, authorization: str | None = Header(default=None)):
     if AOS_ENV == "test" or not WORKER_SA:
         return
@@ -310,6 +312,111 @@ async def verify_worker_auth(request: Request, authorization: str | None = Heade
     except Exception as e:
         logger.error(f"OIDC token verification failed: {e}")
         raise HTTPException(401, f"Unauthorized: {e}")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(
+    request: Request,
+    tenant_id: str | None = Query(default=None),
+    x_tenant_id: str | None = Header(default=None),
+    s: AsyncSession = Depends(get_db)
+):
+    tid = tenant_id or x_tenant_id
+    if not tid:
+        raise HTTPException(401, "X-Tenant-Id header or tenant_id query parameter required")
+        
+    from app.database import tenant_context
+    token = tenant_context.set(tid)
+    try:
+        stmt = (
+            select(OpRow)
+            .where(OpRow.tenant_id == tid, OpRow.state == "AWAITING_APPROVAL")
+            .order_by(OpRow.id.desc())
+        )
+        res = await s.execute(stmt)
+        ops = res.scalars().all()
+    finally:
+        tenant_context.reset(token)
+
+    ops_html = ""
+    for op in ops:
+        ops_html += f"""
+        <div class="card" id="op-{op.id}">
+            <h3>Op: {op.action} (ID: {op.id})</h3>
+            <p><strong>Preview:</strong> {op.preview_summary or 'No preview available'}</p>
+            <p><strong>Cost Estimate:</strong> {f"{op.cost_amount_minor/100:.2f} {op.cost_currency}/mo" if op.cost_amount_minor else 'Free'}</p>
+            <div class="actions">
+                <button class="btn btn-approve" onclick="decide('{op.id}', 'approve')">Approve</button>
+                <button class="btn btn-reject" onclick="decide('{op.id}', 'reject')">Reject</button>
+            </div>
+        </div>
+        """
+
+    if not ops:
+        ops_html = "<p class='no-ops'>No operations awaiting approval.</p>"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Agency OS - Web Approval Dashboard</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 40px; background-color: #f7f9fa; color: #333; }}
+            h1 {{ border-bottom: 2px solid #e1e4e6; padding-bottom: 10px; }}
+            .card {{ background: white; border: 1px solid #e1e4e6; border-radius: 6px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
+            .actions {{ margin-top: 15px; }}
+            .btn {{ padding: 8px 16px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; margin-right: 10px; }}
+            .btn-approve {{ background-color: #2ea44f; color: white; }}
+            .btn-approve:hover {{ background-color: #2c974b; }}
+            .btn-reject {{ background-color: #cf222e; color: white; }}
+            .btn-reject:hover {{ background-color: #b91c1c; }}
+            .no-ops {{ color: #57606a; font-style: italic; }}
+        </style>
+        <script>
+            async function decide(opId, decision) {{
+                const btnContainer = document.querySelector(`#op-${{opId}} .actions`);
+                btnContainer.innerHTML = '<em>Processing...</em>';
+                try {{
+                    const response = await fetch(`/ops/${{opId}}/decision`, {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'X-Tenant-Id': '{tid}'
+                        }},
+                        body: JSON.stringify({{
+                            decision: decision,
+                            actor: 'dashboard_owner',
+                            role: 'AGENCY_OWNER',
+                            surface: 'web'
+                        }})
+                    }});
+                    if (response.ok) {{
+                        document.getElementById(`op-${{opId}}`).remove();
+                        if (document.querySelectorAll('.card').length === 0) {{
+                            document.getElementById('ops-container').innerHTML = '<p class="no-ops">No operations awaiting approval.</p>';
+                        }}
+                    }} else {{
+                        const err = await response.json();
+                        alert('Error: ' + JSON.stringify(err));
+                        location.reload();
+                    }}
+                }} catch (e) {{
+                    alert('Network error: ' + e);
+                    location.reload();
+                }}
+            }}
+        </script>
+    </head>
+    <body>
+        <h1>Awaiting Approval Queue</h1>
+        <p>Tenant: <code>{tid}</code></p>
+        <div id="ops-container">
+            {ops_html}
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @app.post("/tasks/drain-outbox", dependencies=[Depends(verify_worker_auth)])

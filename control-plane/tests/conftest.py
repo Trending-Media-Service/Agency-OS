@@ -93,14 +93,14 @@ def mock_terraform_cli():
                 recipe = "sgtm-capi"
             elif "webhook_url" in vars_dict:
                 recipe = "payment-gateway"
-            elif "domain" in vars_dict or "custom_domain" in vars_dict:
-                recipe = "web-host"
-            elif "project_id" in vars_dict:
-                recipe = "webapp-postgres"
             elif "dkim_record" in vars_dict:
                 recipe = "email-dns"
             elif "bucket_name" in vars_dict:
                 recipe = "static-host"
+            elif "domain" in vars_dict or "custom_domain" in vars_dict:
+                recipe = "web-host"
+            elif "project_id" in vars_dict:
+                recipe = "webapp-postgres"
             elif "brand_id" in vars_dict:
                 recipe = "brand-baseline"
             elif "db_name" in vars_dict:
