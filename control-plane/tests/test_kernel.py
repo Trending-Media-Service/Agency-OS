@@ -1146,5 +1146,29 @@ async def test_dashboard_401_missing_tenant(client):
     assert "X-Tenant-Id header or tenant_id query parameter required" in r.text
 
 
+@pytest.mark.asyncio
+async def test_chat_intent_parsing_and_planning(client):
+    H = {"X-Tenant-Id": "t1"}
+    
+    # 1. Test static hosting request
+    r_static = await client.post("/chat", headers=H, json={
+        "brand_id": "b1", "text": "hey, please set up static hosting for woktok.co"
+    })
+    assert r_static.status_code == 200
+    data_static = r_static.json()
+    assert "static website hosting for woktok.co" in data_static["reply"]
+    assert len(data_static["cards"]) == 1
+    assert data_static["cards"][0]["action"] == "provision.static_host.create"
+
+    # 2. Test email DNS request
+    r_dns = await client.post("/chat", headers=H, json={
+        "brand_id": "b1", "text": "I need SPF and MX records for domain mailer.in"
+    })
+    assert r_dns.status_code == 200
+    data_dns = r_dns.json()
+    assert "configure email dns routing for domain mailer.in" in data_dns["reply"]
+    assert len(data_dns["cards"]) == 1
+    assert data_dns["cards"][0]["action"] == "provision.email_dns.create"
+
 
 

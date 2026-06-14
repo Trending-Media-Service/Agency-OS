@@ -27,6 +27,45 @@ class ProvisionAdapter(Adapter):
         words = intent.replace(",", " ").split()
         normalized = intent.strip().lower()
 
+        # Check if intent is for email DNS setup
+        if any(w in normalized for w in ["email", "dns", "mx", "spf", "dkim"]):
+            domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
+            return [OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="provision.email_dns.create",
+                params={
+                    "domain": domain_name,
+                    "project_id": f"aos-brand-{brand_id}",
+                    "dkim_record": "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQ",
+                    "recipe": "email-dns",
+                    "version": "0.1.0"
+                },
+                severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                cost_estimate=Money(amount_minor=0, currency="INR")
+            )]
+
+        # Check if intent is for static website hosting
+        if any(w in normalized for w in ["static"]):
+            domain_name = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
+            bucket_name = f"static-bucket-{domain_name.replace('.', '-')}"
+            return [OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="provision.static_host.create",
+                params={
+                    "domain": domain_name,
+                    "project_id": f"aos-brand-{brand_id}",
+                    "bucket_name": bucket_name,
+                    "recipe": "static-host",
+                    "version": "0.1.0"
+                },
+                severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                cost_estimate=Money(amount_minor=50_000, currency="INR")
+            )]
+
         # Check if this is a brand bootstrap intent (e.g. "onboard brand ableys" or "bootstrap brand woktok.co")
         if any(w in normalized for w in ["bootstrap", "onboard"]):
             # Find the brand name: look for next word after "brand"
