@@ -50,6 +50,9 @@ WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
 if os.getenv("ENV") == "production" and not WHATSAPP_APP_SECRET:
     raise RuntimeError("PRODUCTION BOOT ERROR: WHATSAPP_APP_SECRET must be set in production mode!")
 
+logger = logging.getLogger(__name__)
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
+
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
@@ -198,7 +201,6 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
     cards = []
     for spec in adapter.plan(body.text, tid, body.brand_id):
         row = await loop.propose(s, spec, actor="chat")
-        
         # Record LLM planning cost (simulated gemini tokens)
         from app.kernel.services import emit_cost
         await emit_cost(
@@ -876,7 +878,6 @@ async def whatsapp_webhook(
     background_tasks.add_task(process_whatsapp_webhook_payload, body, worker_session_maker)
     return {"status": "accepted"}
 
-
 @app.get("/brands/{brand_id}/status")
 async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
     """Fetches Shopify connection status and metrics for a brand."""
@@ -910,4 +911,3 @@ async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid
         "shopify_connected": True,
         "metrics": metrics
     }
-
