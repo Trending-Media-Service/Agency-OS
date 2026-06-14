@@ -82,7 +82,24 @@ class ProvisionAdapter(Adapter):
 
             # 1. Parent Saga wrapper Op
             has_db = any(w in normalized for w in ["database", "postgres", "db"])
-            preview_summary = f"Saga: Onboard Brand '{brand_name}' with Database\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy multi-service app + Cloud SQL Postgres (webapp-postgres)" if has_db else f"Saga: Onboard Brand '{brand_name}'\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy Cloud Run web host ({domain_name})"
+            is_monorepo = any(w in normalized for w in ["monorepo", "multi-service"])
+            
+            if is_monorepo:
+                api_domain = f"api.{domain_name}"
+                console_domain = f"console.{domain_name}"
+                web_domain = domain_name
+                
+                preview_summary = (
+                    f"Saga: Onboard Monorepo Brand '{brand_name}'\n"
+                    f"  - Step 1: Create project/shared DB slot (brand-baseline)\n"
+                    f"  - Step 2: Deploy Express API Backend (webapp-postgres to {api_domain})\n"
+                    f"  - Step 3: Deploy Vite Web Landing (static-host to {web_domain})\n"
+                    f"  - Step 4: Deploy Vite Console Dashboard (static-host to {console_domain})"
+                )
+            elif has_db:
+                preview_summary = f"Saga: Onboard Brand '{brand_name}' with Database\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy multi-service app + Cloud SQL Postgres (webapp-postgres)"
+            else:
+                preview_summary = f"Saga: Onboard Brand '{brand_name}'\n  - Step 1: Create project/shared DB slot (brand-baseline)\n  - Step 2: Deploy Cloud Run web host ({domain_name})"
 
             parent_spec = OpSpec(
                 id=parent_id,
@@ -97,7 +114,7 @@ class ProvisionAdapter(Adapter):
                     "preview_summary": preview_summary
                 },
                 severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
-                cost_estimate=Money(amount_minor=250_000, currency="INR"), # sum of children
+                cost_estimate=Money(amount_minor=350_000 if is_monorepo else 250_000, currency="INR"),
             )
 
             # 2. Child 1: brand-baseline recipe (GCP project setup or shared DB slot)
@@ -113,8 +130,64 @@ class ProvisionAdapter(Adapter):
                 cost_estimate=Money(amount_minor=0, currency="INR"),
             )
 
-            # 3. Child 2: web-host or webapp-postgres recipe
-            if has_db:
+            # 3. Handle Child Ops
+            if is_monorepo:
+                child2_api = OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.webapp_postgres.create",
+                    params={
+                        "project_id": f"brand-{brand_name}-tmg",
+                        "brand_id": brand_id,
+                        "tenant_id": tenant_id,
+                        "recipe": "webapp-postgres",
+                        "version": "0.1.0",
+                        "custom_domain": api_domain
+                    },
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    parent_op_id=parent_id,
+                    sequence_order=2,
+                    cost_estimate=Money(amount_minor=250_000, currency="INR"),
+                )
+                
+                child3_web = OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.static_host.create",
+                    params={
+                        "domain": web_domain,
+                        "recipe": "static-host",
+                        "version": "0.1.0",
+                        "bucket_name": f"aos-{brand_name}-web-landing"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    parent_op_id=parent_id,
+                    sequence_order=3,
+                    cost_estimate=Money(amount_minor=50_000, currency="INR"),
+                )
+                
+                child4_console = OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="provision.static_host.create",
+                    params={
+                        "domain": console_domain,
+                        "recipe": "static-host",
+                        "version": "0.1.0",
+                        "bucket_name": f"aos-{brand_name}-console-web"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    parent_op_id=parent_id,
+                    sequence_order=4,
+                    cost_estimate=Money(amount_minor=50_000, currency="INR"),
+                )
+                
+                return [parent_spec, child1, child2_api, child3_web, child4_console]
+
+            elif has_db:
                 child2 = OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,

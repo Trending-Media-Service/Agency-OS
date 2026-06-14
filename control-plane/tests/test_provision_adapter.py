@@ -360,3 +360,28 @@ async def test_provision_adapter_failed_check_and_compensation(adapter):
     assert comp.params == op_dns_fail.params
     assert comp.severity.reversibility == Reversibility.IRREVERSIBLE
 
+
+def test_provision_adapter_plan_bootstrap_monorepo(adapter):
+    ops = adapter.plan("onboard brand tanmatra monorepo tanmatra.food", "t1", "b1")
+    assert len(ops) == 5
+    parent, child1, child2_api, child3_web, child4_console = ops
+    
+    assert parent.action == "provision.brand_bootstrap.create"
+    assert "Saga: Onboard Monorepo Brand 'tanmatra'" in parent.params["preview_summary"]
+    assert "webapp-postgres to api.tanmatra.food" in parent.params["preview_summary"]
+    assert "static-host to tanmatra.food" in parent.params["preview_summary"]
+    assert "static-host to console.tanmatra.food" in parent.params["preview_summary"]
+    
+    assert child1.action == "provision.brand_baseline.create"
+    
+    assert child2_api.action == "provision.webapp_postgres.create"
+    assert child2_api.params["custom_domain"] == "api.tanmatra.food"
+    
+    assert child3_web.action == "provision.static_host.create"
+    assert child3_web.params["domain"] == "tanmatra.food"
+    assert child3_web.params["bucket_name"] == "aos-tanmatra-web-landing"
+    
+    assert child4_console.action == "provision.static_host.create"
+    assert child4_console.params["domain"] == "console.tanmatra.food"
+    assert child4_console.params["bucket_name"] == "aos-tanmatra-console-web"
+
