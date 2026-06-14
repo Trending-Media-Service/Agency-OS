@@ -188,7 +188,7 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             provisioned_ops = res.scalars().all()
             
-            real_ops = [o for o in provisioned_ops if "recipe" in o.params]
+            real_ops = [o for o in provisioned_ops if "recipe" in o.params and o.params.get("recipe") != "brand-bootstrap"]
             
             drifted_ops = []
             drift_details = {}
