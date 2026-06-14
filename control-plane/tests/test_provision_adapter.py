@@ -385,3 +385,15 @@ def test_provision_adapter_plan_bootstrap_monorepo(adapter):
     assert child4_console.params["domain"] == "console.tanmatra.food"
     assert child4_console.params["bucket_name"] == "aos-tanmatra-console-web"
 
+
+def test_provision_adapter_plan_bootstrap_dedicated(adapter):
+    ops = adapter.plan("onboard brand tanmatra monorepo tanmatra.food dedicated", "t1", "b-tanmatra")
+    assert len(ops) == 5
+    parent, child1, child2_api, child3_web, child4_console = ops
+    
+    assert child1.action == "provision.brand_baseline.create"
+    assert child1.params["tier"] == "dedicated"
+    assert child1.params["billing_account"] == "012E0F-7A4F33-26EDD8"
+    assert child1.params["folder_id"] == "338402544084"
+
+

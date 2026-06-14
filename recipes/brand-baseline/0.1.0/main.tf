@@ -1,12 +1,33 @@
 variable "brand_id" { type = string }
 variable "tenant_id" { type = string }
-variable "tier" { type = string; default = "shared" }
-variable "region" { type = string; default = "asia-south1" }
-variable "budget_amount" { type = number; default = 1000 }
-variable "billing_account" { type = string; default = "" }
-variable "folder_id" { type = string; default = "" }
-variable "shared_postgres_instance" { type = string; default = "aos-shared-postgres" }
-variable "enable_data_warehouse" { type = bool; default = false }
+variable "tier" {
+  type    = string
+  default = "shared"
+}
+variable "region" {
+  type    = string
+  default = "asia-south1"
+}
+variable "budget_amount" {
+  type    = number
+  default = 1000
+}
+variable "billing_account" {
+  type    = string
+  default = ""
+}
+variable "folder_id" {
+  type    = string
+  default = ""
+}
+variable "shared_postgres_instance" {
+  type    = string
+  default = "aos-shared-postgres"
+}
+variable "enable_data_warehouse" {
+  type    = bool
+  default = false
+}
 
 # Random password for database user
 resource "random_password" "db_password" {
@@ -16,10 +37,15 @@ resource "random_password" "db_password" {
 }
 
 # Dedicated project creation
+resource "random_id" "project_suffix" {
+  count       = var.tier == "dedicated" ? 1 : 0
+  byte_length = 4
+}
+
 resource "google_project" "brand_project" {
   count           = var.tier == "dedicated" ? 1 : 0
   name            = "brand-${var.brand_id}"
-  project_id      = "aos-brand-${var.brand_id}"
+  project_id      = "aos-${var.brand_id}-${random_id.project_suffix[0].hex}"
   folder_id       = var.folder_id != "" ? var.folder_id : null
   billing_account = var.billing_account != "" ? var.billing_account : null
 }

@@ -13,9 +13,12 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://postgres:postgres@localhost:5432/agency_os",
 )
 
-engine = create_async_engine(
-    DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20
-)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_async_engine(DATABASE_URL, echo=False)
+else:
+    engine = create_async_engine(
+        DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20
+    )
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -50,9 +53,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 WORKER_DATABASE_URL = os.getenv("WORKER_DATABASE_URL", DATABASE_URL)
-worker_engine = create_async_engine(
-    WORKER_DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20
-)
+if WORKER_DATABASE_URL.startswith("sqlite"):
+    worker_engine = create_async_engine(WORKER_DATABASE_URL, echo=False)
+else:
+    worker_engine = create_async_engine(
+        WORKER_DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20
+    )
 WorkerAsyncSessionLocal = async_sessionmaker(
     worker_engine, class_=AsyncSession, expire_on_commit=False
 )

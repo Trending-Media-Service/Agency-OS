@@ -1,7 +1,10 @@
 variable "domain" { type = string }
 variable "project_id" { type = string }
 variable "bucket_name" { type = string }
-variable "region" { type = string; default = "asia-south2" }
+variable "region" {
+  type    = string
+  default = "asia-south2"
+}
 
 # 1. GCS Bucket for website hosting
 resource "google_storage_bucket" "static_bucket" {
@@ -9,6 +12,8 @@ resource "google_storage_bucket" "static_bucket" {
   location      = var.region
   project       = var.project_id
   force_destroy = true
+
+  uniform_bucket_level_access = true
 
   website {
     main_page_suffix = "index.html"

@@ -118,12 +118,24 @@ class ProvisionAdapter(Adapter):
             )
 
             # 2. Child 1: brand-baseline recipe (GCP project setup or shared DB slot)
+            tier = "dedicated" if "dedicated" in normalized else "shared"
+            baseline_params = {
+                "tenant_id": tenant_id,
+                "brand_id": brand_id,
+                "tier": tier,
+                "recipe": "brand-baseline",
+                "version": "0.1.0"
+            }
+            if tier == "dedicated":
+                baseline_params["billing_account"] = "012E0F-7A4F33-26EDD8"
+                baseline_params["folder_id"] = "338402544084" # tenants folder ID
+
             child1 = OpSpec(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
                 domain=self.domain,
                 action="provision.brand_baseline.create",
-                params={"brand_id": brand_id, "tier": "shared", "recipe": "brand-baseline", "version": "0.1.0"},
+                params=baseline_params,
                 severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
                 parent_op_id=parent_id,
                 sequence_order=1,
@@ -525,11 +537,32 @@ terraform {
             elif key == "custom_domain" and "domain" in op.params:
                 var_values["custom_domain"] = op.params["domain"]
             elif key == "project_id" and "project_id" not in op.params:
-                var_values["project_id"] = f"aos-brand-{op.brand_id}"
+                resolved = self._resolve_project_id_from_baseline(op)
+                var_values["project_id"] = resolved or f"aos-brand-{op.brand_id}"
                 
         vars_file = os.path.join(temp_dir, "terraform.tfvars.json")
+        logger.info(f"TFVARS generated for Op {op.action}: {json.dumps(var_values)}")
         with open(vars_file, "w") as f:
             json.dump(var_values, f)
+
+    def _resolve_project_id_from_baseline(self, op: OpSpec) -> Optional[str]:
+        """Reads the parent brand-baseline remote state from GCS and parses the project_id output."""
+        state_bucket = os.getenv("AOS_STATE_BUCKET")
+        if not state_bucket:
+            return None
+            
+        gcs_path = f"gs://{state_bucket}/provision/{op.tenant_id}/{op.brand_id}/brand-baseline/default/state/default.tfstate"
+        try:
+            res = subprocess.run(["gsutil", "cat", gcs_path], capture_output=True, text=True, check=False)
+            if res.returncode == 0:
+                state_data = json.loads(res.stdout)
+                project_id = state_data.get("outputs", {}).get("project_id", {}).get("value")
+                if project_id:
+                    logger.info(f"Resolved parent project ID '{project_id}' from baseline state in GCS for brand '{op.brand_id}'")
+                    return project_id
+        except Exception as e:
+            logger.warning(f"Failed to resolve project ID from GCS baseline state: {e}")
+        return None
 
     def _get_init_args(self, op: OpSpec) -> list[str]:
         args = ["init", "-input=false", "-no-color"]

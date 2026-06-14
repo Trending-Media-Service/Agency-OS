@@ -1,11 +1,26 @@
 variable "project_id" { type = string }
 variable "brand_id" { type = string }
 variable "tenant_id" { type = string }
-variable "region" { type = string; default = "asia-south2" }
-variable "db_tier" { type = string; default = "db-f1-micro" }
-variable "api_service" { type = string; default = "wellness-foods" }
-variable "frontend_service" { type = string; default = "tanmatra" }
-variable "repo_url" { type = string; default = "https://github.com/chan8822/Wellness-Foods.git" }
+variable "region" {
+  type    = string
+  default = "asia-south2"
+}
+variable "db_tier" {
+  type    = string
+  default = "db-f1-micro"
+}
+variable "api_service" {
+  type    = string
+  default = "wellness-foods"
+}
+variable "frontend_service" {
+  type    = string
+  default = "tanmatra"
+}
+variable "repo_url" {
+  type    = string
+  default = "https://github.com/chan8822/Wellness-Foods.git"
+}
 
 locals {
   db_instance_name = "brand-${var.brand_id}-db"

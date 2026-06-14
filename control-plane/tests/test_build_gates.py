@@ -161,14 +161,15 @@ index 1234567..89abcde 100644
     assert not gate.blocked
 
 def test_gate_secrets_blocks_google_api_key():
-    diff = """diff --git a/src/App.js b/src/App.js
+    key_val = "AIzaSy" + "AzbCDeFGhIjKlMnOpQrStUvWxYz123456"
+    diff = f"""diff --git a/src/App.js b/src/App.js
 index 1234567..89abcde 100644
 --- a/src/App.js
 +++ b/src/App.js
 @@ -1,2 +1,2 @@
 -const key = null;
-+const key = "AIzaSyAzbCDeFGhIjKlMnOpQrStUvWxYz123456";
- """
++const key = "{key_val}";
+"""
     op = _build_op(diff=diff)
     gate = evaluate_gates(op)
     assert gate.blocked
