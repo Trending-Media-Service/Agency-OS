@@ -1,0 +1,16 @@
+name: email-dns
+version: 0.1.0
+description: Configure custom DNS records (MX, SPF, DKIM) for third-party email routing
+inputs:
+  domain: {type: string, required: true}
+  project_id: {type: string, required: true}
+  mx_records: {type: list, default: ["10 feedback-smtp.us-east-1.amazonses.com"]}
+  spf_record: {type: string, default: "v=spf1 include:amazonses.com ~all"}
+  dkim_record: {type: string, required: true}
+outputs: [dns_verified]
+cost_estimate_monthly: {amount_minor: 0, currency: INR}
+severity: {impact: 1, reversibility: COMPENSATABLE}
+reversibility_map:
+  dns_records: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [mx_valid, spf_valid, dkim_valid]
