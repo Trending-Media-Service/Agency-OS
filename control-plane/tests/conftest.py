@@ -91,8 +91,6 @@ def mock_terraform_cli():
                 recipe = "n8n"
             elif "gtm_container_config" in vars_dict:
                 recipe = "sgtm-capi"
-            elif "webhook_url" in vars_dict:
-                recipe = "payment-gateway"
             elif "dkim_record" in vars_dict:
                 recipe = "email-dns"
             elif "bucket_name" in vars_dict:
@@ -122,9 +120,7 @@ def mock_terraform_cli():
                 else:
                     if recipe == "brand-baseline":
                         brand = vars_dict.get("brand_id", "example-brand")
-                        enable_dw = vars_dict.get("enable_data_warehouse", False)
-                        bq_part = "\n+ bigquery dataset moat_warehouse" if enable_dw else ""
-                        mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}{bq_part}"
+                        mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
                     elif recipe == "webapp-postgres":
                         mock_res.stdout = "Plan: 8 to add, 0 to change, 0 to destroy.\n+ sql_instance postgres\n+ secret db_url\n+ artifact_registry repo"
                     elif recipe == "web-host":
@@ -132,8 +128,6 @@ def mock_terraform_cli():
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
                     elif recipe == "sgtm-capi":
                         mock_res.stdout = "Plan: 5 to add, 0 to change, 0 to destroy.\n+ google_cloud_run_service sgtm\n+ google_secret_manager_secret capi_token\n+ google_secret_manager_secret capi_pixel"
-                    elif recipe == "payment-gateway":
-                        mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_secret_manager_secret webhook_secret\n+ random_id webhook_id"
                     elif recipe == "email-dns":
                         mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_dns_record_set mx\n+ google_dns_record_set spf\n+ google_dns_record_set dkim"
                     elif recipe == "static-host":
@@ -172,13 +166,6 @@ def mock_terraform_cli():
                     outputs = {
                         "sgtm_url": {"type": "string", "value": "https://sgtm-container-123.run.app"},
                         "dns_verified": {"type": "bool", "value": True}
-                    }
-                elif recipe == "payment-gateway":
-                    provider = vars_dict.get("provider", "stripe")
-                    outputs = {
-                        "webhook_id": {"type": "string", "value": "wh_stripe_12345"},
-                        "webhook_secret_ref": {"type": "string", "value": f"projects/123/secrets/payment-{provider}-webhook-signing-key"},
-                        "status": {"type": "string", "value": "active"}
                     }
                 elif recipe == "webapp-postgres":
                     outputs = {

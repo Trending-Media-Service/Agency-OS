@@ -26,7 +26,7 @@ locals {
   db_instance_name = "brand-${var.brand_id}-db"
   db_name          = "brand_${var.brand_id}"
   db_user          = "brand_${var.brand_id}_user"
-  repo_name        = "wellness"
+  repo_name        = "wellness-${var.brand_id}"
 }
 
 resource "random_password" "db_password" {
@@ -146,6 +146,12 @@ resource "google_secret_manager_secret_iam_member" "admin_session_access" {
   project   = var.project_id
 }
 
+resource "google_project_iam_member" "db_client_access" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
+}
+
 # Trigger deploy and migration script
 resource "null_resource" "deploy" {
   depends_on = [
@@ -154,6 +160,7 @@ resource "null_resource" "deploy" {
     google_secret_manager_secret_version.db_url_version,
     google_secret_manager_secret_version.session_sec_version,
     google_secret_manager_secret_version.admin_session_sec_version,
+    google_project_iam_member.db_client_access,
     google_artifact_registry_repository.repo,
     google_secret_manager_secret_iam_member.db_url_access,
     google_secret_manager_secret_iam_member.session_access,
@@ -161,7 +168,11 @@ resource "null_resource" "deploy" {
   ]
 
   triggers = {
-    repo_url = var.repo_url
+    repo_url         = var.repo_url
+    project_id       = var.project_id
+    region           = var.region
+    api_service      = var.api_service
+    frontend_service = var.frontend_service
   }
 
   provisioner "local-exec" {
@@ -179,6 +190,14 @@ resource "null_resource" "deploy" {
       FRONTEND_SERVICE  = var.frontend_service
       REPO_URL          = var.repo_url
     }
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<EOT
+      gcloud run services delete ${self.triggers.api_service} --platform managed --region ${self.triggers.region} --project ${self.triggers.project_id} --quiet || true
+      gcloud run services delete ${self.triggers.frontend_service} --platform managed --region ${self.triggers.region} --project ${self.triggers.project_id} --quiet || true
+    EOT
   }
 }
 

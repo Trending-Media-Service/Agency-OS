@@ -33,18 +33,31 @@ echo "Patching cloudbuild.yaml..."
 # Replace substitutions using standard sed
 sed -i -E "s|_PROJECT:\s*\S+|_PROJECT: $PROJECT_ID|g" "$CLOUDBUILD_FILE"
 sed -i -E "s|_REGION:\s*\S+|_REGION: $REGION|g" "$CLOUDBUILD_FILE"
-sed -i -E "s|_REPO:\s*\S+|_REPO: wellness|g" "$CLOUDBUILD_FILE"
+sed -i -E "s|_REPO:\s*\S+|_REPO: wellness-${BRAND_ID}|g" "$CLOUDBUILD_FILE"
 sed -i -E "s|_API_SERVICE:\s*\S+|_API_SERVICE: $API_SERVICE|g" "$CLOUDBUILD_FILE"
 sed -i -E "s|_FRONTEND_SERVICE:\s*\S+|_FRONTEND_SERVICE: $FRONTEND_SERVICE|g" "$CLOUDBUILD_FILE"
 sed -i -E "s|_API_URL:\s*\S+|_API_URL: $API_URL|g" "$CLOUDBUILD_FILE"
 sed -i -E "s|_FRONTEND_ORIGIN:\s*\S+|_FRONTEND_ORIGIN: $FRONTEND_ORIGIN|g" "$CLOUDBUILD_FILE"
 
-# Map Secret Manager secrets
-sed -i "s|DATABASE_URL=wellness-foods-database-url:latest|DATABASE_URL=brand-${BRAND_ID}-database-url:latest|g" "$CLOUDBUILD_FILE"
-sed -i "s|SESSION_SECRET=wellness-foods-session-secret:latest|SESSION_SECRET=brand-${BRAND_ID}-session-secret:latest,ADMIN_SESSION_SECRET=brand-${BRAND_ID}-admin-session-secret:latest|g" "$CLOUDBUILD_FILE"
+# Map Secret Manager secrets (handles both default placeholder and hardcoded v-names)
+sed -i -E "s|brand-b-tanmatra-v[0-9]+-database-url|brand-${BRAND_ID}-database-url|g" "$CLOUDBUILD_FILE"
+sed -i -E "s|brand-b-tanmatra-v[0-9]+-session-secret|brand-${BRAND_ID}-session-secret|g" "$CLOUDBUILD_FILE"
+sed -i -E "s|brand-b-tanmatra-v[0-9]+-admin-session-secret|brand-${BRAND_ID}-admin-session-secret|g" "$CLOUDBUILD_FILE"
+sed -i -E "s|wellness-foods-database-url|brand-${BRAND_ID}-database-url|g" "$CLOUDBUILD_FILE"
+sed -i -E "s|wellness-foods-session-secret|brand-${BRAND_ID}-session-secret|g" "$CLOUDBUILD_FILE"
 
-# Remove hardcoded ADMIN_SESSION_SECRET from env-vars
-sed -i -E "s|ADMIN_SESSION_SECRET=[a-zA-Z0-9]+,||g" "$CLOUDBUILD_FILE"
+# Map secrets and cloudsql instances in deploy-api step of cloudbuild.yaml
+python3 -c '
+import sys
+f = sys.argv[1]
+c = open(f).read()
+c = c.replace("      - ALLOWED_ORIGINS=\x24_FRONTEND_ORIGIN", """      - ALLOWED_ORIGINS=\x24_FRONTEND_ORIGIN,NODE_ENV=development
+      - --set-secrets
+      - DATABASE_URL=brand-'"${BRAND_ID}"'-database-url:latest,SESSION_SECRET=brand-'"${BRAND_ID}"'-session-secret:latest,ADMIN_SESSION_SECRET=brand-'"${BRAND_ID}"'-admin-session-secret:latest
+      - --add-cloudsql-instances
+      - '"${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME}"'""")
+open(f, "w").write(c)
+' "$CLOUDBUILD_FILE"
 
 # Map Cloud SQL instance
 sed -i "s|--add-cloudsql-instances=\S+|--add-cloudsql-instances=${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME}|g" "$CLOUDBUILD_FILE"
@@ -56,6 +69,15 @@ sed -i "s|REDIS_URL=\S+|REDIS_URL=${REDIS_URL}|g" "$CLOUDBUILD_FILE"
 echo "Submitting Cloud Build job..."
 gcloud builds submit --config="$CLOUDBUILD_FILE" --project="$PROJECT_ID" --substitutions=COMMIT_SHA=latest --quiet "$TEMP_DIR"
 echo "Cloud Build job completed successfully."
+
+echo "Configuring Cloud Run API service with database URL and proxy..."
+gcloud run services update "$API_SERVICE" \
+  --set-env-vars="ALLOWED_ORIGINS=$FRONTEND_ORIGIN,GOOGLE_API_KEY=$FRESH_API_KEY,REDIS_URL=$REDIS_URL,NODE_ENV=development" \
+  --set-secrets="DATABASE_URL=brand-${BRAND_ID}-database-url:latest,SESSION_SECRET=brand-${BRAND_ID}-session-secret:latest,ADMIN_SESSION_SECRET=brand-${BRAND_ID}-admin-session-secret:latest" \
+  --add-cloudsql-instances="${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME}" \
+  --region="$REGION" \
+  --project="$PROJECT_ID" \
+  --quiet
 
 echo "Starting database schema migration..."
 if [ ! -f "$PROXY_PATH" ]; then
