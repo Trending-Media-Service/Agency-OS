@@ -47,6 +47,16 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
 5. **Cloud Tasks** queue for the outbox; **Cloud Scheduler** → `POST /tasks/trust-snapshots` nightly.
    The web approval dashboard and `/webhooks/whatsapp` run on the same service.
 
+## Phase B.1 — deploy the Web Console (Frontend)
+1. **Build and push the frontend image:** Build it from the repository root using:
+   ```bash
+   docker build -t gcr.io/<gcp-project-id>/control-plane-web:latest -f control-plane/web/Dockerfile control-plane/web/
+   docker push gcr.io/<gcp-project-id>/control-plane-web:latest
+   ```
+2. **Deploy to Cloud Run:** Deploy the container to a second Cloud Run service.
+3. **Environment variables:**
+   - `NEXT_PUBLIC_API_URL`: The public URL of the control plane backend API deployed in Phase B.
+
 ## Phase C — onboard a brand (governed flow)
 Per brand (e.g. Ableys → `ableys.in`, Tanmatra → `tanmatra.food`):
 1. **Create tenant + brand**
