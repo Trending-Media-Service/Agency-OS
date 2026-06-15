@@ -154,3 +154,20 @@ async def test_rls_isolates_approvals(rls_db):
 async def test_rls_isolates_orders(rls_db):
     assert await _get_ids(rls_db, "orders", "tenant-a") == ["order-a"]
     assert await _get_ids(rls_db, "orders", "tenant-b") == ["order-b"]
+
+
+async def test_rls_blocks_cross_tenant_read(rls_db):
+    async with rls_db() as s:
+        async with s.begin():
+            # Assert that under tenant-a context, tenant-b's data is invisible even with direct ID lookup
+            await s.execute(text("SELECT set_config('app.current_tenant_id', 'tenant-a', true)"))
+            
+            res_brand = await s.execute(text("SELECT id FROM brands WHERE id = 'brand-abl'"))
+            assert res_brand.scalar_one_or_none() is None
+
+            res_app = await s.execute(text("SELECT id FROM approvals WHERE id = 'app-b'"))
+            assert res_app.scalar_one_or_none() is None
+
+            res_order = await s.execute(text("SELECT id FROM orders WHERE id = 'order-b'"))
+            assert res_order.scalar_one_or_none() is None
+

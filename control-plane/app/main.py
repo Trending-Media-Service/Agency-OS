@@ -228,7 +228,7 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
                                   if row.cost_amount_minor else None),
                 "violations": [v.as_dict() for v in gate.violations],
             })
-            if row.state == "AWAITING_APPROVAL":
+            if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
                 background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
     await s.commit()
     return {"cards": cards}
@@ -722,7 +722,7 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
             stmt_dup_saga = select(OpRow).where(
                 OpRow.tenant_id == tenant_id,
                 OpRow.brand_id == brand_id,
-                OpRow.action == "grow.reallocate_budget.apply",
+                OpRow.action == "grow.budget.reallocate",
                 OpRow.state == "PROPOSED"
             )
             res_dup_saga = await s.execute(stmt_dup_saga)
@@ -736,7 +736,7 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
-                    action="grow.reallocate_budget.apply",
+                    action="grow.budget.reallocate",
                     params={
                         "transfer_amount_minor": transfer_amount_minor,
                         "source_campaign_id": worst_google_id,

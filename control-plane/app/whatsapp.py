@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ WHATSAPP_APPROVER_PHONE = os.getenv("WHATSAPP_APPROVER_PHONE")
 WHATSAPP_TEMPLATE_NAME = os.getenv("WHATSAPP_TEMPLATE_NAME", "agency_os_approval")
 
 
-async def send_approval_card(op: OpRow) -> bool:
+async def send_approval_card(op: OpRow, session: Optional[AsyncSession] = None) -> bool:
     """Sends an approval card to the configured WhatsApp phone number."""
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID or not WHATSAPP_APPROVER_PHONE:
         logger.warning("WhatsApp config missing. Skipping send.")
@@ -27,51 +28,92 @@ async def send_approval_card(op: OpRow) -> bool:
         "Content-Type": "application/json",
     }
 
-    # Format parameters for template body variables
-    # {{1}} = Summary (action)
-    # {{2}} = Preview Summary
-    # {{3}} = Cost Estimate
-    # {{4}} = Severity/Reversibility
-    cost_str = (f"{op.cost_amount_minor/100:.2f} {op.cost_currency}/mo"
-                if op.cost_amount_minor else "0.00 INR/mo")
-    severity_str = f"Impact: {op.impact}, Reversibility: {op.reversibility}"
+    from app.models import OpTrace
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": WHATSAPP_APPROVER_PHONE,
-        "type": "template",
-        "template": {
-            "name": WHATSAPP_TEMPLATE_NAME,
-            "language": {"code": "en_US"},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [
-                        {"type": "text", "text": op.action},
-                        {"type": "text", "text": op.preview_summary or "No preview available"},
-                        {"type": "text", "text": cost_str},
-                        {"type": "text", "text": severity_str},
-                    ]
-                },
-                {
-                    "type": "button",
-                    "sub_type": "quick_reply",
-                    "index": "0",
-                    "parameters": [
-                        {"type": "payload", "payload": f"approve_{op.id}"}
-                    ]
-                },
-                {
-                    "type": "button",
-                    "sub_type": "quick_reply",
-                    "index": "1",
-                    "parameters": [
-                        {"type": "payload", "payload": f"reject_{op.id}"}
-                    ]
-                }
-            ]
+    if op.state == "BLOCKED":
+        violations_str = ""
+        if session:
+            stmt = select(OpTrace).where(OpTrace.op_id == op.id, OpTrace.kind == "gate").limit(1)
+            res = await session.execute(stmt)
+            t = res.scalar_one_or_none()
+            if t and isinstance(t.detail, dict) and "violations" in t.detail:
+                for v in t.detail["violations"]:
+                    rule_id = v.get("rule_id", "unknown_rule")
+                    limit = v.get("limit", "n/a")
+                    attempted = v.get("attempted", "n/a")
+                    delta = v.get("delta", "n/a")
+                    violations_str += f"\n• *Rule:* `{rule_id}` breached.\n  - *Limit:* {limit}\n  - *Attempted:* {attempted}\n  - *Delta:* {delta}\n"
+        
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": WHATSAPP_APPROVER_PHONE,
+            "type": "text",
+            "text": {
+                "body": f"🛑 *Operation Blocked by Safety Guardrails*\n\n*Action:* {op.action}\n*ID:* `{op.id}`\n\n*Violations:*{violations_str or '\n• Unknown policy violation.'}"
+            }
         }
-    }
+    elif op.action == "grow.alert.dispatch":
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": WHATSAPP_APPROVER_PHONE,
+            "type": "text",
+            "text": {
+                "body": f"⚠️ *Grow Alert Notification*\n\n{op.preview_summary or op.params.get('message')}"
+            }
+        }
+    else:
+        # Format parameters dynamically based on card/action type
+        action_title = op.action
+        cost_str = (f"{op.cost_amount_minor/100:.2f} {op.cost_currency}/mo"
+                    if op.cost_amount_minor else "0.00 INR/mo")
+        severity_str = f"Impact: {op.impact}, Reversibility: {op.reversibility}"
+
+        if op.action == "grow.bid.adjust":
+            action_title = "Grow: Bid Adjustment"
+            cost_str = "No immediate cost impact"
+        elif op.action == "grow.budget.reallocate":
+            action_title = "Grow: Budget Reallocation"
+            cost_str = "0.00 INR (Cross-channel shift)"
+        elif op.action == "grow.campaign.pause":
+            action_title = "Grow: Pause Campaign"
+            cost_str = "Stops active spend"
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": WHATSAPP_APPROVER_PHONE,
+            "type": "template",
+            "template": {
+                "name": WHATSAPP_TEMPLATE_NAME,
+                "language": {"code": "en_US"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": action_title},
+                            {"type": "text", "text": op.preview_summary or "No preview available"},
+                            {"type": "text", "text": cost_str},
+                            {"type": "text", "text": severity_str},
+                        ]
+                    },
+                    {
+                        "type": "button",
+                        "sub_type": "quick_reply",
+                        "index": "0",
+                        "parameters": [
+                            {"type": "payload", "payload": f"approve_{op.id}"}
+                        ]
+                    },
+                    {
+                        "type": "button",
+                        "sub_type": "quick_reply",
+                        "index": "1",
+                        "parameters": [
+                            {"type": "payload", "payload": f"reject_{op.id}"}
+                        ]
+                    }
+                ]
+            }
+        }
 
     try:
         async with httpx.AsyncClient() as client:
@@ -100,7 +142,7 @@ async def send_whatsapp_card_task(op_id: str, session_maker):
         async with s.begin():
             row = await s.get(OpRow, op_id)
             if row:
-                wamid = await send_approval_card(row)
+                wamid = await send_approval_card(row, s)
                 if wamid:
                     s.add(OpTrace(op_id=row.id, tenant_id=row.tenant_id, kind="whatsapp_card_sent", detail={"wamid": wamid}))
             else:

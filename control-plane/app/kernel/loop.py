@@ -620,6 +620,9 @@ async def _compensate(s: AsyncSession, row: OpRow, adapter: Adapter, spec: OpSpe
     comp_ops = adapter.compensate(spec)
     trace(s, row.id, row.tenant_id, "note", {"compensation_ops": [c.action for c in comp_ops]})
     
+    if row.state != OpState.COMPENSATING.value:
+        await transition(s, row, OpState.COMPENSATING, actor="kernel")
+
     # Execute compensations if returned
     for comp in comp_ops:
         res = await adapter.execute(comp, idem_key=comp.idem_key or f"comp-{row.id}", session=s)

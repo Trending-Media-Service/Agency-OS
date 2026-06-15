@@ -320,10 +320,10 @@ def build_rules(p: RulesetParams) -> list[Rule]:
             applies=lambda op: op.action == "grow.budget.reallocate",
             check=lambda op: Violation(
                 rule_id="grow_budget_transfer_cap", limit=f"amount <= {p.grow_budget_transfer_cap_minor / 100:,.2f} INR",
-                attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
-                delta=f"+{(op.params.get('amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
+                attempted=f"{op.params.get('transfer_amount_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('transfer_amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
                 message="Budget transfer exceeds the per-action cap.",
-            ) if op.params.get("amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+            ) if op.params.get("transfer_amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
         ),
         Rule(
             id="statutory_refund_gate",
@@ -414,6 +414,8 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
     within gates, impact <= 2, never irreversible, never statutory-flagged."""
     if gate.blocked:
         return "BLOCKED"
+    if op.action == "grow.alert.dispatch":
+        return "AUTO"
     if tier == 0:
         return "BLOCKED"  # lockout: state-changing Ops do not proceed
     if (tier == 2 and not gate.requires_human and op.severity.impact <= 2
