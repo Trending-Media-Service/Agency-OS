@@ -102,7 +102,7 @@ async def send_whatsapp_card_task(op_id: str, session_maker):
             if row:
                 wamid = await send_approval_card(row)
                 if wamid:
-                    s.add(OpTrace(op_id=row.id, kind="whatsapp_card_sent", detail={"wamid": wamid}))
+                    s.add(OpTrace(op_id=row.id, tenant_id=row.tenant_id, kind="whatsapp_card_sent", detail={"wamid": wamid}))
             else:
                 logger.error(f"Op {op_id} not found in background task")
 

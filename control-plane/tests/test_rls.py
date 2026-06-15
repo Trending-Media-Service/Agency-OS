@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.models import Base
+from migrate import migrate as run_migrate
 
 ADMIN_URL = os.getenv(
     "DATABASE_URL",
@@ -44,13 +45,11 @@ async def rls_db():
     admin = create_async_engine(ADMIN_URL, poolclass=NullPool)
     async with admin.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-        for tbl, col in (("tenants", "id"), ("brands", "tenant_id")):
-            await conn.execute(text(f"ALTER TABLE {tbl} ENABLE ROW LEVEL SECURITY"))
-            await conn.execute(text(f"ALTER TABLE {tbl} FORCE ROW LEVEL SECURITY"))
-            await conn.execute(text(
-                f"CREATE POLICY tenant_isolation_{tbl} ON {tbl} FOR ALL "
-                f"USING ({col} = current_setting('app.current_tenant_id', true))"))
+    
+    # Run migration to create tables and enable RLS
+    await run_migrate(admin)
+
+    async with admin.begin() as conn:
         await conn.execute(text(
             f"DO $$ BEGIN CREATE ROLE {APP_ROLE} LOGIN PASSWORD '{APP_PW}'; "
             f"EXCEPTION WHEN duplicate_object THEN NULL; END $$"))
@@ -64,6 +63,22 @@ async def rls_db():
         await conn.execute(text(
             "INSERT INTO brands (id, tenant_id, name, created_at) VALUES "
             "('brand-wok','tenant-a','Wok-Tok',now()), ('brand-abl','tenant-b','Ableys',now())"))
+        await conn.execute(text(
+            "INSERT INTO ops (id, tenant_id, brand_id, domain, action, state, impact, reversibility, created_at, idem_key) VALUES "
+            "('op-a', 'tenant-a', 'brand-wok', 'web', 'deploy', 'DONE', 1, 'reversible', now(), 'idem-a'), "
+            "('op-b', 'tenant-b', 'brand-abl', 'web', 'deploy', 'DONE', 1, 'reversible', now(), 'idem-b')"))
+        await conn.execute(text(
+            "INSERT INTO op_traces (tenant_id, op_id, kind, detail, ts) VALUES "
+            "('tenant-a', 'op-a', 'note', '{}', now()), "
+            "('tenant-b', 'op-b', 'note', '{}', now())"))
+        await conn.execute(text(
+            "INSERT INTO approvals (id, tenant_id, op_id, actor, role, surface, decision, ts) VALUES "
+            "('app-a', 'tenant-a', 'op-a', 'user-a', 'owner', 'web', 'approve', now()), "
+            "('app-b', 'tenant-b', 'op-b', 'user-b', 'owner', 'web', 'approve', now())"))
+        await conn.execute(text(
+            "INSERT INTO orders (id, tenant_id, brand_id, amount_minor, placed_at, created_at) VALUES "
+            "('order-a', 'tenant-a', 'brand-wok', 100, now(), now()), "
+            "('order-b', 'tenant-b', 'brand-abl', 100, now(), now())"))
 
     p = urlparse(ADMIN_URL)
     app_url = f"postgresql+asyncpg://{APP_ROLE}:{APP_PW}@{p.hostname}:{p.port or 5432}{p.path}"
@@ -106,3 +121,36 @@ async def test_rls_blocks_cross_tenant_write(rls_db):
                     "INSERT INTO brands (id, tenant_id, name, created_at) "
                     "VALUES ('evil','tenant-b','X',now())"))
     assert "row-level security" in str(exc.value).lower()
+
+
+async def _get_ids(sessions, table_name, tenant_id):
+    async with sessions() as s:
+        async with s.begin():
+            if tenant_id is not None:
+                await s.execute(text("SELECT set_config('app.current_tenant_id', :t, true)"), {"t": tenant_id})
+            rows = await s.execute(text(f"SELECT id FROM {table_name} ORDER BY id"))
+            return [r[0] for r in rows]
+
+
+async def _get_op_traces_op_ids(sessions, tenant_id):
+    async with sessions() as s:
+        async with s.begin():
+            if tenant_id is not None:
+                await s.execute(text("SELECT set_config('app.current_tenant_id', :t, true)"), {"t": tenant_id})
+            rows = await s.execute(text("SELECT op_id FROM op_traces ORDER BY op_id"))
+            return [r[0] for r in rows]
+
+
+async def test_rls_isolates_op_traces(rls_db):
+    assert await _get_op_traces_op_ids(rls_db, "tenant-a") == ["op-a"]
+    assert await _get_op_traces_op_ids(rls_db, "tenant-b") == ["op-b"]
+
+
+async def test_rls_isolates_approvals(rls_db):
+    assert await _get_ids(rls_db, "approvals", "tenant-a") == ["app-a"]
+    assert await _get_ids(rls_db, "approvals", "tenant-b") == ["app-b"]
+
+
+async def test_rls_isolates_orders(rls_db):
+    assert await _get_ids(rls_db, "orders", "tenant-a") == ["order-a"]
+    assert await _get_ids(rls_db, "orders", "tenant-b") == ["order-b"]

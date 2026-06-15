@@ -17,6 +17,7 @@ from app.adapters.presence import PresenceAdapter
 from app.adapters.grow import GrowAdapter
 from app.adapters.manage import ManageAdapter
 from app.adapters.build import BuildAdapter
+from app.adapters.governance import GovernanceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
@@ -41,6 +42,7 @@ loop.register(PresenceAdapter())
 loop.register(GrowAdapter())
 loop.register(ManageAdapter())
 loop.register(BuildAdapter())
+loop.register(GovernanceAdapter())
 
 logger = logging.getLogger(__name__)
 RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
@@ -727,19 +729,14 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
             if not res_dup_saga.scalar_one_or_none():
                 logger.warning(f"Optimization triggered: Proposing budget reallocation from Google Ads ({worst_google_id}) to Meta Ads ({best_meta_id})")
 
-                saga_id = uuid.uuid4().hex
+                from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
 
-                # Parent Saga
-                parent_saga = OpRow(
-                    id=saga_id,
+                # Propose Parent Saga
+                parent_saga = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
                     action="grow.reallocate_budget.apply",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
-                    preview_summary=f"Budget Transfer: Move 1,000.00 INR from Google Ads ({worst_google['op'].params.get('name')}) to Meta Ads ({best_meta['op'].params.get('name')}) due to ROAS performance difference (Meta: {best_meta['roas']:.2f}, Google: {worst_google['roas']:.2f}).",
                     params={
                         "transfer_amount_minor": transfer_amount_minor,
                         "source_campaign_id": worst_google_id,
@@ -747,21 +744,16 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "target_campaign_id": best_meta_id,
                         "target_provider": "meta-ads"
                     },
-                    idem_key=f"idem_saga_{saga_id}"
-                )
-                s.add(parent_saga)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                ), actor="optimizer")
 
-                # Child 1: Decrease Google Ads campaign budget
-                child1_id = uuid.uuid4().hex
-                child1 = OpRow(
-                    id=child1_id,
+                # Propose Child 1: Decrease Google Ads campaign budget
+                child1 = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
                     action="grow.campaign.update",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
                     params={
                         "campaign_id": worst_google_id,
                         "provider": "google-ads",
@@ -769,23 +761,18 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "previous_budget_minor": worst_google["budget_minor"],
                         "bid_minor": worst_google["op"].params.get("bid_minor")
                     },
-                    parent_op_id=saga_id,
-                    sequence_order=1,
-                    idem_key=f"idem_child1_{child1_id}"
-                )
-                s.add(child1)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                    parent_op_id=parent_saga.id,
+                    sequence_order=1
+                ), actor="optimizer")
 
-                # Child 2: Increase Meta Ads campaign budget
-                child2_id = uuid.uuid4().hex
-                child2 = OpRow(
-                    id=child2_id,
+                # Propose Child 2: Increase Meta Ads campaign budget
+                child2 = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
                     action="grow.campaign.update",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
                     params={
                         "campaign_id": best_meta_id,
                         "provider": "meta-ads",
@@ -793,11 +780,11 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "previous_budget_minor": best_meta["budget_minor"],
                         "bid_minor": best_meta["op"].params.get("bid_minor")
                     },
-                    parent_op_id=saga_id,
-                    sequence_order=2,
-                    idem_key=f"idem_child2_{child2_id}"
-                )
-                s.add(child2)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                    parent_op_id=parent_saga.id,
+                    sequence_order=2
+                ), actor="optimizer")
 
                 logger.info("Inserted budget reallocation proposed Saga Op with 2 children")
 
@@ -911,3 +898,23 @@ async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid
         "shopify_connected": True,
         "metrics": metrics
     }
+
+@app.get("/brands/{brand_id}/poas")
+async def get_brand_poas(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+    
+    from app.profit.poas import calculate_campaign_poas
+    reports = await calculate_campaign_poas(s, tid, brand_id)
+    return {"brand_id": brand_id, "reports": reports}
+
+@app.get("/brands/{brand_id}/performance-score")
+async def get_brand_performance_score(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+    
+    from app.profit.brand_score import calculate_brand_score
+    score = await calculate_brand_score(s, tid, brand_id)
+    return {"brand_id": brand_id, "performance_score": score}

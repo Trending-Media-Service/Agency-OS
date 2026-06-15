@@ -10,7 +10,8 @@ from app.models import (
     FulfillmentCost,
     Campaign,
     SpendFact,
-    Touchpoint
+    Touchpoint,
+    BrandProperty
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,18 @@ async def calculate_campaign_poas(
     POAS = contribution_margin / spend.
     Organics sit at the top. Other campaigns sorted worst-POAS-first.
     """
+    # Fetch incrementality multiplier alpha_inc (default to 1.0)
+    alpha_inc = 1.0
+    stmt_alpha = select(BrandProperty).where(
+        BrandProperty.tenant_id == tenant_id,
+        BrandProperty.brand_id == brand_id,
+        BrandProperty.type == "attribution_multiplier"
+    ).limit(1)
+    res_alpha = await s.execute(stmt_alpha)
+    alpha_prop = res_alpha.scalar_one_or_none()
+    if alpha_prop and alpha_prop.findings and "alpha_inc" in alpha_prop.findings:
+        alpha_inc = float(alpha_prop.findings["alpha_inc"])
+
     # 1. Fetch all relevant tables
     orders_q = await s.execute(select(Order).where(Order.tenant_id == tenant_id, Order.brand_id == brand_id))
     orders = orders_q.scalars().all()
@@ -270,6 +283,7 @@ async def calculate_campaign_poas(
         # Compute POAS and ROAS
         poas = round(bd["contribution_margin_minor"] / spend, 2) if spend > 0 else None
         roas = round(bd["gross_revenue_minor"] / spend, 2) if spend > 0 else None
+        ipoas = round(poas * alpha_inc, 2) if poas is not None else None
         clicks = campaign_clicks.get(c.id, 0)
         orders_count = campaign_orders_count.get(c.id, 0)
 
@@ -282,6 +296,8 @@ async def calculate_campaign_poas(
             "contribution_margin_minor": bd["contribution_margin_minor"],
             "poas": poas,
             "roas": roas,
+            "ipoas": ipoas,
+            "alpha_inc": alpha_inc,
             "breakdown": {
                 **bd,
                 "spend_minor": spend
@@ -302,6 +318,8 @@ async def calculate_campaign_poas(
             "contribution_margin_minor": organic_bd["contribution_margin_minor"],
             "poas": None,
             "roas": None,
+            "ipoas": None,
+            "alpha_inc": alpha_inc,
             "breakdown": {
                 **organic_bd,
                 "spend_minor": 0

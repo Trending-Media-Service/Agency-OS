@@ -950,7 +950,7 @@ async def test_decision_latency_is_measured(db_engine):
     async with async_session() as s:
         row = await loop.propose(s, _spec(), actor="test")
         row.state = "AWAITING_APPROVAL"
-        s.add(OpTrace(op_id=row.id, kind="transition", detail={"to": "AWAITING_APPROVAL"},
+        s.add(OpTrace(op_id=row.id, tenant_id=row.tenant_id, kind="transition", detail={"to": "AWAITING_APPROVAL"},
                       ts=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)))
         await s.commit()
     async with async_session() as s:
@@ -969,7 +969,7 @@ async def test_approval_latency_rollup_is_tenant_scoped(db_engine):
     async with async_session() as s:
         for tid, lat in [("t1", 1000), ("t1", 3000), ("t2", 9999)]:
             r = await loop.propose(s, _spec(tenant_id=tid), actor="t")
-            s.add(Approval(op_id=r.id, actor="a", role="owner", surface="web",
+            s.add(Approval(op_id=r.id, tenant_id=tid, actor="a", role="owner", surface="web",
                            decision="approve", latency_ms=lat))
         await s.commit()
         roll = await approval_latency_rollup(s, "t1")
@@ -1169,6 +1169,226 @@ async def test_chat_intent_parsing_and_planning(client):
     assert "configure email dns routing for domain mailer.in" in data_dns["reply"]
     assert len(data_dns["cards"]) == 1
     assert data_dns["cards"][0]["action"] == "provision.email_dns.create"
+
+
+@pytest.mark.asyncio
+async def test_dag_saga_execution_diamond(db_engine):
+    """Verifies diamond DAG execution concurrency and topological order."""
+    from app.models import OpDependency
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # 1. Propose parent Op and children (explicit empty depends_on to avoid auto-chaining)
+        parent = await loop.propose(s, _spec(action="provision.brand_bootstrap.create"), actor="user")
+        a = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.web_host.create", sequence_order=1, depends_on=[]), actor="user")
+        b1 = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.postgres_db.create", sequence_order=2, depends_on=[]), actor="user")
+        b2 = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.static_host.create", sequence_order=3, depends_on=[]), actor="user")
+        c = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.email_dns.create", sequence_order=4, depends_on=[]), actor="user")
+
+        # 2. Define dependencies: A -> B1, A -> B2, (B1, B2) -> C
+        s.add_all([
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=a.id, to_op_id=b1.id),
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=a.id, to_op_id=b2.id),
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=b1.id, to_op_id=c.id),
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=b2.id, to_op_id=c.id)
+        ])
+        await s.commit()
+
+    async with async_session() as s:
+        # Run preview on parent and all children to transition them to AWAITING_APPROVAL
+        for r_id in (parent.id, a.id, b1.id, b2.id, c.id):
+            row = await s.get(OpRow, r_id)
+            await loop.preview_and_gate(s, row, tier=1)
+        await s.commit()
+
+    async with async_session() as s:
+        # Approve parent (should enqueue only root child A)
+        parent_row = await s.get(OpRow, parent.id)
+        await loop.decide(s, parent_row, decision="approve", actor="chandan", role="owner", surface="web")
+        await s.commit()
+
+    async with async_session() as s:
+        # Verify A is enqueued, B1, B2, C are not enqueued yet
+        a_row = await s.get(OpRow, a.id)
+        b1_row = await s.get(OpRow, b1.id)
+        b2_row = await s.get(OpRow, b2.id)
+        c_row = await s.get(OpRow, c.id)
+
+        assert a_row.state == "APPROVED"
+        assert b1_row.state == "APPROVED"
+        assert b2_row.state == "APPROVED"
+        assert c_row.state == "APPROVED"
+
+        # Drain outbox to execute A
+        processed = await loop.drain_once(s)
+        assert processed == 1
+        await s.commit()
+
+    async with async_session() as s:
+        # A should be DONE, B1 & B2 should be enqueued (since A is done), C still not enqueued
+        a_row = await s.get(OpRow, a.id)
+        assert a_row.state == "DONE"
+        
+        # Verify B1 & B2 are enqueued
+        res_out1 = await s.execute(select(OutboxItem).where(OutboxItem.op_id == b1.id))
+        assert res_out1.scalar_one_or_none() is not None
+        res_out2 = await s.execute(select(OutboxItem).where(OutboxItem.op_id == b2.id))
+        assert res_out2.scalar_one_or_none() is not None
+
+        # Verify C is not enqueued
+        res_outc = await s.execute(select(OutboxItem).where(OutboxItem.op_id == c.id))
+        assert res_outc.scalar_one_or_none() is None
+
+        # Drain outbox to execute B1 & B2
+        processed = await loop.drain_once(s)
+        assert processed == 2
+        await s.commit()
+
+    async with async_session() as s:
+        # B1 & B2 are DONE, now C should be enqueued
+        b1_row = await s.get(OpRow, b1.id)
+        b2_row = await s.get(OpRow, b2.id)
+        assert b1_row.state == "DONE"
+        assert b2_row.state == "DONE"
+        
+        res_outc = await s.execute(select(OutboxItem).where(OutboxItem.op_id == c.id))
+        assert res_outc.scalar_one_or_none() is not None
+
+        # Drain outbox to execute C
+        processed = await loop.drain_once(s)
+        assert processed == 1
+        await s.commit()
+
+    async with async_session() as s:
+        # C is DONE, parent is DONE
+        c_row = await s.get(OpRow, c.id)
+        parent_row = await s.get(OpRow, parent.id)
+        assert c_row.state == "DONE"
+        assert parent_row.state == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_dag_saga_rollback_cascade(db_engine):
+    """Verifies sibling cancellation and cascading reverse topological rollback."""
+    from app.models import OpDependency
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        parent = await loop.propose(s, _spec(action="provision.brand_bootstrap.create"), actor="user")
+        a = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.web_host.create", sequence_order=1, depends_on=[]), actor="user")
+        b1 = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.postgres_db.create", sequence_order=2, depends_on=[]), actor="user")
+        b2 = await loop.propose(s, _spec(parent_op_id=parent.id, action="provision.static_host.create", sequence_order=3, depends_on=[]), actor="user")
+
+        s.add_all([
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=a.id, to_op_id=b1.id),
+            OpDependency(tenant_id="t1", parent_op_id=parent.id, from_op_id=a.id, to_op_id=b2.id),
+        ])
+        await s.commit()
+
+    async with async_session() as s:
+        # Run preview on parent and all children to transition them to AWAITING_APPROVAL
+        for r_id in (parent.id, a.id, b1.id, b2.id):
+            row = await s.get(OpRow, r_id)
+            await loop.preview_and_gate(s, row, tier=1)
+        await s.commit()
+
+    async with async_session() as s:
+        # Approve parent
+        parent_row = await s.get(OpRow, parent.id)
+        await loop.decide(s, parent_row, decision="approve", actor="chandan", role="owner", surface="web")
+        await s.commit()
+
+    async with async_session() as s:
+        # Drain outbox to execute A -> DONE
+        processed = await loop.drain_once(s)
+        assert processed == 1
+        await s.commit()
+
+    # Configure a mock error on B2's execution (domain fail.in triggers failure)
+    async with async_session() as s:
+        b2_row = await s.get(OpRow, b2.id)
+        b2_row.params = {**b2_row.params, "domain": "fail.in"}
+        await s.commit()
+
+    async with async_session() as s:
+        # Drain outbox once. This will execute B1 (succeeds) and B2 (fails).
+        # B2 failure triggers cancel_active_siblings and rolls back B1, A, and parent!
+        processed = await loop.drain_once(s)
+        assert processed == 2
+        await s.commit()
+
+    async with async_session() as s:
+        # Assertions:
+        # 1. B2 failed and rolled back
+        b2_row = await s.get(OpRow, b2.id)
+        assert b2_row.state == "ROLLED_BACK"
+
+        # 2. Sibling B1 (which was DONE) was cancelled and rolled back
+        b1_row = await s.get(OpRow, b1.id)
+        assert b1_row.state == "ROLLED_BACK"
+
+        # 3. Root A was rolled back
+        a_row = await s.get(OpRow, a.id)
+        assert a_row.state == "ROLLED_BACK"
+
+        # 4. Parent was rolled back
+        parent_row = await s.get(OpRow, parent.id)
+        assert parent_row.state == "ROLLED_BACK"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_policy_evaluation(db_engine):
+    """Verifies database versioned policy rules are applied dynamically."""
+    from app.models import PolicyVersion
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    
+    # 1. Create a custom policy version with very low ceiling (50,000 INR = 500 INR/month)
+    async with async_session() as s:
+        pv1 = PolicyVersion(
+            tenant_id="t1",
+            version=1,
+            rules_json={"provision_cost_ceiling_minor": 50_000}
+        )
+        s.add(pv1)
+        await s.commit()
+
+    # 2. Propose a provisioning Op with cost estimate 250,000 INR (above ceiling)
+    async with async_session() as s:
+        op = _spec(cost_estimate=Money(250_000, "INR"))
+        row = await loop.propose(s, op, actor="user")
+        await s.commit()
+
+    async with async_session() as s:
+        row = await s.get(OpRow, row.id)
+        gate, req = await loop.preview_and_gate(s, row, tier=2)
+        await s.commit()
+
+    # Verify that it was BLOCKED due to ceiling breach
+    assert req == "BLOCKED"
+    assert any(v.rule_id == "provision_cost_ceiling" for v in gate.violations)
+
+    # 3. Update policy version to relax ceiling to 300,000 INR
+    async with async_session() as s:
+        pv2 = PolicyVersion(
+            tenant_id="t1",
+            version=2,
+            rules_json={"provision_cost_ceiling_minor": 300_000}
+        )
+        s.add(pv2)
+        await s.commit()
+
+    # 4. Re-run preview and gate on a new proposed Op
+    async with async_session() as s:
+        op2 = _spec(cost_estimate=Money(250_000, "INR"))
+        row2 = await loop.propose(s, op2, actor="user")
+        await s.commit()
+
+    async with async_session() as s:
+        row2 = await s.get(OpRow, row2.id)
+        gate2, req2 = await loop.preview_and_gate(s, row2, tier=2)
+        await s.commit()
+
+    # Verify that it is no longer blocked (relaxed policy is loaded)
+    assert req2 == "AUTO" # auto-approves because it's under ceiling and tier=2
+    assert len(gate2.violations) == 0
 
 
 
