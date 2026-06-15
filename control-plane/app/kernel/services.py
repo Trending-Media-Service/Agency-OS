@@ -285,7 +285,7 @@ class RulesetParams:
         "AGENCY_OWNER": {
             "max_impact": 5,
             "max_cost_minor": 100_000_000,
-            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance"],
+            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance", "dr"],
             "allow_irreversible": True,
             "can_override_gates": True,
             "can_approve_statutory": True,
@@ -293,7 +293,7 @@ class RulesetParams:
         "OPERATOR": {
             "max_impact": 3,
             "max_cost_minor": 5_000_000,
-            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance"],
+            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance", "dr"],
             "allow_irreversible": True,
             "can_override_gates": True,
             "can_approve_statutory": False,
