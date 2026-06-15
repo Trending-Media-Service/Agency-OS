@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
-from app.middleware import TenantIsolationMiddleware, TraceMiddleware
+from app.middleware import TenantIsolationMiddleware, TraceMiddleware, RateLimitMiddleware
 from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
@@ -62,6 +62,7 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
+app.add_middleware(RateLimitMiddleware, rate=0.2, capacity=5.0)
 
 
 @app.get("/healthz")
