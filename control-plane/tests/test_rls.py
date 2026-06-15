@@ -63,9 +63,10 @@ async def rls_db():
             "INSERT INTO brands (id, tenant_id, name, created_at) VALUES "
             "('brand-wok','tenant-a','Wok-Tok',now()), ('brand-abl','tenant-b','Ableys',now())"))
         await conn.execute(text(
-            "INSERT INTO ops (id, tenant_id, brand_id, domain, action, state, impact, reversibility, params, created_at, idem_key) VALUES "
-            "('op-a', 'tenant-a', 'brand-wok', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', now(), 'idem-a'), "
-            "('op-b', 'tenant-b', 'brand-abl', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', now(), 'idem-b')"))
+            "INSERT INTO ops (id, tenant_id, brand_id, domain, action, state, impact, reversibility, params, "
+            "statutory, sequence_order, created_at, updated_at, idem_key) VALUES "
+            "('op-a', 'tenant-a', 'brand-wok', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', false, 0, now(), now(), 'idem-a'), "
+            "('op-b', 'tenant-b', 'brand-abl', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', false, 0, now(), now(), 'idem-b')"))
         await conn.execute(text(
             "INSERT INTO op_traces (tenant_id, op_id, kind, detail, ts) VALUES "
             "('tenant-a', 'op-a', 'note', '{}', now()), "
@@ -75,9 +76,9 @@ async def rls_db():
             "('app-a', 'tenant-a', 'op-a', 'user-a', 'owner', 'web', 'approve', now()), "
             "('app-b', 'tenant-b', 'op-b', 'user-b', 'owner', 'web', 'approve', now())"))
         await conn.execute(text(
-            "INSERT INTO orders (id, tenant_id, brand_id, amount_minor, placed_at, created_at) VALUES "
-            "('order-a', 'tenant-a', 'brand-wok', 100, now(), now()), "
-            "('order-b', 'tenant-b', 'brand-abl', 100, now(), now())"))
+            "INSERT INTO orders (id, tenant_id, brand_id, amount_minor, currency, placed_at, created_at) VALUES "
+            "('order-a', 'tenant-a', 'brand-wok', 100, 'INR', now(), now()), "
+            "('order-b', 'tenant-b', 'brand-abl', 100, 'INR', now(), now())"))
 
     p = urlparse(ADMIN_URL)
     app_url = f"postgresql+asyncpg://{APP_ROLE}:{APP_PW}@{p.hostname}:{p.port or 5432}{p.path}"
