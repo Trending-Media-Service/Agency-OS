@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import re
+import sentry_sdk
 from typing import Optional, Protocol
 
 from sqlalchemy import select
@@ -451,43 +452,53 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
         token = trace_context.set(item.trace_id)
         try:
             row = await s.get(OpRow, item.op_id)
-            if not row:
-                item.status = "DEAD"
-                processed += 1
-                continue
+            action_name = row.action if row else "unknown"
+            
+            with sentry_sdk.start_transaction(op="outbox.drain", name=f"drain:{action_name}"):
+                sentry_sdk.set_tag("op_id", item.op_id)
+                sentry_sdk.set_tag("trace_id", item.trace_id)
+                if row:
+                    sentry_sdk.set_tag("tenant_id", row.tenant_id)
+                    sentry_sdk.set_tag("brand_id", row.brand_id)
+                
+                if not row:
+                    item.status = "DEAD"
+                    processed += 1
+                    continue
 
-            if OpState(row.state) in (OpState.FAILED, OpState.ROLLED_BACK, OpState.REJECTED, OpState.BLOCKED):
-                item.status = "DEAD"
-                processed += 1
-                continue
+                if OpState(row.state) in (OpState.FAILED, OpState.ROLLED_BACK, OpState.REJECTED, OpState.BLOCKED):
+                    item.status = "DEAD"
+                    processed += 1
+                    continue
 
-            # 1. Cooldown Check
-            is_cooldown_ok = await check_cooldown(s, row)
-            if not is_cooldown_ok:
-                item.status = "DEAD"
-                await transition(s, row, OpState.BLOCKED, actor="cooldown",
-                                 detail={"error": "Operation cooldown active. A similar action was recently completed."})
-                processed += 1
-                continue
+                # 1. Cooldown Check
+                is_cooldown_ok = await check_cooldown(s, row)
+                if not is_cooldown_ok:
+                    item.status = "DEAD"
+                    await transition(s, row, OpState.BLOCKED, actor="cooldown",
+                                     detail={"error": "Operation cooldown active. A similar action was recently completed."})
+                    processed += 1
+                    continue
 
-            # 2. Circuit Breaker Check
-            is_tripped = await is_circuit_tripped(s, row.tenant_id, row.brand_id, row.domain)
-            if is_tripped:
-                item.status = "DEAD"
-                await transition(s, row, OpState.BLOCKED, actor="circuit_breaker",
-                                 detail={"error": f"Adapter execution BLOCKED. Circuit breaker is OPEN for domain {row.domain}."})
-                processed += 1
-                continue
+                # 2. Circuit Breaker Check
+                is_tripped = await is_circuit_tripped(s, row.tenant_id, row.brand_id, row.domain)
+                if is_tripped:
+                    item.status = "DEAD"
+                    await transition(s, row, OpState.BLOCKED, actor="circuit_breaker",
+                                     detail={"error": f"Adapter execution BLOCKED. Circuit breaker is OPEN for domain {row.domain}."})
+                    processed += 1
+                    continue
 
-            item.status = "IN_FLIGHT"
-            item.attempts += 1
-            await _execute_and_verify(s, row)
-            item.status = "DONE"
+                item.status = "IN_FLIGHT"
+                item.attempts += 1
+                await _execute_and_verify(s, row)
+                item.status = "DONE"
 
-            # Reset Circuit Breaker failures on success
-            await record_success(s, row.tenant_id, row.brand_id, row.domain)
+                # Reset Circuit Breaker failures on success
+                await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
-            logger.exception(f"Drain execution error on op {row.id}")
+            logger.exception(f"Drain execution error on op {row.id if row else item.op_id}")
+            sentry_sdk.capture_exception(exc)
             trace(s, row.id, row.tenant_id, "retry", {"attempt": item.attempts, "error": str(exc)})
             
             # Record failure in Circuit Breaker
@@ -518,7 +529,8 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
             await transition(s, parent, OpState.EXECUTING, actor="kernel")
 
     await transition(s, row, OpState.EXECUTING, actor="kernel")
-    result = await adapter.execute(spec, idem_key=row.idem_key, session=s)
+    with sentry_sdk.start_span(op="adapter.execute", description=row.action):
+        result = await adapter.execute(spec, idem_key=row.idem_key, session=s)
     trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
 
     # Record any execution costs returned by the adapter
@@ -557,7 +569,8 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
         return
 
     await transition(s, row, OpState.VERIFYING, actor="kernel")
-    verdict = await adapter.verify(spec)
+    with sentry_sdk.start_span(op="adapter.verify", description=row.action):
+        verdict = await adapter.verify(spec)
     trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
