@@ -38,8 +38,8 @@ def upgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("ALTER TABLE consent_bases ENABLE ROW LEVEL SECURITY;")
         op.execute("ALTER TABLE consent_bases FORCE ROW LEVEL SECURITY;")
+        op.execute("DROP POLICY IF EXISTS tenant_isolation ON consent_bases;")
         op.execute("""
-            DROP POLICY IF EXISTS tenant_isolation ON consent_bases;
             CREATE POLICY tenant_isolation ON consent_bases
               USING (tenant_id = current_setting('app.current_tenant_id', true));
         """)

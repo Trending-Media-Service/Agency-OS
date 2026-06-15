@@ -337,8 +337,8 @@ def upgrade() -> None:
         # Enable RLS on tenants
         op.execute("ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;")
         op.execute("ALTER TABLE tenants FORCE ROW LEVEL SECURITY;")
+        op.execute("DROP POLICY IF EXISTS tenant_isolation ON tenants;")
         op.execute("""
-            DROP POLICY IF EXISTS tenant_isolation ON tenants;
             CREATE POLICY tenant_isolation ON tenants
               USING (id = current_setting('app.current_tenant_id', true));
         """)
@@ -355,8 +355,8 @@ def upgrade() -> None:
         for table in tables_with_tenant:
             op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;")
             op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;")
+            op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {table};")
             op.execute(f"""
-                DROP POLICY IF EXISTS tenant_isolation ON {table};
                 CREATE POLICY tenant_isolation ON {table}
                   USING (tenant_id = current_setting('app.current_tenant_id', true));
             """)

@@ -33,11 +33,6 @@ def _pg_reachable(url: str) -> bool:
     except OSError:
         return False
 
-
-DATABASE_URL_ENV = os.getenv("DATABASE_URL")
-if not DATABASE_URL_ENV and os.getenv("CI") != "true":
-    pytest.skip("Skipping RLS tests locally (set DATABASE_URL to run locally)", allow_module_level=True)
-
 if not _pg_reachable(ADMIN_URL):
     pytest.skip("postgres not reachable — RLS test runs in CI", allow_module_level=True)
 
