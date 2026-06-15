@@ -19,6 +19,7 @@ The governance kernel from `/ARCHITECTURE.md`. Run:
 | Per-tenant access checks | REAL (header-based; app-level) |
 | Postgres RLS policies | REAL (verified by tests, session wired in middleware & database session) |
 | Provision adapter | STUB (fake terraform plan; real recipe executor = issue) |
+| Playwright citation audit (Presence Sense) | REAL (graceful mock fallback) |
 | WhatsApp surface | REAL (Meta Cloud API client + webhook receiver; mock in tests) |
 | Trust wiring into /intents tier | NOT WIRED (tier passed explicitly until trust events flow) |
 
