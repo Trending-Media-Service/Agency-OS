@@ -26,12 +26,24 @@ ADMIN_URL = os.getenv(
 
 
 def _pg_reachable(url: str) -> bool:
-    p = urlparse(url.replace("+asyncpg", ""))
-    try:
-        with socket.create_connection((p.hostname or "localhost", p.port or 5432), timeout=1):
+    import asyncio
+    import asyncpg
+    
+    async def try_connect():
+        # Replace the driver prefix as asyncpg expects standard postgresql://
+        target_url = url.replace("postgresql+asyncpg://", "postgresql://")
+        try:
+            conn = await asyncpg.connect(target_url, timeout=1.0)
+            await conn.close()
             return True
-    except OSError:
+        except Exception:
+            return False
+            
+    try:
+        return asyncio.run(try_connect())
+    except Exception:
         return False
+
 
 
 if not _pg_reachable(ADMIN_URL):

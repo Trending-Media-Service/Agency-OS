@@ -147,6 +147,12 @@ S = clamp( S_health − P_signals + S_history , 0, 100 )
 - `S_history` — dynamic component (max e.g. 30) earned from outcomes: verified successful Ops add; human overrides/rejections and verification failures subtract; **all events decay exponentially** (half-life ~30–60 days, tune per domain) so the score reflects recent behavior, not ancient history. Every human override reason is logged — that log *is* this component's training data.
 - All weights, caps, τ, and half-lives live in versioned config, with worked examples in tests. No magic numbers in code, no fabricated-precision examples in docs.
 
+**Advisory Brand Performance Score (B):**
+Separate from the safety-critical `trust_score` (S), the system exposes a composite performance score `B = w1*UX + w2*Organic + w3*Paid + w4*PR` representing overall channel execution quality. 
+- **Non-Gating Invariant:** The score `B` is strictly advisory. It **must never gate** execution, nor should it ever appear inside the path of `approval_requirement` or `evaluate_gates` checks. Altering weights or score values leaves all Op decision records byte-identical.
+- **Read-Only:** The computation is entirely read-only and has no side effects on the database state or audit records.
+
+
 ### 4.5 Record layer
 
 - **Audit log:** append-only `audit_events` table; each row stores the SHA-256 of the previous row (tamper-evident chain). Actor, role, surface, Op id, before/after refs, timestamp. Nothing is ever updated or deleted.
@@ -298,6 +304,10 @@ For conversational interactions with agentic workflows (e.g. Gemini tool calling
 - **Action Decoupling:** Any tool call parsed from natural language (such as `grow_bid_adjust`) is routed directly to its corresponding tool handler. 
 - **Propose-Only Boundary:** The handler does not execute the action. It merely returns a vendor-neutral `OpSpec` object (pre-configured with appropriate severity and impact details).
 - **Mandatory Gating:** The `/chat` endpoint accepts the returned `OpSpec` and passes it through the standard `loop.propose` and `loop.preview_and_gate` pipelines. The tool execution path can only transition an Op to `PROPOSED` and then to `AWAITING_APPROVAL` or `BLOCKED` (or `APPROVED` if trust snapshot metrics qualify it for auto-approval); it cannot bypass safety gates or force immediate execution.
+
+### 7.2 Conversational Score Prioritization
+The conversational layer may adjust the weight parameters (`w_ux`, `w_organic`, `w_paid`, `w_pr`) to dynamically adjust the prioritization of surfaced recommendations or order Ops presented to the operator.
+- **No Gate Override:** The LLM's capability to tune weights and reorder views operates entirely in a read-only rendering context. Adjusting weights has no authority to alter the `state` of any Op or bypass RLS/RBAC/Firewall guards.
 
 Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previews). The A2UI modify-loop (§4.1) applies uniformly: "change the hero to teal and redeploy", "make it ₹40k", "use the .in domain instead".
 

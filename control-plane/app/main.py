@@ -20,6 +20,7 @@ from app.adapters.build import BuildAdapter
 from app.adapters.governance import GovernanceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
+from .kernel.brand_score import calculate_brand_performance_score
 from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
 
@@ -414,6 +415,34 @@ async def approval_latency(domain: str | None = None, window_days: int | None = 
              if window_days else None)
     rollup = await approval_latency_rollup(s, tid, domain=domain, since=since)
     return {"tenant_id": tid, "domain": domain, "window_days": window_days, **rollup}
+
+
+@app.get("/metrics/brand-performance")
+async def brand_performance(
+    brand_id: str,
+    w_ux: float = 0.25,
+    w_organic: float = 0.25,
+    w_paid: float = 0.25,
+    w_pr: float = 0.25,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    """Computes the composite Brand Performance Score. Advisory only; read-only."""
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found for tenant")
+    
+    score_report = await calculate_brand_performance_score(
+        s,
+        tenant_id=tid,
+        brand_id=brand_id,
+        w_ux=w_ux,
+        w_organic=w_organic,
+        w_paid=w_paid,
+        w_pr=w_pr
+    )
+    return score_report
+
 
 
 class RecipePromoteIn(BaseModel):

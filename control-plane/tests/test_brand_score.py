@@ -1,151 +1,189 @@
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+from app.models import (
+    Tenant,
+    Brand,
+    BrandProperty,
+    Campaign,
+    SpendFact,
+    Touchpoint,
+    Order,
+    OrderLine,
+    FulfillmentCost
+)
 import datetime as dt
-from sqlalchemy.ext.asyncio import async_sessionmaker
-
-from app.models import Tenant, Brand, BrandProperty, Campaign, SpendFact, Touchpoint, Order, OrderLine
-from app.profit.brand_score import calculate_brand_score
-
 
 @pytest.mark.asyncio
-async def test_brand_score_calculation_default_weights(db_engine):
+async def test_brand_score_full_integration(client, db_engine):
     async_session = async_sessionmaker(db_engine, expire_on_commit=False)
 
+    # 1. Bootstrap Tenant and Brand
     async with async_session() as s:
         tenant = Tenant(name="Score Tenant", hosting_tier="shared")
         s.add(tenant)
         await s.commit()
-        tid = tenant.id
+        tenant_id = tenant.id
 
-        brand = Brand(tenant_id=tid, name="Score Brand")
+        brand = Brand(tenant_id=tenant_id, name="Tanmatra Performance")
         s.add(brand)
         await s.commit()
-        bid = brand.id
+        brand_id = brand.id
 
-        # UX component (type: ux_analytics)
-        # 5% conversion rate (0.05) -> min(100.0, 0.05 * 2000.0) = 100.0
-        # 1.5% conversion rate (0.015) -> min(100.0, 0.015 * 2000.0) = 30.0
-        prop_ux = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="ux_analytics",
-            provider="shopify",
-            findings={"conversion_rate": 0.015}
-        )
-
-        # Organic component (type: presence_audit)
-        # 80% coverage -> ratio = 0.8 -> score = 80.0
-        prop_org = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="presence_audit",
+        # Write GSC findings (crawl errors = 4 => organic_score = 100 - 4*15 = 40)
+        s.add(BrandProperty(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            type="search_console",
+            status="degraded",
             provider="google",
-            findings={"indexing_coverage_ratio": 0.8}
-        )
+            findings={"crawl_errors": 4, "warnings": []}
+        ))
 
-        # PR component (type: pr_monitoring)
-        # Normalized volume: 45.0 -> score = 45.0
-        prop_pr = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="pr_monitoring",
+        # Write GMC findings (disapproved = 3 => gmc_score = 100 - 3*10 = 70)
+        s.add(BrandProperty(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            type="merchant_feed",
+            status="degraded",
             provider="google",
-            findings={"mention_volume_normalized": 45.0}
-        )
+            findings={"disapproved_products": 3, "active_items": 100}
+        ))
 
-        s.add_all([prop_ux, prop_org, prop_pr])
+        # Write Brand mentions (count = 450 => pr_score = (450/1000)*100 = 45)
+        s.add(BrandProperty(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            type="brand_mentions",
+            status="healthy",
+            provider="manual",
+            findings={"mentions_count": 450}
+        ))
+
+        # Write Campaign and POAS/Paid spend details
+        # Campaign 1: Spend = 1000 INR, Clicks = 100, Orders = 3
+        # Gross revenue = 3 * 500 = 1500 INR
+        # COGS = 3 * 200 = 600 INR
+        # Margin = 1500 - 600 = 900 INR. POAS = 900 / 1000 = 0.90
+        campaign = Campaign(id="camp_score_1", tenant_id=tenant_id, brand_id=brand_id, name="Score Promo", platform="meta", status="active")
+        s.add(campaign)
         await s.commit()
+        camp_id = campaign.id
 
-        # Setup Paid Campaign to verify Paid Component
-        c = Campaign(id="camp_score", tenant_id=tid, brand_id=bid, name="Google Score Ads", platform="google-ads", status="active")
-        s.add(c)
-        s.add(SpendFact(tenant_id=tid, campaign_id="camp_score", amount_minor=10000, date=dt.date(2026, 6, 10))) # ₹100 spend
-        s.add(Touchpoint(tenant_id=tid, customer_id="cust_s", campaign_id="camp_score", type="click", occurred_at=dt.datetime(2026, 6, 10, 12, 0, 0)))
+        s.add(SpendFact(tenant_id=tenant_id, campaign_id=camp_id, amount_minor=1000_00, date=dt.date.today()))
         
-        # Order - Rev: 20000, COGS: 8000 -> Contribution: 12000 minor
-        # POAS = 12000 / 10000 = 1.2
-        # Paid val = min(100.0, 1.2 * 50.0) = 60.0
-        o = Order(id="ord_s", tenant_id=tid, brand_id=bid, amount_minor=20000, customer_id="cust_s", placed_at=dt.datetime(2026, 6, 10, 14, 0, 0))
-        s.add(o)
+        # Add 100 clicks touchpoints, and 3 orders
+        for i in range(100):
+            s.add(Touchpoint(tenant_id=tenant_id, campaign_id=camp_id, customer_id=f"cust_{i}", type="click", occurred_at=dt.datetime.now()))
+        
+        for i in range(3):
+            order = Order(tenant_id=tenant_id, brand_id=brand_id, customer_id=f"cust_{i}", placed_at=dt.datetime.now(), amount_minor=500_00, currency="INR")
+            s.add(order)
+            await s.commit()
+            
+            ol = OrderLine(tenant_id=tenant_id, order_id=order.id, qty=1, unit_price_minor=500_00, line_discount_minor=0, unit_cost_minor=200_00)
+            s.add(ol)
+            
+            fc = FulfillmentCost(tenant_id=tenant_id, order_id=order.id, shipping_cost_minor=0, marketplace_fee_minor=0)
+            s.add(fc)
+            
+            # Click occurred slightly before order placement to attribute
+            tp = Touchpoint(tenant_id=tenant_id, campaign_id=camp_id, customer_id=f"cust_{i}", type="click", occurred_at=dt.datetime.now() - dt.timedelta(minutes=5))
+            s.add(tp)
+            
         await s.commit()
 
-        ol = OrderLine(id="ol_s", tenant_id=tid, order_id="ord_s", unit_price_minor=20000, qty=1, unit_cost_minor=8000)
-        s.add(ol)
-        await s.commit()
+    H = {"X-Tenant-ID": tenant_id}
 
-    async with async_session() as s:
-        # Calculate Brand Score:
-        # UX: 30.0 * 0.3 = 9.0
-        # Org: 80.0 * 0.2 = 16.0
-        # Paid: 60.0 * 0.4 = 24.0
-        # PR: 45.0 * 0.1 = 4.5
-        # Expected score: 9.0 + 16.0 + 24.0 + 4.5 = 53.5
-        score = await calculate_brand_score(s, tid, bid)
-        assert score == 53.5
+    # Fetch performance metric
+    resp = await client.get(
+        f"/metrics/brand-performance?brand_id={brand_id}&w_ux=4&w_organic=3&w_paid=2&w_pr=1",
+        headers=H
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Weight sums: 4 + 3 + 2 + 1 = 10
+    # w_ux = 0.40, w_organic = 0.30, w_paid = 0.20, w_pr = 0.10
+    assert data["weights"]["ux"] == 0.40
+    assert data["weights"]["organic"] == 0.30
+    assert data["weights"]["paid"] == 0.20
+    assert data["weights"]["pr"] == 0.10
+
+    # Organic: 4 errors => score = 40.0
+    assert data["components"]["organic"]["score"] == 40.0
+
+    # PR: 450 mentions => score = 45.0
+    assert data["components"]["pr"]["score"] == 45.0
+
+    # Paid spend = 1000_00, Margin = 900_00 => POAS = 0.90
+    # Paid score = (POAS / 2.0) * 100 = (0.90 / 2.0) * 100 = 45.0
+    assert data["components"]["paid"]["score"] == 45.0
+
+    # UX: CR + GMC health
+    # Total clicks = 103 (100 base + 3 attribution clicks)
+    # Total orders = 3 => CR = 3 / 103 = 0.0291
+    # CR score = (0.0291 / 0.05) * 100 = 58.25
+    # GMC score = 100 - 3*10 = 70.0
+    # Average UX = (58.25 + 70.0) / 2 = 64.12
+    assert 64.0 <= data["components"]["ux"]["score"] <= 65.0
 
 
 @pytest.mark.asyncio
-async def test_brand_score_calculation_custom_weights(db_engine):
+async def test_brand_score_partial_missing_data(client, db_engine):
     async_session = async_sessionmaker(db_engine, expire_on_commit=False)
 
+    # Bootstrap Tenant and Brand with zero properties or orders
     async with async_session() as s:
-        tenant = Tenant(name="Score Tenant Custom", hosting_tier="shared")
+        tenant = Tenant(name="Score Tenant Empty", hosting_tier="shared")
         s.add(tenant)
         await s.commit()
-        tid = tenant.id
+        tenant_id = tenant.id
 
-        brand = Brand(tenant_id=tid, name="Score Brand Custom")
+        brand = Brand(tenant_id=tenant_id, name="Tanmatra Empty")
         s.add(brand)
         await s.commit()
-        bid = brand.id
+        brand_id = brand.id
 
-        # Custom Weights: UX=0.1, Org=0.5, Paid=0.2, PR=0.2
-        # Sum = 1.0
-        prop_weights = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="brand_performance_weights",
-            provider="system",
-            findings={"w_ux": 0.1, "w_organic": 0.5, "w_paid": 0.2, "w_pr": 0.2}
-        )
+    H = {"X-Tenant-ID": tenant_id}
 
-        # UX: 3% -> conversion_rate = 0.03 -> score = min(100.0, 0.03 * 2000.0) = 60.0
-        prop_ux = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="ux_analytics",
-            provider="shopify",
-            findings={"conversion_rate": 0.03}
-        )
+    resp = await client.get(
+        f"/metrics/brand-performance?brand_id={brand_id}",
+        headers=H
+    )
+    assert resp.status_code == 200
+    data = resp.json()
 
-        # Org: 90% coverage -> score = 90.0
-        prop_org = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="presence_audit",
-            provider="google",
-            findings={"indexing_coverage_ratio": 0.9}
-        )
+    # All missing properties default to 100.0, so composite should be 100.0
+    assert data["composite_b_score"] == 100.0
+    assert data["components"]["ux"]["score"] == 100.0
+    assert data["components"]["organic"]["score"] == 100.0
+    assert data["components"]["paid"]["score"] == 100.0
+    assert data["components"]["pr"]["score"] == 100.0
 
-        # PR: 70.0 -> score = 70.0
-        prop_pr = BrandProperty(
-            tenant_id=tid,
-            brand_id=bid,
-            type="pr_monitoring",
-            provider="google",
-            findings={"mention_volume_normalized": 70.0}
-        )
 
-        s.add_all([prop_weights, prop_ux, prop_org, prop_pr])
-        await s.commit()
+def test_brand_score_non_gating_proof():
+    """Verify that calculate_brand_performance_score is never imported or called in loop.py or services.py gates."""
+    import ast
+    
+    files_to_check = [
+        "app/kernel/loop.py",
+        "app/kernel/services.py"
+    ]
+    
+    for filepath in files_to_check:
+        with open(filepath, "r") as f:
+            tree = ast.parse(f.read(), filename=filepath)
+            
+        # Scan for imports or references to brand score calculations
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for name in node.names:
+                    assert "brand_score" not in name.name, f"Forbidden import of brand_score in {filepath}"
+            elif isinstance(node, ast.ImportFrom):
+                assert node.module is None or "brand_score" not in node.module, f"Forbidden import of brand_score in {filepath}"
+                for name in node.names:
+                    assert name.name != "calculate_brand_performance_score", f"Forbidden import of calculate_brand_performance_score in {filepath}"
+            elif isinstance(node, ast.Name):
+                assert node.id != "calculate_brand_performance_score", f"Forbidden reference to calculate_brand_performance_score in {filepath}"
 
-        # No paid campaigns -> calculate_brand_score falls back to paid_val = 50.0
-
-    async with async_session() as s:
-        # Calculate Brand Score:
-        # UX: 60.0 * 0.1 = 6.0
-        # Org: 90.0 * 0.5 = 45.0
-        # Paid: 50.0 * 0.2 = 10.0
-        # PR: 70.0 * 0.2 = 14.0
-        # Expected: 6.0 + 45.0 + 10.0 + 14.0 = 75.0
-        score = await calculate_brand_score(s, tid, bid)
-        assert score == 75.0
