@@ -16,7 +16,8 @@ from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent, CircuitBr
 from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
                       Reversibility, Severity, VerifyResult, assert_transition)
 from .services import (GateResult, TRUST_CONFIG, approval_requirement, audit_append,
-                       evaluate_gates, load_active_rules)
+                       evaluate_gates, load_active_rules, check_role_authority,
+                       load_active_ruleset_params, build_rules)
 
 
 class Adapter(Protocol):
@@ -26,6 +27,11 @@ class Adapter(Protocol):
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult: ...
     async def verify(self, op: OpSpec) -> VerifyResult: ...
     def compensate(self, op: OpSpec) -> list[OpSpec]: ...
+
+
+class RBACError(ValueError):
+  """Raised when an actor attempts to approve an Op without sufficient authority."""
+  pass
 
 
 REGISTRY: dict[str, Adapter] = {}
@@ -340,7 +346,15 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
                    decision=decision, reason=reason, latency_ms=latency_ms))
     if decision == "approve":
         spec = _row_to_spec(row)
-        rules = await load_active_rules(s, row.tenant_id)
+        params = await load_active_ruleset_params(s, row.tenant_id)
+        
+        # Enforce role authority boundaries
+        auth_error = check_role_authority(spec, role, params)
+        if auth_error:
+            logger.warning(f"RBAC Violation: {auth_error} (actor={actor}, op_id={row.id})")
+            raise RBACError(auth_error)
+
+        rules = build_rules(params)
         gate = evaluate_gates(spec, rules=rules)
         if gate.violations:
             if not reason or not reason.strip():

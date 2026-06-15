@@ -157,8 +157,13 @@ S = clamp( S_health − P_signals + S_history , 0, 100 )
 
 - **WhatsApp (primary):** card = summary, preview link, cost, severity, and reply affordances (approve / reject / natural-language modify). This market approves on WhatsApp, not in dashboards or Slack.
 - **Web queue (secondary):** full preview rendering, payload diffs (never raw JSON), trace viewer, history.
-- Role matrix: rejections explain *why this role cannot approve this Op*, explicitly.
-- Cards carry a TTL; expiry is logged and surfaces as a latency problem, not silently dropped.
+- **Role-Authority Matrix:** Every human approval is validated against a deterministic authority matrix configured inside the versioned tenant ruleset (`RulesetParams`):
+  - **AGENCY_OWNER:** Full authority. May approve all domains, overrides, irreversible actions, and statutory operations up to 1,000,000 INR.
+  - **OPERATOR:** Standard operations. May approve all domains, overrides, and irreversible actions up to 50,000 INR; may *never* approve statutory operations.
+  - **BRAND_VIEWER:** Read-only reviewer. May only approve `grow` actions with severity impact 1 and zero cost.
+  - **CLIENT:** Bounded additive actor. May approve `grow` actions with severity impact <= 2 and cost up to 10,000 INR. May *never* approve statutory operations, override gates, or approve irreversible actions.
+- **Role-Aware Rejections:** Approvals by roles lacking authority are rejected deterministically with clear explanation messages (e.g., `"OPERATOR cannot approve statutory Ops"`) and logged to the audit and trace layers.
+- **Cards carry a TTL:** expiry is logged and surfaces as a latency problem, not silently dropped.
 
 ---
 
