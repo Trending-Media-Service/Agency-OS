@@ -194,6 +194,12 @@ export default function Home() {
             >
               Operator
             </button>
+            <button 
+              onClick={() => setRole("BRAND_VIEWER")}
+              className={`px-2 py-1 rounded transition-colors ${role === "BRAND_VIEWER" ? "bg-zinc-800 text-white font-semibold" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              Viewer
+            </button>
           </div>
 
           <Button 
@@ -275,7 +281,7 @@ export default function Home() {
                         )}
 
                         {/* Interactive Approve button inside card */}
-                        {card.state === "AWAITING_APPROVAL" && (
+                        {card.state === "AWAITING_APPROVAL" && role !== "BRAND_VIEWER" && (
                           <div className="flex space-x-2 pt-1">
                             <Button
                               size="sm"
@@ -311,15 +317,15 @@ export default function Home() {
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="e.g. configure email dns routing for ableys.in"
-              className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md focus:outline-none focus:border-zinc-700 text-xs text-zinc-100 placeholder-zinc-600"
-              disabled={chatMutation.isPending}
+              placeholder={role === "BRAND_VIEWER" ? "Transparency Portal (Read-only context)" : "e.g. configure email dns routing for ableys.in"}
+              className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md focus:outline-none focus:border-zinc-700 text-xs text-zinc-100 placeholder-zinc-600 disabled:opacity-50"
+              disabled={chatMutation.isPending || role === "BRAND_VIEWER"}
             />
             <Button 
               type="submit" 
               aria-label="Send Message"
-              className="bg-zinc-100 text-zinc-950 hover:bg-zinc-200 h-8 w-8 p-0 flex items-center justify-center rounded"
-              disabled={chatMutation.isPending || !chatInput.trim()}
+              className="bg-zinc-100 text-zinc-950 hover:bg-zinc-200 h-8 w-8 p-0 flex items-center justify-center rounded disabled:opacity-30"
+              disabled={chatMutation.isPending || !chatInput.trim() || role === "BRAND_VIEWER"}
             >
               <Send className="h-3.5 w-3.5" />
             </Button>
@@ -416,7 +422,7 @@ export default function Home() {
                               </span>
                             </td>
                             <td className="px-6 py-4 text-right">
-                              {op.state === "AWAITING_APPROVAL" && (
+                              {op.state === "AWAITING_APPROVAL" && role !== "BRAND_VIEWER" && (
                                 <div className="flex justify-end space-x-2">
                                   <Button
                                     size="sm"
