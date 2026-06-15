@@ -5,11 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "./page";
 
 // Mock Tenant Context
+let mockRole = "AGENCY_OWNER";
 const mockSetRole = vi.fn();
 vi.mock("@/contexts/TenantContext", () => ({
   useTenant: () => ({
     tenantId: "t1",
-    role: "AGENCY_OWNER",
+    role: mockRole,
     setRole: mockSetRole,
   }),
 }));
@@ -26,6 +27,7 @@ describe("Conversational Chat UI and Dashboard", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    mockRole = "AGENCY_OWNER";
     queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -142,5 +144,41 @@ describe("Conversational Chat UI and Dashboard", () => {
         surface: "web"
       });
     });
+  });
+
+  it("hides and disables all control mutations when role is BRAND_VIEWER", async () => {
+    mockRole = "BRAND_VIEWER";
+    
+    mockRequest.mockImplementation((path: string) => {
+      if (path === "/ops") return Promise.resolve([
+        {
+          op_id: "op-viewer-test",
+          action: "grow.bid.adjust",
+          state: "AWAITING_APPROVAL",
+          domain: "search",
+          brand_id: "brand-1",
+          preview: "Test operations visibility under viewer",
+          cost_estimate: "100 INR"
+        }
+      ]);
+      if (path === "/connections") return Promise.resolve([]);
+      if (path === "/circuit-breakers") return Promise.resolve([]);
+      if (path === "/audit/events") return Promise.resolve([]);
+      if (path === "/audit/verify") return Promise.resolve({ ok: true });
+      return Promise.resolve(null);
+    });
+
+    renderWithProviders();
+
+    // 1. Check operations queue table does NOT render approve/reject buttons
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+    });
+
+    // 2. Check chat input is disabled and read-only text is displayed
+    const input = screen.getByPlaceholderText(/Transparency Portal/i);
+    expect(input).toBeTruthy();
+    expect((input as HTMLInputElement).disabled).toBe(true);
   });
 });
