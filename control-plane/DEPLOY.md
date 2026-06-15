@@ -23,7 +23,17 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
    docker build -t gcr.io/<gcp-project-id>/control-plane:latest -f control-plane/Dockerfile control-plane/
    docker push gcr.io/<gcp-project-id>/control-plane:latest
    ```
-   Then deploy the image to **Cloud Run**.
+   Then deploy the image to **Cloud Run**. Configure the following container probes in the service settings to ensure smooth startup and routing:
+   - **Startup Probe:** (Checks if container has booted and can connect to the database)
+     - Type: HTTP
+     - Path: `/readyz`
+     - Period: 10 seconds
+     - Failure threshold: 3
+   - **Liveness Probe:** (Checks if container is still alive)
+     - Type: HTTP
+     - Path: `/healthz`
+     - Period: 10 seconds
+     - Failure threshold: 3
 3. **Env vars:**
    - `ENV=production`
    - `DATABASE_URL=postgresql+asyncpg://<app-role>@…/agency_os` (and `WORKER_DATABASE_URL` for the

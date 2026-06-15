@@ -5,7 +5,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
@@ -62,6 +62,25 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(s: AsyncSession = Depends(get_db)):
+    try:
+        await s.execute(select(1))
+        return {"status": "ready"}
+    except Exception as e:
+        logger.error(f"Readiness probe failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unready", "error": str(e)}
+        )
+
 
 
 def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
