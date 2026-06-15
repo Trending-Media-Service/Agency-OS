@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
@@ -72,9 +73,33 @@ logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
+
+# The operator/brand console (control-plane/web) is served from a separate
+# Cloud Run origin, so browser calls to this API are cross-origin. Origins come
+# from ALLOWED_ORIGINS (comma-separated); localhost + the deployed console URL
+# are the defaults so the console works out of the box.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,https://agency-os-web-730671240713.asia-south1.run.app",
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
 app.add_middleware(RateLimitMiddleware, rate=0.2, capacity=5.0)
+# Added LAST so it is the OUTERMOST middleware: CORSMiddleware answers the
+# preflight OPTIONS itself, before TenantIsolationMiddleware (which would 400 a
+# preflight that carries no X-Tenant-ID header).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+)
 
 
 @app.get("/healthz")
