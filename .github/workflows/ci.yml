@@ -61,6 +61,8 @@ jobs:
           cache-dependency-path: control-plane/web/package-lock.json
       - name: Install
         run: npm ci
+      - name: Lint check
+        run: npm run lint
       - name: Unit tests (vitest)
         run: npm test
       - name: Production build

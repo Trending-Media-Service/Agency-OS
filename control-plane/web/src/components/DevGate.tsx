@@ -13,6 +13,7 @@ export function DevGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const savedEntered = localStorage.getItem("aos_dev_gate_entered");
     if (savedEntered === "true") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Loaded on client mount to prevent SSR hydration mismatch
       setEntered(true);
     }
   }, []);
