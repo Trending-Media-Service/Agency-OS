@@ -9,3 +9,6 @@ __pycache__/
 .env
 .env.local
 tfplans/
+control-plane/bin/terraform
+control-plane/bin/LICENSE.txt
+

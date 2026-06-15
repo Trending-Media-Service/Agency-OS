@@ -94,6 +94,18 @@ class TenantIn(BaseModel):
     brand_name: str
 
 
+class OpOut(BaseModel):
+    op_id: str
+    tenant_id: str
+    brand_id: str
+    domain: str
+    action: str
+    state: str
+    preview: str | None = None
+    cost_estimate: str | None = None
+
+
+
 @app.post("/tenants")
 async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_db)):
     t = Tenant(name=body.name)
@@ -343,7 +355,7 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
             "preview": row.preview_summary, "trace": traces}
 
 
-@app.get("/ops")
+@app.get("/ops", response_model=list[OpOut])
 async def list_ops(
     state: str | None = None,
     domain: str | None = None,
