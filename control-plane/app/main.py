@@ -28,8 +28,17 @@ from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 if SENTRY_DSN:
     import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+    from sentry_sdk.integrations.httpx import HttpxIntegration
+    
     sentry_sdk.init(
         dsn=SENTRY_DSN,
+        integrations=[
+            FastApiIntegration(),
+            SqlalchemyIntegration(),
+            HttpxIntegration(),
+        ],
         traces_sample_rate=1.0,
         profiles_sample_rate=1.0,
     )
