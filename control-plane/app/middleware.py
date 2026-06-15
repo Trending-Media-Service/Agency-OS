@@ -34,7 +34,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     tenant_id = request.headers.get("X-Tenant-ID")
 
     # Bypass validation strictly on public API paths
-    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/dashboard"]:
+    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard"]:
       return await call_next(request)
 
     if not tenant_id:

@@ -350,6 +350,17 @@ def build_rules(p: RulesetParams) -> list[Rule]:
             ) if op.params.get("new_bid_minor", 0) > p.grow_bid_cap_minor else None,
         ),
         Rule(
+            id="grow_bid_multiplier_cap",
+            applies=lambda op: op.action == "grow.bid.adjust" and "previous_bid_minor" in op.params,
+            check=lambda op: Violation(
+                rule_id="grow_bid_multiplier_cap",
+                limit=f"new_bid <= 2 * {op.params.get('previous_bid_minor') / 100:.2f} INR",
+                attempted=f"{op.params.get('new_bid_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('new_bid_minor', 0) - 2 * op.params.get('previous_bid_minor', 0)) / 100:.2f} INR (> 2x hike)",
+                message="Bid increase exceeds the 2x multiplier safety limit."
+            ) if op.params.get("new_bid_minor", 0) > 2 * op.params.get("previous_bid_minor", 0) else None,
+        ),
+        Rule(
             id="grow_budget_transfer_cap",
             applies=lambda op: op.action == "grow.budget.reallocate",
             check=lambda op: Violation(

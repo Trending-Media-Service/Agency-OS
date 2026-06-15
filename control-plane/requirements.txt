@@ -11,3 +11,5 @@ google-cloud-tasks==2.22.0
 pyyaml==6.0.3
 sentry-sdk==2.22.0
 alembic==1.14.1
+smart-open==7.1.0
+google-meridian
