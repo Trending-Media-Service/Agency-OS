@@ -422,14 +422,14 @@ async def load_active_ruleset_params(s: AsyncSession, tenant_id: str) -> Ruleset
     from ..models import PolicyVersion
     stmt = (
         select(PolicyVersion)
-        .where(PolicyVersion.tenant_id == tenant_id)
+        .where(PolicyVersion.tenant_id == tenant_id, PolicyVersion.status == "active")
         .order_by(PolicyVersion.version.desc())
         .limit(1)
     )
     res = await s.execute(stmt)
     policy = res.scalar_one_or_none()
     if policy:
-        rj = policy.rules_json.copy() if policy.rules_json else {}
+        rj = policy.params.copy() if policy.params else {}
         for key in ("allowed_regions", "approved_dependencies", "protected_paths"):
             if key in rj and isinstance(rj[key], list):
                 rj[key] = tuple(rj[key])
@@ -735,5 +735,124 @@ async def check_consent_gate(s: AsyncSession, tenant_id: str, op: OpSpec) -> Opt
         )
         
     return None
+
+
+async def simulate_policy(
+    s: AsyncSession,
+    tenant_id: str,
+    proposed_params_dict: dict,
+    window_days: Optional[int] = None,
+    max_ops: int = 500
+) -> dict:
+    """Replays historical Ops against baseline vs. proposed rulesets and reports the diff.
+    Standalone, read-only backtest.
+    """
+    import datetime as _dt
+    from ..models import OpRow, TrustSnapshot
+    from .loop import _row_to_spec
+
+    # 1. Load baseline RulesetParams and build baseline rules
+    baseline_params = await load_active_ruleset_params(s, tenant_id)
+    baseline_rules = build_rules(baseline_params)
+
+    # 2. Build proposed RulesetParams and build proposed rules
+    # Start from baseline params and overlay the proposed changes
+    base_dict = baseline_params.__dict__.copy()
+    base_dict.update(proposed_params_dict)
+    proposed_params = RulesetParams(**base_dict)
+    proposed_rules = build_rules(proposed_params)
+
+    # 3. Query historical Ops for this tenant
+    stmt = select(OpRow).where(OpRow.tenant_id == tenant_id)
+    if window_days:
+        since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=window_days)
+        since = since.replace(tzinfo=None)  # SQLite compatibility
+        stmt = stmt.where(OpRow.created_at >= since)
+
+    stmt = stmt.order_by(OpRow.created_at.desc()).limit(max_ops)
+    res = await s.execute(stmt)
+    ops = res.scalars().all()
+
+    newly_blocked = []
+    newly_allowed = []
+    newly_auto_approved = []
+    now_requires_human = []
+
+    for op in ops:
+        spec = _row_to_spec(op)
+
+        # Query the active tier at the time the Op was created
+        tier_stmt = (
+            select(TrustSnapshot.tier)
+            .where(
+                TrustSnapshot.tenant_id == op.tenant_id,
+                TrustSnapshot.brand_id == op.brand_id,
+                TrustSnapshot.domain == op.domain,
+                TrustSnapshot.ts <= op.created_at
+            )
+            .order_by(TrustSnapshot.ts.desc())
+            .limit(1)
+        )
+        tier_res = await s.execute(tier_stmt)
+        tier = tier_res.scalar_one_or_none()
+        if tier is None:
+            # Fallback to current tier
+            curr_stmt = (
+                select(TrustSnapshot.tier)
+                .where(
+                    TrustSnapshot.tenant_id == op.tenant_id,
+                    TrustSnapshot.brand_id == op.brand_id,
+                    TrustSnapshot.domain == op.domain
+                )
+                .order_by(TrustSnapshot.ts.desc())
+                .limit(1)
+            )
+            curr_res = await s.execute(curr_stmt)
+            tier = curr_res.scalar_one_or_none()
+            if tier is None:
+                tier = 1
+
+        # Evaluate under baseline rules
+        baseline_gate = evaluate_gates(spec, rules=baseline_rules)
+        consent_violation = await check_consent_gate(s, op.tenant_id, spec)
+        if consent_violation:
+            baseline_gate.violations.append(consent_violation)
+            baseline_gate.blocked = True
+        baseline_req = approval_requirement(spec, tier, baseline_gate)
+
+        # Evaluate under proposed rules
+        proposed_gate = evaluate_gates(spec, rules=proposed_rules)
+        if consent_violation:
+            proposed_gate.violations.append(consent_violation)
+            proposed_gate.blocked = True
+        proposed_req = approval_requirement(spec, tier, proposed_gate)
+
+        # Compare and bucket
+        if baseline_req != proposed_req:
+            diff_item = {
+                "op_id": op.id,
+                "action": op.action,
+                "baseline_requirement": baseline_req,
+                "proposed_requirement": proposed_req,
+                "baseline_violations": [v.as_dict() for v in baseline_gate.violations],
+                "proposed_violations": [v.as_dict() for v in proposed_gate.violations]
+            }
+            if proposed_req == "BLOCKED":
+                newly_blocked.append(diff_item)
+            elif baseline_req == "BLOCKED" and proposed_req != "BLOCKED":
+                newly_allowed.append(diff_item)
+            elif proposed_req == "AUTO" and baseline_req != "AUTO":
+                newly_auto_approved.append(diff_item)
+            elif proposed_req == "HUMAN" and baseline_req == "AUTO":
+                now_requires_human.append(diff_item)
+
+    return {
+        "ops_evaluated": len(ops),
+        "newly_blocked": newly_blocked,
+        "newly_allowed": newly_allowed,
+        "newly_auto_approved": newly_auto_approved,
+        "now_requires_human": now_requires_human
+    }
+
 
 

@@ -609,6 +609,69 @@ async def autonomy_confidence(
     }
 
 
+class PolicySimulateIn(BaseModel):
+    proposed_params: dict
+    window_days: int | None = 30
+    max_ops: int = 500
+    save_draft: bool = False
+    note: str | None = None
+    created_by: str | None = None
+
+
+@app.post("/policy-simulate")
+async def policy_simulate(
+    body: PolicySimulateIn,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    """Replays historical operations against proposed ruleset changes and returns the differences."""
+    from app.kernel.services import simulate_policy
+    from app.models import PolicyVersion
+
+    sim_res = await simulate_policy(
+        s,
+        tenant_id=tid,
+        proposed_params_dict=body.proposed_params,
+        window_days=body.window_days,
+        max_ops=body.max_ops
+    )
+
+    draft_version = None
+    if body.save_draft:
+        # Determine next version
+        stmt = (
+            select(PolicyVersion.version)
+            .where(PolicyVersion.tenant_id == tid)
+            .order_by(PolicyVersion.version.desc())
+            .limit(1)
+        )
+        res = await s.execute(stmt)
+        last_version = res.scalar_one_or_none() or 0
+        next_version = last_version + 1
+
+        from app.kernel.services import load_active_ruleset_params
+        baseline_params = await load_active_ruleset_params(s, tid)
+        base_dict = baseline_params.__dict__.copy()
+        base_dict.update(body.proposed_params)
+
+        draft = PolicyVersion(
+            tenant_id=tid,
+            version=next_version,
+            status="proposed",
+            params=base_dict,
+            note=body.note,
+            created_by=body.created_by
+        )
+        s.add(draft)
+        await s.commit()
+        draft_version = next_version
+
+    return {
+        "simulation": sim_res,
+        "draft_version": draft_version
+    }
+
+
 class RecipePromoteIn(BaseModel):
     recipe_name: str
     version: str = "0.1.0"
