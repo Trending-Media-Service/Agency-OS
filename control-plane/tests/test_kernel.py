@@ -1430,5 +1430,65 @@ async def test_tool_path_reaches_proposed_gate_never_approved(client, db_engine)
         assert row.state == "AWAITING_APPROVAL"
 
 
+@pytest.mark.asyncio
+async def test_read_endpoints_connections_breakers_events(client, db_engine):
+    from app.models import Connection, CircuitBreakerRow
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    
+    H = {"X-Tenant-ID": "t-read-test"}
+    
+    # Seed data
+    async with async_session() as s:
+        async with s.begin():
+            conn = Connection(
+                tenant_id="t-read-test",
+                brand_id="b-read-test",
+                provider="shopify",
+                scope="read",
+                secret_ref="shopify-secret",
+                config={"shop_url": "test.myshopify.com"}
+            )
+            s.add(conn)
+            
+            breaker = CircuitBreakerRow(
+                tenant_id="t-read-test",
+                brand_id="b-read-test",
+                domain="grow",
+                state="CLOSED",
+                consecutive_failures=0
+            )
+            s.add(breaker)
+            
+            # Write audit event
+            await audit_append(s, tenant_id="t-read-test", actor="tester", action="test.read_endpoint")
+            
+        await s.commit()
+
+    # 1. Test GET /connections
+    resp = await client.get("/connections", headers=H)
+    assert resp.status_code == 200
+    conns = resp.json()
+    assert len(conns) == 1
+    assert conns[0]["provider"] == "shopify"
+    assert conns[0]["secret_ref"] == "shopify-secret"
+
+    # 2. Test GET /circuit-breakers
+    resp = await client.get("/circuit-breakers", headers=H)
+    assert resp.status_code == 200
+    breakers = resp.json()
+    assert len(breakers) == 1
+    assert breakers[0]["domain"] == "grow"
+    assert breakers[0]["state"] == "CLOSED"
+
+    # 3. Test GET /audit/events
+    resp = await client.get("/audit/events", headers=H)
+    assert resp.status_code == 200
+    events = resp.json()
+    assert len(events) >= 1
+    assert events[0]["action"] == "test.read_endpoint"
+    assert events[0]["actor"] == "tester"
+
+
+
 
 
