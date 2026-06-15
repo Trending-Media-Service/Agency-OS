@@ -537,6 +537,78 @@ async def approval_latency(domain: str | None = None, window_days: int | None = 
     return {"tenant_id": tid, "domain": domain, "window_days": window_days, **rollup}
 
 
+@app.get("/autonomy-confidence")
+async def autonomy_confidence(
+    brand_id: str | None = None,
+    domain: str | None = None,
+    window_days: int | None = None,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    """Computes autonomy confidence metrics (agreement rate, critical disagreements)
+    for shadow Tier-2 decisions against human Tier-1 decisions.
+    """
+    import datetime as _dt
+    from app.models import ShadowDecision, OpRow
+    
+    stmt = select(ShadowDecision).join(OpRow, ShadowDecision.op_id == OpRow.id)
+    stmt = stmt.where(ShadowDecision.tenant_id == tid)
+    
+    if brand_id:
+        stmt = stmt.where(OpRow.brand_id == brand_id)
+    if domain:
+        stmt = stmt.where(OpRow.domain == domain)
+    if window_days:
+        since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=window_days)
+        # SQLite stores naive datetimes; compare with naive UTC
+        since = since.replace(tzinfo=None)
+        stmt = stmt.where(ShadowDecision.ts >= since)
+        
+    res = await s.execute(stmt)
+    decisions = res.scalars().all()
+    
+    total = len(decisions)
+    if total == 0:
+        return {
+            "tenant_id": tid,
+            "brand_id": brand_id,
+            "domain": domain,
+            "window_days": window_days,
+            "total_decisions": 0,
+            "agreement_rate": 1.0,
+            "critical_disagreements": 0,
+            "recommendation": "OBSERVE",
+            "message": "No shadow decisions recorded in this window."
+        }
+        
+    agreed_count = sum(1 for d in decisions if d.agreed)
+    critical_count = sum(1 for d in decisions if not d.agreed and d.human_decision == "reject" and d.shadow_requirement == "AUTO")
+    
+    agreement_rate = agreed_count / total
+    
+    if total < 5:
+        recommendation = "OBSERVE"
+        message = f"Insufficient data ({total} decision(s)). Recommend observing further."
+    elif agreement_rate >= 0.90 and critical_count == 0:
+        recommendation = "PROCEED"
+        message = "High agreement rate and zero critical disagreements. Autonomy promotion recommended."
+    else:
+        recommendation = "HOLD"
+        message = "Agreement rate below 90% or critical disagreements detected. Review shadow logs."
+        
+    return {
+        "tenant_id": tid,
+        "brand_id": brand_id,
+        "domain": domain,
+        "window_days": window_days,
+        "total_decisions": total,
+        "agreement_rate": agreement_rate,
+        "critical_disagreements": critical_count,
+        "recommendation": recommendation,
+        "message": message
+    }
+
+
 class RecipePromoteIn(BaseModel):
     recipe_name: str
     version: str = "0.1.0"

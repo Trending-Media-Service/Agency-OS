@@ -337,6 +337,18 @@ class ConsentBasis(Base):
     granted_by: Mapped[str] = mapped_column(String(64))
 
 
+class ShadowDecision(Base):
+    __tablename__ = "shadow_decisions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    op_id: Mapped[str] = mapped_column(String(32), index=True)
+    human_decision: Mapped[str] = mapped_column(String(16))  # approve|reject|modify
+    shadow_tier: Mapped[int] = mapped_column(Integer, default=2)
+    shadow_requirement: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    agreed: Mapped[bool] = mapped_column(default=True)
+    violations: Mapped[dict] = mapped_column(JSON, default=dict)
+    ts: Mapped[dt.datetime] = mapped_column(default=_now)
+
 
 def make_engine(url: str = "sqlite:///./agencyos.db"):
     if url.startswith("sqlite"):
