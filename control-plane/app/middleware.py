@@ -51,3 +51,50 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     finally:
       # Safely clear the active context after processing ends
       tenant_context.reset(token)
+
+
+active_rate_limiter = None
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+  """Deterministic in-house token bucket rate limiter protecting public endpoints."""
+
+  def __init__(self, app, rate: float = 0.2, capacity: float = 5.0):
+    super().__init__(app)
+    self.rate = rate  # tokens replenished per second
+    self.capacity = capacity  # burst capacity
+    global active_rate_limiter
+    active_rate_limiter = self
+    import time
+    from collections import defaultdict
+    self.time = time
+    self.defaultdict = defaultdict
+    self.buckets = self.defaultdict(lambda: (capacity, self.time.time()))
+
+  async def dispatch(self, request, call_next):
+    # Rate limit POST /chat and public webhooks
+    if request.method == "POST" and request.url.path in ["/chat", "/webhooks/whatsapp"]:
+      client_ip = request.client.host if request.client else "unknown"
+      now = self.time.time()
+      tokens, last_update = self.buckets[client_ip]
+
+      # Replenish tokens
+      elapsed = now - last_update
+      replenished = tokens + elapsed * self.rate
+      new_tokens = min(self.capacity, replenished)
+
+      if new_tokens >= 1.0:
+        # Consume 1 token
+        self.buckets[client_ip] = (new_tokens - 1.0, now)
+      else:
+        # No tokens left: reject with 429 and Retry-After header
+        self.buckets[client_ip] = (new_tokens, now)
+        retry_after = int((1.0 - new_tokens) / self.rate) + 1
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    return await call_next(request)
+
