@@ -43,7 +43,7 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
    - `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APPROVER_PHONE`,
      `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET` (boot fails closed in prod without the secret)
    - `SENTRY_DSN` (optional)
-4. **DB + RLS:** run `python migrate.py` against Cloud SQL (creates tables + RLS policies).
+4. **DB + RLS:** run `python migrate.py` against Cloud SQL (applies database migrations via Alembic, creating tables + RLS policies).
 5. **Cloud Tasks** queue for the outbox; **Cloud Scheduler** → `POST /tasks/trust-snapshots` nightly.
    The web approval dashboard and `/webhooks/whatsapp` run on the same service.
 
