@@ -5,6 +5,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useApi } from "@/lib/api-client";
 import { useTenant } from "@/contexts/TenantContext";
 import { Button } from "@/components/ui/button";
+import { OpDetailDrawer, OpDetailData } from "@/components/op-detail-drawer";
 import { 
   AlertTriangle, 
   CheckCircle, 
@@ -56,6 +57,7 @@ export default function Home() {
   const { request } = useApi();
   const { tenantId, role, setRole } = useTenant();
   const [activeTab, setActiveTab] = useState<"ops" | "connections" | "audit" | "safety">("ops");
+  const [selectedOpId, setSelectedOpId] = useState<string | null>(null);
   
   // Chat state
   const [chatInput, setChatInput] = useState("");
@@ -71,6 +73,13 @@ export default function Home() {
     queryKey: ["ops", tenantId],
     queryFn: () => request("/ops", "get"),
     refetchInterval: 5000,
+  });
+
+  // 1.5. Fetch Single Operation detail
+  const { data: selectedOp, isLoading: selectedOpLoading } = useQuery({
+    queryKey: ["opDetail", selectedOpId],
+    queryFn: () => selectedOpId ? request(`/ops/${selectedOpId}` as "/ops/{op_id}", "get") : null,
+    enabled: selectedOpId !== null,
   });
 
   // 2. Fetch Connections
@@ -103,15 +112,17 @@ export default function Home() {
 
   // 6. Mutate decision
   const decisionMutation = useMutation({
-    mutationFn: ({ opId, decision }: { opId: string, decision: "approve" | "reject" }) => 
+    mutationFn: ({ opId, decision, reason }: { opId: string, decision: "approve" | "reject" | "modify", reason?: string }) => 
       request(`/ops/${opId}/decision` as "/ops/{op_id}/decision", "post", {
         decision,
         actor: "chandan",
         role: role,
-        surface: "web"
+        surface: "web",
+        reason
       }),
     onSuccess: () => {
       refetchOps();
+      setSelectedOpId(null);
     }
   });
 
@@ -146,8 +157,8 @@ export default function Home() {
     }
   });
 
-  const handleDecision = (opId: string, decision: "approve" | "reject") => {
-    decisionMutation.mutate({ opId, decision });
+  const handleDecision = (opId: string, decision: "approve" | "reject" | "modify", reason?: string) => {
+    decisionMutation.mutate({ opId, decision, reason });
   };
 
   const handleChatSubmit = (e: React.FormEvent) => {
@@ -428,7 +439,11 @@ export default function Home() {
                       </thead>
                       <tbody className="divide-y divide-zinc-900">
                         {ops.map((op) => (
-                          <tr key={op.op_id} className="hover:bg-zinc-900/10 transition-colors">
+                          <tr 
+                            key={op.op_id} 
+                            onClick={() => setSelectedOpId(op.op_id)}
+                            className="hover:bg-zinc-900/10 cursor-pointer transition-colors"
+                          >
                             <td className="px-6 py-4 space-y-0.5">
                               <code className="text-zinc-500 font-mono text-[10px] block">{op.op_id.substring(0, 8)}...</code>
                               <span className="font-semibold text-zinc-300 block">{op.action}</span>
@@ -453,7 +468,10 @@ export default function Home() {
                                 <div className="flex justify-end space-x-2">
                                   <Button
                                     size="sm"
-                                    onClick={() => handleDecision(op.op_id, "approve")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDecision(op.op_id, "approve");
+                                    }}
                                     className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-[10px] h-6 px-2.5 rounded"
                                   >
                                     Approve
@@ -461,7 +479,10 @@ export default function Home() {
                                   <Button
                                     size="sm"
                                     variant="destructive"
-                                    onClick={() => handleDecision(op.op_id, "reject")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDecision(op.op_id, "reject");
+                                    }}
                                     className="bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 text-[10px] h-6 px-2.5 rounded"
                                   >
                                     Reject
@@ -675,6 +696,17 @@ export default function Home() {
         </div>
 
       </div>
+      
+      {selectedOpId && (
+        <OpDetailDrawer
+          opId={selectedOpId}
+          opData={(selectedOp as OpDetailData) || null}
+          loading={selectedOpLoading}
+          onClose={() => setSelectedOpId(null)}
+          onDecision={handleDecision}
+          role={role}
+        />
+      )}
     </div>
   );
 }
