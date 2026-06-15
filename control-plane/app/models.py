@@ -19,7 +19,7 @@ def _id() -> str:
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
