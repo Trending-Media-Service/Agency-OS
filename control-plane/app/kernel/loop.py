@@ -431,6 +431,15 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
         token = trace_context.set(item.trace_id)
         try:
             row = await s.get(OpRow, item.op_id)
+            if not row:
+                item.status = "DEAD"
+                processed += 1
+                continue
+
+            if OpState(row.state) in (OpState.FAILED, OpState.ROLLED_BACK, OpState.REJECTED, OpState.BLOCKED):
+                item.status = "DEAD"
+                processed += 1
+                continue
 
             # 1. Cooldown Check
             is_cooldown_ok = await check_cooldown(s, row)
@@ -586,13 +595,18 @@ async def cancel_active_siblings(s: AsyncSession, failed_child: OpRow):
     res = await s.execute(stmt)
     active_siblings = res.scalars().all()
     for sib in active_siblings:
+        prev_state = sib.state
         # Move state to FAILED
         await transition(s, sib, OpState.FAILED, actor="kernel", detail={"note": "Cancelled due to sibling failure"})
         # If it was active (executing/verifying), compensate it
-        if sib.state in (OpState.EXECUTING.value, OpState.VERIFYING.value):
+        if prev_state in (OpState.EXECUTING.value, OpState.VERIFYING.value):
             adapter = REGISTRY[sib.domain]
             spec = _row_to_spec(sib)
             await _compensate(s, sib, adapter, spec)
+        elif prev_state == OpState.APPROVED.value:
+            # For unexecuted APPROVED siblings, transition them cleanly to ROLLED_BACK via COMPENSATING without adapter calls
+            await transition(s, sib, OpState.COMPENSATING, actor="kernel")
+            await transition(s, sib, OpState.ROLLED_BACK, actor="kernel")
 
 
 async def trigger_saga_rollback(s: AsyncSession, parent_id: str):

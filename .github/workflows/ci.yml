@@ -25,7 +25,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install
-        run: pip install -r control-plane/requirements.txt
+        run: |
+          pip install pip-audit
+          pip install -r control-plane/requirements.txt
+      - name: Security audit (pip-audit)
+        run: pip-audit -r control-plane/requirements.txt
       - name: Kernel test suite
         run: cd control-plane && python -m pytest -q
       - name: Invariant checks

@@ -1,0 +1,12 @@
+**/__pycache__
+**/.pytest_cache
+**/*.db
+**/*.db-journal
+venv/
+my_venv/
+test_venv/
+tests/
+scratch/
+bin/
+Dockerfile
+.dockerignore

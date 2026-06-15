@@ -18,8 +18,12 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
 
 ## Phase B — deploy the control plane
 1. Merge the production-ready Provision PR to `main`.
-2. **Container image must include the `terraform` CLI** — the `ProvisionAdapter` shells out to it.
-   Deploy `app.main:app` to **Cloud Run**.
+2. **Build and push the container image:** The container image must include the `terraform` CLI (as the `ProvisionAdapter` shells out to it). Build it using the following command from the repository root:
+   ```bash
+   docker build -t gcr.io/<gcp-project-id>/control-plane:latest -f control-plane/Dockerfile control-plane/
+   docker push gcr.io/<gcp-project-id>/control-plane:latest
+   ```
+   Then deploy the image to **Cloud Run**.
 3. **Env vars:**
    - `ENV=production`
    - `DATABASE_URL=postgresql+asyncpg://<app-role>@…/agency_os` (and `WORKER_DATABASE_URL` for the
