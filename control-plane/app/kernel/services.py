@@ -659,3 +659,70 @@ def check_role_authority(op: OpSpec, role: str, rules: RulesetParams) -> Optiona
 
   return None
 
+
+async def check_consent_gate(s: AsyncSession, tenant_id: str, op: OpSpec) -> Optional[Violation]:
+    """Checks if the tenant has a valid, non-expired consent basis for the operation.
+    
+    Returns a Violation if consent is missing or revoked.
+    """
+    from app.models import ConsentBasis
+    import datetime as _dt
+    
+    # 1. Identify if the operation requires consent (PII markers or Remote vendors)
+    requires_pii_consent = any(marker in op.action for marker in ["audience", "customer", "telemetry", "contact"])
+    
+    # Identify vendor from action domain
+    vendor = None
+    if op.action.startswith("payment."):
+        vendor = "stripe"
+    elif op.action.startswith("presence.merchant_center."):
+        vendor = "google"
+    elif "meta" in op.action or "whatsapp" in op.action:
+        vendor = "meta"
+        
+    if not requires_pii_consent and not vendor:
+        return None
+        
+    # 2. Query consent bases for this tenant
+    stmt = select(ConsentBasis).where(
+        ConsentBasis.tenant_id == tenant_id,
+        ConsentBasis.status == "granted"
+    )
+    res = await s.execute(stmt)
+    consents = res.scalars().all()
+    
+    now = _dt.datetime.now(_dt.timezone.utc)
+    
+    has_pii_consent = False
+    has_vendor_consent = False
+    
+    for c in consents:
+        if c.expires_at and c.expires_at < now:
+            continue
+            
+        if requires_pii_consent and c.category == "pii_upload":
+            if c.action_or_vendor in (op.action, "all"):
+                has_pii_consent = True
+                
+        if vendor and c.category == "vendor_sharing":
+            if c.action_or_vendor in (vendor, "all"):
+                has_vendor_consent = True
+
+    violations = []
+    if requires_pii_consent and not has_pii_consent:
+        violations.append(f"Missing PII upload consent basis for action '{op.action}'")
+    if vendor and not has_vendor_consent:
+        violations.append(f"Missing vendor sharing consent basis for vendor '{vendor}'")
+        
+    if violations:
+        return Violation(
+            rule_id="consent_gate",
+            limit="Consent basis GRANTED and ACTIVE",
+            attempted="Consent basis MISSING or REVOKED",
+            delta="; ".join(violations),
+            message="Operation blocked: consent basis required for off-platform sharing or PII processing."
+        )
+        
+    return None
+
+

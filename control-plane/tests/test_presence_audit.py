@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Tenant, Brand, BrandProperty, OpRow
+from app.models import Tenant, Brand, BrandProperty, OpRow, ConsentBasis
 from app.kernel import loop
 
 @pytest.mark.asyncio
@@ -84,6 +84,16 @@ async def test_merchant_center_audit_flow(client, db_engine):
         await s.commit()
         brand_id = brand.id
 
+        cb = ConsentBasis(
+            tenant_id=tenant_id,
+            category="vendor_sharing",
+            action_or_vendor="google",
+            status="granted",
+            granted_by="owner"
+        )
+        s.add(cb)
+        await s.commit()
+
     H = {"X-Tenant-ID": tenant_id}
 
     # 2. Submit Intent: "run merchant center feed verification"
@@ -142,6 +152,16 @@ async def test_merchant_center_feed_health_warnings_and_alert_dispatch(client, d
         s.add(brand)
         await s.commit()
         brand_id = brand.id
+
+        cb = ConsentBasis(
+            tenant_id=tenant_id,
+            category="vendor_sharing",
+            action_or_vendor="google",
+            status="granted",
+            granted_by="owner"
+        )
+        s.add(cb)
+        await s.commit()
 
     H = {"X-Tenant-ID": tenant_id}
 
