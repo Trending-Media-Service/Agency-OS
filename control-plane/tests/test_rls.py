@@ -63,9 +63,9 @@ async def rls_db():
             "INSERT INTO brands (id, tenant_id, name, created_at) VALUES "
             "('brand-wok','tenant-a','Wok-Tok',now()), ('brand-abl','tenant-b','Ableys',now())"))
         await conn.execute(text(
-            "INSERT INTO ops (id, tenant_id, brand_id, domain, action, state, impact, reversibility, created_at, idem_key) VALUES "
-            "('op-a', 'tenant-a', 'brand-wok', 'web', 'deploy', 'DONE', 1, 'reversible', now(), 'idem-a'), "
-            "('op-b', 'tenant-b', 'brand-abl', 'web', 'deploy', 'DONE', 1, 'reversible', now(), 'idem-b')"))
+            "INSERT INTO ops (id, tenant_id, brand_id, domain, action, state, impact, reversibility, params, created_at, idem_key) VALUES "
+            "('op-a', 'tenant-a', 'brand-wok', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', now(), 'idem-a'), "
+            "('op-b', 'tenant-b', 'brand-abl', 'web', 'deploy', 'DONE', 1, 'reversible', '{}', now(), 'idem-b')"))
         await conn.execute(text(
             "INSERT INTO op_traces (tenant_id, op_id, kind, detail, ts) VALUES "
             "('tenant-a', 'op-a', 'note', '{}', now()), "

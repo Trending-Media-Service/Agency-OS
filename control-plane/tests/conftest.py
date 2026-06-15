@@ -1,6 +1,8 @@
 import datetime as dt
 import os
 os.environ["AOS_ENV"] = "test"
+import sys
+sys.modules["meridian"] = None
 import pytest
 import subprocess
 import tempfile
