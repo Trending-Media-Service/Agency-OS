@@ -17,7 +17,7 @@ from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
                       Reversibility, Severity, VerifyResult, assert_transition)
 from .services import (GateResult, TRUST_CONFIG, approval_requirement, audit_append,
                        evaluate_gates, load_active_rules, check_role_authority,
-                       load_active_ruleset_params, build_rules)
+                       load_active_ruleset_params, build_rules, check_consent_gate)
 
 
 class Adapter(Protocol):
@@ -121,6 +121,12 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
 
     rules = await load_active_rules(s, row.tenant_id)
     gate = evaluate_gates(spec, rules=rules)
+    
+    consent_violation = await check_consent_gate(s, row.tenant_id, spec)
+    if consent_violation:
+        gate.violations.append(consent_violation)
+        gate.blocked = True
+        
     trace(s, row.id, row.tenant_id, "gate", {"violations": [v.as_dict() for v in gate.violations],
                               "requires_human": gate.requires_human})
     requirement = approval_requirement(spec, tier, gate)

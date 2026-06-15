@@ -325,6 +325,19 @@ class CircuitBreakerRow(Base):
     last_failure_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
 
 
+class ConsentBasis(Base):
+    __tablename__ = "consent_bases"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    category: Mapped[str] = mapped_column(String(32))  # pii_upload | vendor_sharing
+    action_or_vendor: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="granted")  # granted | revoked
+    granted_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    granted_by: Mapped[str] = mapped_column(String(64))
+
+
+
 def make_engine(url: str = "sqlite:///./agencyos.db"):
     if url.startswith("sqlite"):
         from sqlalchemy.pool import StaticPool

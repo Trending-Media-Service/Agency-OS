@@ -4,14 +4,15 @@ from sqlalchemy import select
 
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
 from app.kernel.loop import Adapter
-from app.models import PolicyVersion
+from app.models import PolicyVersion, ConsentBasis
 
 class GovernanceAdapter(Adapter):
     domain = "governance"
 
     def plan(self, intent: str, tenant_id: str, brand_id: str) -> list[OpSpec]:
         """Plans governance ops.
-        E.g. intent: 'update policy ceiling to 2000000' or similar.
+        E.g. intent: 'update policy ceiling to 2000000'
+        E.g. intent: 'grant consent for pii_upload grow.audience.upload'
         """
         normalized = intent.strip().lower()
         if "update policy" in normalized or "change policy" in normalized:
@@ -32,7 +33,49 @@ class GovernanceAdapter(Adapter):
                 cost_estimate=Money(amount_minor=0, currency="INR"),
                 statutory=True
             )]
+            
+        elif "grant consent" in normalized or "approve consent" in normalized:
+            # Format: grant consent for [category] [action_or_vendor]
+            parts = normalized.split()
+            # E.g. ['grant', 'consent', 'for', 'pii_upload', 'grow.audience.upload']
+            category = "pii_upload"
+            action_or_vendor = "all"
+            if len(parts) >= 5:
+                category = parts[3]
+                action_or_vendor = parts[4]
+                
+            return [OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="governance.consent.grant",
+                params={"category": category, "action_or_vendor": action_or_vendor, "actor": "owner"},
+                severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+                cost_estimate=Money(amount_minor=0, currency="INR"),
+                statutory=True
+            )]
+            
+        elif "revoke consent" in normalized:
+            parts = normalized.split()
+            category = "pii_upload"
+            action_or_vendor = "all"
+            if len(parts) >= 5:
+                category = parts[3]
+                action_or_vendor = parts[4]
+                
+            return [OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="governance.consent.revoke",
+                params={"category": category, "action_or_vendor": action_or_vendor},
+                severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+                cost_estimate=Money(amount_minor=0, currency="INR"),
+                statutory=True
+            )]
+            
         return []
+
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
         if op.action == "governance.policy.update":
@@ -41,6 +84,16 @@ class GovernanceAdapter(Adapter):
             for k, v in rules.items():
                 summary += f"  - Change parameter '{k}' to '{v}'\n"
             return PreviewArtifact(kind="policy_update_preview", summary=summary, detail={})
+        elif op.action == "governance.consent.grant":
+            cat = op.params.get("category")
+            target = op.params.get("action_or_vendor")
+            summary = f"Consent Grant:\n  - Grant active consent basis for category '{cat}', target '{target}'."
+            return PreviewArtifact(kind="consent_grant_preview", summary=summary, detail={})
+        elif op.action == "governance.consent.revoke":
+            cat = op.params.get("category")
+            target = op.params.get("action_or_vendor")
+            summary = f"Consent Revocation:\n  - Revoke active consent basis for category '{cat}', target '{target}'."
+            return PreviewArtifact(kind="consent_revoke_preview", summary=summary, detail={})
         return PreviewArtifact(kind="unknown", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
@@ -64,14 +117,41 @@ class GovernanceAdapter(Adapter):
             session.add(pv)
             return ExecResult(ok=True, detail={"version": next_version, "rules_json": new_rules})
             
+        elif op.action == "governance.consent.grant":
+            if session is None:
+                return ExecResult(ok=False, detail={"error": "Session is required"})
+            cb = ConsentBasis(
+                tenant_id=op.tenant_id,
+                category=op.params["category"],
+                action_or_vendor=op.params["action_or_vendor"],
+                status="granted",
+                granted_by=op.params.get("actor", "kernel")
+            )
+            session.add(cb)
+            return ExecResult(ok=True, detail={"consent_basis_id": cb.id, "status": "granted"})
+            
+        elif op.action == "governance.consent.revoke":
+            if session is None:
+                return ExecResult(ok=False, detail={"error": "Session is required"})
+            stmt = select(ConsentBasis).where(
+                ConsentBasis.tenant_id == op.tenant_id,
+                ConsentBasis.category == op.params["category"],
+                ConsentBasis.action_or_vendor == op.params["action_or_vendor"],
+                ConsentBasis.status == "granted"
+            )
+            res = await session.execute(stmt)
+            records = res.scalars().all()
+            for r in records:
+                r.status = "revoked"
+            return ExecResult(ok=True, detail={"revoked_count": len(records)})
+            
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
     async def verify(self, op: OpSpec) -> VerifyResult:
+        if op.action.startswith("governance.consent."):
+            return VerifyResult(ok=True, checks={"consent_basis_updated": True})
         return VerifyResult(ok=True, checks={"policy_updated": True})
 
     def compensate(self, op: OpSpec) -> list[OpSpec]:
-        # If there's an update, compensation is writing the previous rules
-        # We don't have the previous rules in the OpSpec params directly unless we pass it,
-        # but the engine can query the previous version to roll it back.
-        # For simple revert action, let's keep it empty or return a revert action.
         return []
+
