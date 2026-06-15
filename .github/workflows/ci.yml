@@ -45,3 +45,23 @@ jobs:
           if grep -nE "anthropic|openai|google\.generativeai|genai|vertexai" control-plane/app/kernel/services.py control-plane/app/kernel/optypes.py 2>/dev/null; then
             echo "::error::model SDK referenced inside a gating module — forbidden (§2.1)"; exit 1
           fi
+
+  web:
+    # Gates the Next.js console (control-plane/web) so the frontend can't merge broken.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: control-plane/web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: Production build
+        run: npm run build
