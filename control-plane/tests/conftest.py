@@ -266,3 +266,12 @@ async def client(db_engine):
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
     mainmod.app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Resets the in-memory rate limiter token buckets before each test runs."""
+    from app.middleware import active_rate_limiter
+    if active_rate_limiter is not None:
+        active_rate_limiter.buckets.clear()
+
