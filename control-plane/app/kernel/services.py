@@ -11,7 +11,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -281,6 +281,40 @@ class RulesetParams:
     allowed_regions: tuple[str, ...] = ("asia-south1",)
     approved_dependencies: tuple[str, ...] = ("react", "react-dom", "next", "tailwindcss", "lucide-react")
     protected_paths: tuple[str, ...] = ("control-plane/", ".github/", "recipes/", "OWNERS", "METADATA")
+    role_authority: dict[str, dict[str, Any]] = field(default_factory=lambda: {
+        "AGENCY_OWNER": {
+            "max_impact": 5,
+            "max_cost_minor": 100_000_000,
+            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance"],
+            "allow_irreversible": True,
+            "can_override_gates": True,
+            "can_approve_statutory": True,
+        },
+        "OPERATOR": {
+            "max_impact": 3,
+            "max_cost_minor": 5_000_000,
+            "allowed_domains": ["provision", "build", "manage", "grow", "presence", "payment", "dns", "governance"],
+            "allow_irreversible": True,
+            "can_override_gates": True,
+            "can_approve_statutory": False,
+        },
+        "BRAND_VIEWER": {
+            "max_impact": 1,
+            "max_cost_minor": 0,
+            "allowed_domains": ["grow"],
+            "allow_irreversible": False,
+            "can_override_gates": False,
+            "can_approve_statutory": False,
+        },
+        "CLIENT": {
+            "max_impact": 2,
+            "max_cost_minor": 1_000_000,
+            "allowed_domains": ["grow"],
+            "allow_irreversible": False,
+            "can_override_gates": False,
+            "can_approve_statutory": False,
+        }
+    })
 
 
 def build_rules(p: RulesetParams) -> list[Rule]:
@@ -373,7 +407,7 @@ def build_rules(p: RulesetParams) -> list[Rule]:
 DEFAULT_RULES: list[Rule] = build_rules(RulesetParams())
 
 
-async def load_active_rules(s: AsyncSession, tenant_id: str) -> list[Rule]:
+async def load_active_ruleset_params(s: AsyncSession, tenant_id: str) -> RulesetParams:
     from ..models import PolicyVersion
     stmt = (
         select(PolicyVersion)
@@ -388,9 +422,13 @@ async def load_active_rules(s: AsyncSession, tenant_id: str) -> list[Rule]:
         for key in ("allowed_regions", "approved_dependencies", "protected_paths"):
             if key in rj and isinstance(rj[key], list):
                 rj[key] = tuple(rj[key])
-        params = RulesetParams(**rj)
-        return build_rules(params)
-    return DEFAULT_RULES
+        return RulesetParams(**rj)
+    return RulesetParams()
+
+
+async def load_active_rules(s: AsyncSession, tenant_id: str) -> list[Rule]:
+    params = await load_active_ruleset_params(s, tenant_id)
+    return build_rules(params)
 
 
 def evaluate_gates(op: OpSpec, rules: Optional[list[Rule]] = None) -> GateResult:
@@ -581,3 +619,43 @@ async def approval_latency_rollup(s: AsyncSession, tenant_id: str, *,
 
     return {"count": len(vals), "median_ms": _pct(50), "p90_ms": _pct(90),
             "expired_cards": expired}
+
+
+def check_role_authority(op: OpSpec, role: str, rules: RulesetParams) -> Optional[str]:
+  """Deterministic check returning None if role has authority, else failure explanation string."""
+  matrix = rules.role_authority
+  role_norm = role.upper()
+  if role_norm == "OWNER":
+    role_norm = "AGENCY_OWNER"
+
+  if role_norm not in matrix:
+    return f"Unknown role {role} has no authority to approve Ops"
+
+  auth = matrix[role_norm]
+
+  # 1. Check allowed domains
+  if op.domain not in auth.get("allowed_domains", []):
+    return f"{role} cannot approve {op.domain} Ops"
+
+  # 2. Check statutory firewall
+  if op.statutory or any(m in op.action for m in STATUTORY_MARKERS):
+    if not auth.get("can_approve_statutory", False):
+      return f"{role} cannot approve statutory Ops"
+
+  # 3. Check severity impact limits
+  if op.severity.impact > auth.get("max_impact", 0):
+    return f"{role} cannot approve Ops with severity impact {op.severity.impact} (max allowed {auth.get('max_impact')})"
+
+  # 4. Check cost ceilings
+  if op.cost_estimate and op.cost_estimate.amount_minor > auth.get("max_cost_minor", 0):
+    limit_inr = auth.get("max_cost_minor", 0) / 100
+    cost_inr = op.cost_estimate.amount_minor / 100
+    return f"{role} cannot approve Ops costing {cost_inr:.2f} INR (max allowed {limit_inr:.2f} INR)"
+
+  # 5. Check reversibility (allow_irreversible constraint)
+  if op.severity.reversibility == Reversibility.IRREVERSIBLE:
+    if not auth.get("allow_irreversible", False):
+      return f"{role} cannot approve IRREVERSIBLE Ops"
+
+  return None
+
