@@ -43,19 +43,30 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
    - `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APPROVER_PHONE`,
      `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET` (boot fails closed in prod without the secret)
    - `SENTRY_DSN` (optional)
+   - `ALLOWED_ORIGINS` — comma-separated browser origins allowed to call this API (CORS). The Web
+     Console (Phase B.1) is a **separate Cloud Run origin**, so its URL must be listed here or the
+     browser blocks every call (console stuck on "Loading…", audit shows `CORRUPT`). Example:
+     `ALLOWED_ORIGINS=https://agency-os-web-<project-number>.<region>.run.app`. Defaults include
+     `http://localhost:3000` for local dev.
 4. **DB + RLS:** run `python migrate.py` against Cloud SQL (applies database migrations via Alembic, creating tables + RLS policies).
 5. **Cloud Tasks** queue for the outbox; **Cloud Scheduler** → `POST /tasks/trust-snapshots` nightly.
    The web approval dashboard and `/webhooks/whatsapp` run on the same service.
 
 ## Phase B.1 — deploy the Web Console (Frontend)
-1. **Build and push the frontend image:** Build it from the repository root using:
+1. **Build and push the frontend image.** `NEXT_PUBLIC_API_URL` is baked into the client bundle at
+   **build time** (Next.js inlines `NEXT_PUBLIC_*`), so it MUST be passed as a `--build-arg` — setting
+   it only as a Cloud Run runtime env var has no effect, and the console will fall back to
+   `http://localhost:8000` and fail every request. Build with the backend's Cloud Run URL:
    ```bash
-   docker build -t gcr.io/<gcp-project-id>/control-plane-web:latest -f control-plane/web/Dockerfile control-plane/web/
+   docker build \
+     --build-arg NEXT_PUBLIC_API_URL=https://agency-os-backend-<project-number>.<region>.run.app \
+     -t gcr.io/<gcp-project-id>/control-plane-web:latest \
+     -f control-plane/web/Dockerfile control-plane/web/
    docker push gcr.io/<gcp-project-id>/control-plane-web:latest
    ```
 2. **Deploy to Cloud Run:** Deploy the container to a second Cloud Run service.
-3. **Environment variables:**
-   - `NEXT_PUBLIC_API_URL`: The public URL of the control plane backend API deployed in Phase B.
+3. **Wire CORS:** add this service's URL to the backend's `ALLOWED_ORIGINS` (Phase B, env vars) and
+   redeploy the backend — otherwise the browser blocks all cross-origin calls.
 
 ## Phase C — onboard a brand (governed flow)
 Per brand (e.g. Ableys → `ableys.in`, Tanmatra → `tanmatra.food`):
