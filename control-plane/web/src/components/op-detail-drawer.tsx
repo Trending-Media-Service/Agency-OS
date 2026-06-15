@@ -237,7 +237,7 @@ export function TraceTimeline({ traces }: { traces: TraceItem[] }) {
   );
 }
 
-interface OpDetailData {
+export interface OpDetailData {
   action: string;
   state: string;
   preview: string | null;
