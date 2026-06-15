@@ -289,6 +289,13 @@ Attributed contribution margin reporting is calibrated using a causal-calibratio
 
 **Differentiator note:** a brand on Provision+Build gives Grow clean first-party data (server-side tagging, CAPI from our own stack). Full-stack tenants should see measurably better Grow outcomes; instrument this from the start — it is the cross-sell argument.
 
+### 6.5 Presence — read-only SEO and competitor citation audit
+
+**Mechanism:** reads and audits the brand's visibility and citations across Google AI Overviews and competitor landing pages using automated web crawling (`playwright` headless Chromium).
+- **Read-Only Sense Invariant:** The presence audit adapter is strictly read-only. It generates local findings (`BrandProperty.findings` with `type="citation_audit"`) and surfaces content gap reports on the operator dashboard. It is strictly prohibited from proposing state-changing operations against client ad accounts, domains, or storefront configurations (§2.3).
+- **Graceful Failure Fallback:** If a crawl times out, is blocked by anti-scraping measures, or fails due to missing OS-level browser binaries, the execution logs a retry/warning, updates findings to empty lists, and completes successfully without throwing a fatal crash or creating write operations.
+- **RLS Safety Scoping:** Competitor domains and audit results are strictly scoped to the active tenant's Postgres RLS workspace context to prevent cross-tenant search intelligence leaks.
+
 ---
 
 ## 7. Conversational interface
@@ -326,6 +333,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | WhatsApp | Meta Cloud API | Template messages for cards |
 | Database Migrations | alembic | Async schema migrations, preserving Postgres RLS policies |
 | Attribution Calibration | google-meridian | Offline Bayesian MMM causal calibration (α) scope only |
+| Browser Crawl / Audit | playwright | Headless Chromium, read-only citation/competitor audit scope |
 
 
 **Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).

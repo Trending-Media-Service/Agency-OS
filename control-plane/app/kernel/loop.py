@@ -487,6 +487,7 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
             # Reset Circuit Breaker failures on success
             await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
+            logger.exception(f"Drain execution error on op {row.id}")
             trace(s, row.id, row.tenant_id, "retry", {"attempt": item.attempts, "error": str(exc)})
             
             # Record failure in Circuit Breaker
