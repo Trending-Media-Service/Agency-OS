@@ -231,26 +231,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/metrics/brand-performance": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Brand Performance
-         * @description Computes the composite Brand Performance Score. Advisory only; read-only.
-         */
-        get: operations["brand_performance_metrics_brand_performance_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/recipes/promote": {
         parameters: {
             query?: never;
@@ -348,6 +328,28 @@ export interface paths {
          *     Bypasses RLS by using get_worker_db to execute across all tenants.
          */
         post: operations["run_trust_snapshots_tasks_trust_snapshots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/calibrate-attribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calibrate Attribution
+         * @description Runs Meridian calibration to compute incrementality multipliers for all brands.
+         *
+         *     Bypasses RLS by using get_worker_db.
+         */
+        post: operations["calibrate_attribution_tasks_calibrate_attribution_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1039,43 +1041,6 @@ export interface operations {
             };
         };
     };
-    brand_performance_metrics_brand_performance_get: {
-        parameters: {
-            query: {
-                brand_id: string;
-                w_ux?: number;
-                w_organic?: number;
-                w_paid?: number;
-                w_pr?: number;
-            };
-            header?: {
-                "x-tenant-id"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     promote_recipe_recipes_promote_post: {
         parameters: {
             query?: never;
@@ -1205,6 +1170,37 @@ export interface operations {
         };
     };
     run_trust_snapshots_tasks_trust_snapshots_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calibrate_attribution_tasks_calibrate_attribution_post: {
         parameters: {
             query?: never;
             header?: {

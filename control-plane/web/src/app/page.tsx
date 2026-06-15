@@ -21,10 +21,35 @@ import {
   User
 } from "lucide-react";
 
+
+
+interface ChatViolation {
+  message: string;
+  rule_id?: string;
+  limit?: number;
+  value?: number;
+  delta?: number;
+}
+
+interface ChatCard {
+  op_id: string;
+  action: string;
+  state: string;
+  requirement: string;
+  preview: string | null;
+  cost_estimate: string | null;
+  violations: ChatViolation[];
+}
+
+interface ChatResponse {
+  reply: string;
+  cards?: ChatCard[];
+}
+
 interface Message {
   sender: "user" | "agent";
   text: string;
-  cards?: any[];
+  cards?: ChatCard[];
 }
 
 export default function Home() {
@@ -42,7 +67,7 @@ export default function Home() {
   ]);
 
   // 1. Fetch Operations
-  const { data: ops, isLoading: opsLoading, error: opsError, refetch: refetchOps } = useQuery({
+  const { data: ops, isLoading: opsLoading, refetch: refetchOps } = useQuery({
     queryKey: ["ops", tenantId],
     queryFn: () => request("/ops", "get"),
     refetchInterval: 5000,
@@ -79,12 +104,12 @@ export default function Home() {
   // 6. Mutate decision
   const decisionMutation = useMutation({
     mutationFn: ({ opId, decision }: { opId: string, decision: "approve" | "reject" }) => 
-      request(`/ops/${opId}/decision` as any, "post", {
+      request(`/ops/${opId}/decision` as "/ops/{op_id}/decision", "post", {
         decision,
         actor: "chandan",
-        role: role as any,
+        role: role,
         surface: "web"
-      } as any),
+      }),
     onSuccess: () => {
       refetchOps();
     }
@@ -92,12 +117,14 @@ export default function Home() {
 
   // 7. Chat submission mutation
   const chatMutation = useMutation({
-    mutationFn: (text: string) => 
-      request("/chat" as any, "post", {
+    mutationFn: async (text: string) => {
+      const res = await request("/chat", "post", {
         brand_id: "brand-bootstrap", // default brand context
         text
-      } as any),
-    onSuccess: (data: any) => {
+      });
+      return res as ChatResponse;
+    },
+    onSuccess: (data) => {
       setMessages(prev => [
         ...prev,
         {
@@ -108,7 +135,7 @@ export default function Home() {
       ]);
       refetchOps(); // reload queue immediately
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       setMessages(prev => [
         ...prev,
         {
@@ -157,7 +184,7 @@ export default function Home() {
     }
   };
 
-  const trippedBreakers = breakers?.filter((b: any) => b.state.toUpperCase() === "OPEN") || [];
+  const trippedBreakers = breakers?.filter((b) => b.state.toUpperCase() === "OPEN") || [];
 
   return (
     <div className="flex-1 flex flex-col bg-zinc-950 text-zinc-50 font-sans">
@@ -167,7 +194,7 @@ export default function Home() {
           <ShieldAlert className="h-4 w-4 text-red-400 shrink-0" />
           <div className="flex-1">
             <span className="font-bold uppercase tracking-wider text-red-400 mr-2">[Circuit Breaker Tripped]</span>
-            Safety shutdown active on domain(s): <span className="font-semibold">{trippedBreakers.map((b: any) => `'${b.domain}'`).join(", ")}</span>. Automatic executions are blocked.
+            Safety shutdown active on domain(s): <span className="font-semibold">{trippedBreakers.map((b) => `'${b.domain}'`).join(", ")}</span>. Automatic executions are blocked.
           </div>
         </div>
       )}
@@ -249,7 +276,7 @@ export default function Home() {
                 {/* Render cards inside the chat stream if any are generated */}
                 {m.cards && m.cards.length > 0 && (
                   <div className="pl-8 space-y-2">
-                    {m.cards.map((card: any) => (
+                    {m.cards.map((card) => (
                       <div key={card.op_id} className="border border-zinc-800 rounded bg-zinc-950 p-3.5 space-y-2">
                         <div className="flex justify-between items-start">
                           <span className="font-semibold text-zinc-200 block text-[10px] truncate max-w-[180px]">
@@ -271,7 +298,7 @@ export default function Home() {
                         {/* Violations */}
                         {card.violations && card.violations.length > 0 && (
                           <div className="space-y-1 pt-1">
-                            {card.violations.map((v: any, vIdx: number) => (
+                            {card.violations.map((v, vIdx) => (
                               <div key={vIdx} className="text-[9px] text-red-400 flex items-start gap-1">
                                 <AlertTriangle className="h-3 w-3 shrink-0 text-red-500 mt-0.5" />
                                 <span>{v.message}</span>
@@ -400,7 +427,7 @@ export default function Home() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-900">
-                        {ops.map((op: any) => (
+                        {ops.map((op) => (
                           <tr key={op.op_id} className="hover:bg-zinc-900/10 transition-colors">
                             <td className="px-6 py-4 space-y-0.5">
                               <code className="text-zinc-500 font-mono text-[10px] block">{op.op_id.substring(0, 8)}...</code>
@@ -481,7 +508,7 @@ export default function Home() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-900">
-                        {connections.map((c: any) => (
+                        {connections.map((c) => (
                           <tr key={c.id} className="hover:bg-zinc-900/10 transition-colors">
                             <td className="px-6 py-4 space-y-0.5">
                               <span className="font-semibold text-zinc-200 uppercase">{c.provider}</span>
@@ -540,7 +567,7 @@ export default function Home() {
                   <div className="space-y-3">
                     <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Latest Audit Blocks</h4>
                     <div className="space-y-2.5">
-                      {auditEvents.map((ev: any) => (
+                      {auditEvents.map((ev) => (
                         <div key={ev.id} className="border border-zinc-900 rounded-lg p-4 bg-zinc-900/10 font-mono text-[10px] space-y-2 hover:bg-zinc-900/20 transition-colors">
                           <div className="flex items-center justify-between text-zinc-500">
                             <span>Block #{ev.id} | {new Date(ev.ts).toLocaleString()}</span>
@@ -588,7 +615,7 @@ export default function Home() {
 
                 {breakers && breakers.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {breakers.map((cb: any) => {
+                    {breakers.map((cb) => {
                       const isOpen = cb.state.toUpperCase() === "OPEN";
                       return (
                         <div 

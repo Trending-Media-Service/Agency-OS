@@ -9,8 +9,8 @@ type ResponseOf<P extends Path, M extends string> =
       ? R
       : paths[P][M] extends { responses: { 201: { content: { "application/json": infer R } } } }
         ? R
-        : any
-    : any;
+        : unknown
+    : unknown;
 
 type BodyOf<P extends Path, M extends string> = 
   M extends keyof paths[P]

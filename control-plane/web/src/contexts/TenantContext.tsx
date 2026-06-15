@@ -17,6 +17,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
 
   // Load from localStorage on client boot
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- Loaded on client mount to prevent SSR hydration mismatch */
     const savedTenant = localStorage.getItem("aos_tenant_id");
     if (savedTenant) {
       setTenantIdState(savedTenant);
@@ -25,6 +26,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     if (savedRole) {
       setRoleState(savedRole);
     }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   const setTenantId = (id: string) => {
