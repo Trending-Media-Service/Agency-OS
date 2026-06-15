@@ -98,8 +98,11 @@ PROPOSED → PREVIEWED → AWAITING_APPROVAL → APPROVED → EXECUTING → VERI
 No Kafka, no Temporal. At this scale:
 
 - **Outbox table:** Op execution requests are written transactionally with the state change, then drained by a Cloud Tasks worker. No dual-write inconsistency.
+- **Multi-step Ops (Sagas):** Executed as an ordered list of child Ops. Sagas can be sequenced linearly using `OpRow.sequence_order` or as a Directed Acyclic Graph (DAG) using the `OpDependency` table (edges mapping parent, from, and to Op IDs).
+  - **Forward execution:** A child node becomes runnable and is enqueued when all its upstream dependency nodes have transitioned to `DONE`.
+  - **Rollback cascade:** On failure of any node, all running or unexecuted siblings are cancelled, and the transitive set of successfully completed (`DONE`) nodes is compensated in reverse topological order.
 - **Idempotency:** every external call carries the Op's idempotency key; retries with exponential backoff; poison Ops park in `PARTIAL` for the operator.
-- **Multi-step Ops** (e.g. a provisioning recipe) are an ordered list of child Ops; failure mid-sequence runs compensations in reverse order for completed steps.
+
 
 ### 4.3 Policy gates
 
