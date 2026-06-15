@@ -13,3 +13,7 @@ tfplans/
 control-plane/bin/terraform
 control-plane/bin/LICENSE.txt
 
+# Operational logs (deploy/verify artifacts) — never commit these
+logs/
+*.log
+
