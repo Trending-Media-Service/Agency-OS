@@ -97,8 +97,57 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
                worker_session_maker = Depends(get_worker_session_maker),
                tid: str = Depends(tenant_id)):
     """Conversational intent routing endpoint. Translates text to structured adapter intents."""
+    from app.kernel.tools import registry as tool_registry, parse_chat_to_tool_call
+    tool_match = parse_chat_to_tool_call(body.text)
+    if tool_match:
+        tool_name, args = tool_match
+        tool = tool_registry.get_tool(tool_name)
+        if tool:
+            handler = tool["handler"]
+            # Call the handler with tenant_id injected
+            specs = handler(tenant_id=tid, **args)
+            
+            # Resolve trust tier for this domain (defaults to 1 supervised)
+            domain_name = specs[0].domain
+            stmt = (
+                select(TrustSnapshot.tier)
+                .where(
+                    TrustSnapshot.tenant_id == tid,
+                    TrustSnapshot.brand_id == body.brand_id,
+                    TrustSnapshot.domain == domain_name
+                )
+                .order_by(TrustSnapshot.ts.desc())
+                .limit(1)
+            )
+            res = await s.execute(stmt)
+            tier = res.scalar_one_or_none()
+            if tier is None:
+                tier = 1
+
+            cards = []
+            for spec in specs:
+                # Propose and gate the operation! RLS and safety gates apply unconditionally.
+                row = await loop.propose(s, spec, actor="chat:tool")
+                gate, requirement = await loop.preview_and_gate(s, row, tier=tier, actor="chat:tool")
+                
+                cards.append({
+                    "op_id": row.id, "action": row.action, "state": row.state,
+                    "requirement": requirement,
+                    "preview": row.preview_summary,
+                    "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                                      if row.cost_amount_minor else None),
+                    "violations": [v.as_dict() for v in gate.violations],
+                })
+                if row.state == "AWAITING_APPROVAL":
+                    background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+            
+            await s.commit()
+            return {
+                "reply": f"Structured request parsed. Generated {len(cards)} proposal(s) under safety gates.",
+                "cards": cards
+            }
+
     normalized = body.text.lower()
-    
     if "static" in normalized:
         words = body.text.replace(",", " ").split()
         domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")

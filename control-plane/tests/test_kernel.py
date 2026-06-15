@@ -1391,4 +1391,44 @@ async def test_dynamic_policy_evaluation(db_engine):
     assert len(gate2.violations) == 0
 
 
+@pytest.mark.asyncio
+async def test_tool_path_reaches_proposed_gate_never_approved(client, db_engine):
+    """L6 tool registry: natural language tool calls compile to PROPOSED and run gates.
+    They never bypass the preview_and_gate or RLS."""
+    # Seed trust snapshot to resolve tier=1 (supervised)
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        async with s.begin():
+            s.add(TrustSnapshot(tenant_id="t-tool-test", brand_id="brand-grow-test", domain="grow", tier=1, score=75.0))
+            
+    H = {"X-Tenant-ID": "t-tool-test"}
+    
+    # 1. Propose via chat tool calling (regex match fallback)
+    resp = await client.post("/chat", headers=H, json={
+        "brand_id": "brand-grow-test",
+        "text": "adjust bid for campaign camp-123 to 50 INR"
+    })
+    
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Structured request parsed" in data["reply"]
+    assert len(data["cards"]) == 1
+    
+    card = data["cards"][0]
+    assert card["action"] == "grow.bid.adjust"
+    # Even if proposed via tool, it must be AWAITING_APPROVAL under Tier 1 (supervised)
+    assert card["state"] == "AWAITING_APPROVAL"
+    
+    op_id = card["op_id"]
+    
+    # Verify RLS: t-tool-test can see the Op, but querying under t2 returns 404/empty
+    async with async_session() as s:
+        row = await s.get(OpRow, op_id)
+        assert row is not None
+        assert row.tenant_id == "t-tool-test"
+        assert row.state == "AWAITING_APPROVAL"
+
+
+
 

@@ -285,6 +285,12 @@ The front door for all pillars. Intent parsing → adapter `plan()` → cards. T
 2. Ambiguity resolves by asking, not assuming (an Op with wrong params that passes gates is still wrong).
 3. Every generated plan shows its cost estimate before approval.
 
+### 7.1 Tool Registry and Execution Gate
+For conversational interactions with agentic workflows (e.g. Gemini tool calling), the interface standardizes tool execution on the `ToolRegistry` ([tools.py](file:///google/src/cloud/chandansinghr/AgecyOSV1/sandbox/Agency-OS/control-plane/app/kernel/tools.py)).
+- **Action Decoupling:** Any tool call parsed from natural language (such as `grow_bid_adjust`) is routed directly to its corresponding tool handler. 
+- **Propose-Only Boundary:** The handler does not execute the action. It merely returns a vendor-neutral `OpSpec` object (pre-configured with appropriate severity and impact details).
+- **Mandatory Gating:** The `/chat` endpoint accepts the returned `OpSpec` and passes it through the standard `loop.propose` and `loop.preview_and_gate` pipelines. The tool execution path can only transition an Op to `PROPOSED` and then to `AWAITING_APPROVAL` or `BLOCKED` (or `APPROVED` if trust snapshot metrics qualify it for auto-approval); it cannot bypass safety gates or force immediate execution.
+
 Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previews). The A2UI modify-loop (§4.1) applies uniformly: "change the hero to teal and redeploy", "make it ₹40k", "use the .in domain instead".
 
 ---
