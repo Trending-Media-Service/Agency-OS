@@ -225,7 +225,10 @@ class PolicyVersion(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    rules_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="proposed")  # active|proposed|superseded
+    params: Mapped[dict] = mapped_column(JSON, default=dict)  # serialized RulesetParams
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
 

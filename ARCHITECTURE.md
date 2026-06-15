@@ -120,6 +120,7 @@ OPA-style deterministic rules, versioned in the repo, evaluated at Preview and r
 - Per-domain rule packs (Provision: cost ceilings, region allowlist; Build: protected paths, dependency allowlist; Manage: write-scope limits; Grow: bid caps, budget-transfer caps, multiplier limits).
 - Every rejection produces a structured explanation: rule id, limit, attempted value, delta. This renders in the UI/WhatsApp verbatim — no generic errors.
 - Rule changes are themselves Ops (governed, audited).
+- **Policy Simulation (Backtesting):** Before applying a policy parameter change, operators can backtest proposed parameters via `POST /policy-simulate`. The simulation replays historical operations (e.g. over the last 30 days) against the baseline and proposed rulesets, bucketing differences into `newly_blocked`, `newly_allowed`, `newly_auto_approved`, and `now_requires_human` without modifying any execution states or the outbox.
 - **Severity model (two-factor):** `severity = f(impact, reversibility)`. Impact is domain-scaled (₹ at stake, blast radius); reversibility from the Op declaration. Severity selects the approval requirement, not the model's opinion.
 
 ### 4.4 Trust engine
@@ -340,6 +341,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 
 
 **Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).
+- **policy_versions table:** Dynamic parameter records with columns `tenant_id`, `version`, `status` (active|proposed|superseded), `params` (JSON RulesetParams), `note`, `created_by`, and timestamps. Proposed policy revisions are saved as `proposed` records during simulation, but only `active` status records are loaded by the active ruleset evaluator.
 
 ---
 

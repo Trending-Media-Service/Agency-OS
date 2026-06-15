@@ -1345,7 +1345,8 @@ async def test_dynamic_policy_evaluation(db_engine):
         pv1 = PolicyVersion(
             tenant_id="t1",
             version=1,
-            rules_json={"provision_cost_ceiling_minor": 50_000}
+            status="active",
+            params={"provision_cost_ceiling_minor": 50_000}
         )
         s.add(pv1)
         await s.commit()
@@ -1370,7 +1371,8 @@ async def test_dynamic_policy_evaluation(db_engine):
         pv2 = PolicyVersion(
             tenant_id="t1",
             version=2,
-            rules_json={"provision_cost_ceiling_minor": 300_000}
+            status="active",
+            params={"provision_cost_ceiling_minor": 300_000}
         )
         s.add(pv2)
         await s.commit()
