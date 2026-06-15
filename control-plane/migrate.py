@@ -36,8 +36,8 @@ async def migrate(engine=None):
         # Enable RLS on tenants (isolated by id)
         await conn.execute(text("ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;"))
         await conn.execute(text("ALTER TABLE tenants FORCE ROW LEVEL SECURITY;"))
+        await conn.execute(text("DROP POLICY IF EXISTS tenant_isolation ON tenants;"))
         await conn.execute(text("""
-            DROP POLICY IF EXISTS tenant_isolation ON tenants;
             CREATE POLICY tenant_isolation ON tenants
               USING (id = current_setting('app.current_tenant_id', true));
         """))
@@ -46,8 +46,8 @@ async def migrate(engine=None):
         for table in tables_with_tenant:
             await conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;"))
             await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;"))
+            await conn.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table};"))
             await conn.execute(text(f"""
-                DROP POLICY IF EXISTS tenant_isolation ON {table};
                 CREATE POLICY tenant_isolation ON {table}
                   USING (tenant_id = current_setting('app.current_tenant_id', true));
             """))
