@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi.responses import HTMLResponse
 
-from app.database import get_db, get_worker_db, get_worker_session_maker
+from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware, TraceMiddleware
 from app.observability import setup_logging
@@ -20,6 +20,7 @@ from app.adapters.build import BuildAdapter
 from app.adapters.governance import GovernanceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
+from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
 
 # Setup Sentry SDK if DSN is set
@@ -43,6 +44,9 @@ loop.register(GrowAdapter())
 loop.register(ManageAdapter())
 loop.register(BuildAdapter())
 loop.register(GovernanceAdapter())
+
+register_plugin(ShopifyPlugin())
+
 
 logger = logging.getLogger(__name__)
 RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
@@ -918,3 +922,110 @@ async def get_brand_performance_score(brand_id: str, s: AsyncSession = Depends(g
     from app.profit.brand_score import calculate_brand_score
     score = await calculate_brand_score(s, tid, brand_id)
     return {"brand_id": brand_id, "performance_score": score}
+
+
+async def _find_connection(s: AsyncSession, provider: str, identifier: str) -> Connection | None:
+    stmt = select(Connection).where(Connection.provider == provider)
+    res = await s.execute(stmt)
+    conns = res.scalars().all()
+    for conn in conns:
+        if provider == "shopify" and conn.config.get("shop_url") == identifier:
+            return conn
+    return None
+
+
+@app.post("/webhooks/plugins/{provider}")
+async def plugin_webhook(
+    provider: str,
+    request: Request,
+    x_shopify_hmac_sha256: str | None = Header(default=None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_topic: str | None = Header(default=None, alias="X-Shopify-Topic"),
+    s: AsyncSession = Depends(get_worker_db)
+):
+    plugin = get_plugin(provider)
+    if not plugin:
+        raise HTTPException(404, f"No plugin registered for provider: {provider}")
+
+    headers = dict(request.headers)
+    raw_body = await request.body()
+    try:
+        import json
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        payload = {}
+
+    # 1. Resolve identifier
+    identifier = await plugin.resolve_connection_identifier(headers, payload)
+    if not identifier:
+        raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
+
+    # 2. Find Connection (RLS is bypassed in get_worker_db session)
+    conn = await _find_connection(s, provider, identifier)
+    if not conn:
+        raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
+
+    # 3. Retrieve signature and secret key
+    signature = None
+    if provider == "shopify":
+        signature = x_shopify_hmac_sha256
+    if not signature:
+        signature = headers.get("x-signature")
+
+    if not signature:
+        raise HTTPException(401, "Webhook signature header missing")
+
+    # In production, secret would be retrieved from Secret Manager using conn.secret_ref.
+    # For local/testing, we use secret_ref directly as the secret key.
+    secret_key = conn.secret_ref
+
+    # 4. Verify signature
+    if not await plugin.verify_signature(raw_body, signature, secret_key):
+        raise HTTPException(401, "Webhook signature mismatch")
+
+    # 5. Translate webhook payload to OpSpecs
+    event_type = x_shopify_topic or headers.get("x-event-type", "")
+    specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+
+    proposed_ops = []
+    # 6. Propose and gate each Op under the connection's tenant_id context
+    token = tenant_context.set(conn.tenant_id)
+    try:
+        # Set app.current_tenant_id at the DB connection level for local RLS checks
+        if s.bind.dialect.name == "postgresql":
+            await s.execute(
+                text("SET LOCAL app.current_tenant_id = :tenant_id"),
+                {"tenant_id": conn.tenant_id},
+            )
+
+        for spec in specs:
+            row = await loop.propose(s, spec, actor=f"webhook.{provider}")
+            
+            # Resolve trust snapshot to find tier
+            from app.models import TrustSnapshot
+            stmt_tier = (
+                select(TrustSnapshot.tier)
+                .where(
+                    TrustSnapshot.tenant_id == conn.tenant_id,
+                    TrustSnapshot.brand_id == conn.brand_id,
+                    TrustSnapshot.domain == spec.domain
+                )
+                .order_by(TrustSnapshot.ts.desc())
+                .limit(1)
+            )
+            res_tier = await s.execute(stmt_tier)
+            tier = res_tier.scalar_one_or_none()
+            if tier is None:
+                tier = 1  # fallback to supervised
+
+            await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
+            proposed_ops.append(row.id)
+            
+        await s.commit()
+    except Exception:
+        await s.rollback()
+        raise
+    finally:
+        tenant_context.reset(token)
+
+    return {"status": "accepted", "proposed_ops": proposed_ops}
+

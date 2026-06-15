@@ -189,6 +189,17 @@ class Op:                       # vendor-neutral — NO platform vocabulary here
 
 Third-party connectivity standardizes on **MCP** where servers exist (Shopify's MCP suite is the first target); plain REST adapters elsewhere. Quoted rate limits in any doc are advisory only — adapters read current platform documentation and enforce their own client-side limiter + circuit breaker.
 
+### 5.1 Plugin webhooks and routers
+For event-driven third-party triggers (such as Shopify `orders/create`), the control plane exposes a generic, RLS-bypassed endpoint `/webhooks/plugins/{provider}`. 
+- **Plugin Protocol:** Every third-party platform registers a `Plugin` helper detailing:
+  - `verify_signature(raw_body, signature, secret)`: Custom platform-specific cryptographical validation (e.g. HMAC-SHA256).
+  - `resolve_connection_identifier(headers, payload)`: Extracts the platform identifier (e.g. shopify store URL).
+  - `translate_webhook(event_type, payload, tenant, brand)`: Maps events to vendor-neutral `OpSpec` objects (e.g. `manage.shopify.sync_order`).
+- **Isolation and Scope Validation:**
+  - The webhook router queries the global `connections` table bypassing RLS using a privileged database session to match the provider and connection identifier, resolving the correct `tenant_id` and `brand_id`.
+  - Signature validation is strictly completed using the stored `secret_ref`. If validation fails, or if no connection matches, a `401 Unauthorized` or `404 Not Found` is returned.
+  - Upon successful verification, the router sets the active `tenant_context` context variable and writes proposed Ops to the database, ensuring all downstream policy evaluation and auditing executes safely within that tenant's RLS isolation boundary.
+
 ---
 
 ## 6. Pillar specifications
