@@ -45,7 +45,7 @@ def _build_bid_adjust_op(new_bid_minor: int) -> OpSpec:
         params={
             "campaign_id": "camp-google",
             "new_bid_minor": new_bid_minor,
-            "previous_bid_minor": 15000
+            "previous_bid_minor": new_bid_minor  # Ensures 1x multiplier to isolate absolute cap checks
         },
         severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
         cost_estimate=Money(amount_minor=0, currency="INR"),
@@ -66,4 +66,41 @@ def test_grow_bid_cap_blocks_exceeding():
     assert len(gate.violations) == 1
     assert gate.violations[0].rule_id == "grow_bid_cap"
     assert "exceeds" in gate.violations[0].message
+
+
+def test_grow_bid_multiplier_cap_pass():
+    # Previous: ₹150, new: ₹250 (<= 2x)
+    op = OpSpec(
+        id="op_bid_pass",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="grow",
+        action="grow.bid.adjust",
+        params={"campaign_id": "camp-google", "new_bid_minor": 25_000, "previous_bid_minor": 15_000},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    gate = evaluate_gates(op)
+    assert not gate.blocked
+    assert len(gate.violations) == 0
+
+
+def test_grow_bid_multiplier_cap_blocks():
+    # Previous: ₹150, new: ₹400 (> 2x)
+    op = OpSpec(
+        id="op_bid_block",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="grow",
+        action="grow.bid.adjust",
+        params={"campaign_id": "camp-google", "new_bid_minor": 40_000, "previous_bid_minor": 15_000},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    gate = evaluate_gates(op)
+    # The multiplier cap is a blocking rule by default
+    assert gate.blocked
+    assert len(gate.violations) == 1
+    assert gate.violations[0].rule_id == "grow_bid_multiplier_cap"
+
 

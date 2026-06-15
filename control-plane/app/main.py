@@ -694,6 +694,27 @@ async def run_trust_snapshots(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok"}
 
 
+@app.post("/tasks/calibrate-attribution", dependencies=[Depends(verify_worker_auth)])
+async def calibrate_attribution(s: AsyncSession = Depends(get_worker_db)):
+    """Runs Meridian calibration to compute incrementality multipliers for all brands.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.services.attribution import run_meridian_calibration
+    
+    stmt = select(Brand)
+    res = await s.execute(stmt)
+    brands = res.scalars().all()
+    
+    calibrated_count = 0
+    for brand in brands:
+        await run_meridian_calibration(s, brand.tenant_id, brand.id)
+        calibrated_count += 1
+        
+    await s.commit()
+    return {"status": "ok", "calibrated_count": calibrated_count}
+
+
 @app.post("/tasks/evaluate-trust", dependencies=[Depends(verify_worker_auth)])
 async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
     """Background task evaluating campaign ROI and adjusting trust scores.

@@ -270,6 +270,12 @@ This pillar absorbs the conversational backup-platform work. Targets: Shopify st
 
 Unchanged from the refined plan; now expressed as the fourth adapter family. Card types: `BID_ADJUSTMENT`, `BUDGET_REALLOCATION`, `PAUSE_CAMPAIGN`, `ALERT_DISPATCH` — all four generated and rendered, none hidden. Policy pack: bid cap, ≤2x multiplier, budget-transfer cap, with structured-explanation rejections. Batch sweeps are a **feature** (predictable, reviewable decision windows); continuous webhook-driven autonomy is earned later, not apologized for now.
 
+**iPOAS + Causal Calibration (α):**
+Attributed contribution margin reporting is calibrated using a causal-calibration multiplier: `iPOAS = POAS_attributed · α`, where `α = iROAS / AttrROAS` is computed offline/batch from geo-experiment history and ledger data.
+- **Offline Separation Invariant:** The statistical/MMM calibration compute engine (`google-meridian`) runs exclusively in a background scheduler cadence. It is strictly prohibited from running inside a request path or any deterministic policy gate.
+- **Governed Proposal Loop:** Adjustments to campaign bids and budgets driven by the causal multiplier are planned as `grow.bid.adjust` or `grow.budget.reallocate` Ops. They pass through the standard kernel state machine and are evaluated by the deterministic policy gates (e.g., bid limits, transfer caps, region locks) before execution.
+
+
 **Immediate Grow backlog (Phase 0 — verify each item against actual source before building):**
 - [ ] Confirm `calculate_dynamic_ats()` exists and wire it in (or build it per §4.4)
 - [ ] Generate + render all 4 card types
@@ -319,6 +325,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | LLM | Claude API (agents, parsing, explanations) | Never gates (§2.1) |
 | WhatsApp | Meta Cloud API | Template messages for cards |
 | Database Migrations | alembic | Async schema migrations, preserving Postgres RLS policies |
+| Attribution Calibration | google-meridian | Offline Bayesian MMM causal calibration (α) scope only |
 
 
 **Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).
