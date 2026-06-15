@@ -310,6 +310,8 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
 | LLM | Claude API (agents, parsing, explanations) | Never gates (§2.1) |
 | WhatsApp | Meta Cloud API | Template messages for cards |
+| Database Migrations | alembic | Async schema migrations, preserving Postgres RLS policies |
+
 
 **Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).
 

@@ -227,9 +227,9 @@ async def db_file():
 
 @pytest.fixture()
 async def db_engine(db_file):
+    from migrate import migrate
     engine = create_async_engine(db_file)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await migrate(engine)
     yield engine
     await engine.dispose()
 
