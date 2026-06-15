@@ -1,5 +1,6 @@
 import logging
 import os
+import datetime as dt
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response, Request
 from pydantic import BaseModel
@@ -22,7 +23,7 @@ from app.adapters.dr import DRAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
 from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
-from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection, CircuitBreakerRow, AuditEvent
 
 # Setup Sentry SDK if DSN is set
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -116,6 +117,38 @@ class OpOut(BaseModel):
     preview: str | None = None
     cost_estimate: str | None = None
 
+
+class ConnectionOut(BaseModel):
+    id: str
+    provider: str
+    scope: str
+    secret_ref: str
+    config: dict
+    created_at: dt.datetime
+
+
+class CircuitBreakerOut(BaseModel):
+    brand_id: str
+    domain: str
+    state: str
+    consecutive_failures: int
+    tripped_at: dt.datetime | None = None
+    last_failure_at: dt.datetime | None = None
+
+
+class AuditEventOut(BaseModel):
+    id: int
+    ts: dt.datetime
+    actor: str
+    action: str
+    op_id: str | None = None
+    payload: dict
+    hash: str
+
+
+class AuditVerifyOut(BaseModel):
+    ok: bool
+    first_bad_id: int | None = None
 
 
 @app.post("/tenants")
@@ -410,10 +443,62 @@ async def list_ops(
     ]
 
 
-@app.get("/audit/verify")
+@app.get("/audit/verify", response_model=AuditVerifyOut)
 async def verify_audit(s: AsyncSession = Depends(get_db)):
     ok, first_bad = await audit_verify(s)
     return {"ok": ok, "first_bad_id": first_bad}
+
+
+@app.get("/connections", response_model=list[ConnectionOut])
+async def list_connections(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    stmt = select(Connection).where(Connection.tenant_id == tid)
+    res = await s.execute(stmt)
+    conns = res.scalars().all()
+    return [
+        {
+            "id": c.id,
+            "provider": c.provider,
+            "scope": c.scope,
+            "secret_ref": c.secret_ref,
+            "config": c.config,
+            "created_at": c.created_at
+        } for c in conns
+    ]
+
+
+@app.get("/circuit-breakers", response_model=list[CircuitBreakerOut])
+async def list_circuit_breakers(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    stmt = select(CircuitBreakerRow).where(CircuitBreakerRow.tenant_id == tid)
+    res = await s.execute(stmt)
+    breakers = res.scalars().all()
+    return [
+        {
+            "brand_id": cb.brand_id,
+            "domain": cb.domain,
+            "state": cb.state,
+            "consecutive_failures": cb.consecutive_failures,
+            "tripped_at": cb.tripped_at,
+            "last_failure_at": cb.last_failure_at
+        } for cb in breakers
+    ]
+
+
+@app.get("/audit/events", response_model=list[AuditEventOut])
+async def list_audit_events(limit: int = 50, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    stmt = select(AuditEvent).where(AuditEvent.tenant_id == tid).order_by(AuditEvent.id.desc()).limit(limit)
+    res = await s.execute(stmt)
+    events = res.scalars().all()
+    return [
+        {
+            "id": ev.id,
+            "ts": ev.ts,
+            "actor": ev.actor,
+            "action": ev.action,
+            "op_id": ev.op_id,
+            "payload": ev.payload,
+            "hash": ev.hash
+        } for ev in events
+    ]
 
 
 @app.get("/metrics/approval-latency")
