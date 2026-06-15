@@ -33,6 +33,7 @@ NOW = dt.datetime(2026, 6, 10, tzinfo=dt.timezone.utc)
 
 
 
+
 def _spec(**kw) -> OpSpec:
     base = dict(tenant_id="t1", brand_id="b1", domain="provision",
                 action="provision.web_host.create",
@@ -197,10 +198,34 @@ async def test_whatsapp_webhook_verification(client):
     assert r.status_code == 403
 
 
+async def post_signed_webhook(client, payload, secret="test_secret"):
+    import hmac
+    import hashlib
+    import json
+    payload_bytes = json.dumps(payload).encode('utf-8')
+    sig = hmac.new(secret.encode('utf-8'), payload_bytes, hashlib.sha256).hexdigest()
+    headers = {"X-Hub-Signature-256": f"sha256={sig}", "Content-Type": "application/json"}
+    return await client.post("/webhooks/whatsapp", content=payload_bytes, headers=headers)
+
+
+async def test_whatsapp_webhook_invalid_signature(client):
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    payload = {"object": "whatsapp_business_account", "entry": []}
+
+    # Missing signature
+    r = await client.post("/webhooks/whatsapp", json=payload)
+    assert r.status_code == 401
+
+    # Wrong signature
+    r = await client.post("/webhooks/whatsapp", json=payload, headers={"X-Hub-Signature-256": "sha256=wrong"})
+    assert r.status_code == 401
+
+
 @patch("app.whatsapp.httpx.AsyncClient")
 async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -211,7 +236,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_approval"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_approval_test"}]}
     mock_client.post.return_value = mock_response
 
     # 1. Propose Op (Submit intent)
@@ -269,7 +294,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     }
 
     # Call the webhook (POST)
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
     assert r.json()["status"] == "accepted"
 
@@ -282,6 +307,7 @@ async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
 async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -291,7 +317,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_rejection"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_rejection_test"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
@@ -331,7 +357,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is transitioned to REJECTED
@@ -343,6 +369,7 @@ async def test_whatsapp_e2e_rejection_flow(mock_client_class, client, db_engine)
 async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
     import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
     wa.WHATSAPP_TOKEN = "mock_token"
     wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
     wa.WHATSAPP_APPROVER_PHONE = "919999999999"
@@ -352,7 +379,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     mock_client_class.return_value.__aenter__.return_value = mock_client
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_modify"}]}
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_modify_test"}]}
     mock_client.post.return_value = mock_response
 
     # Propose Op
@@ -380,6 +407,9 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
                                     "type": "text",
                                     "text": {
                                         "body": "modify use woktok.co"
+                                    },
+                                    "context": {
+                                        "id": "mock_wamid_modify_test"
                                     }
                                 }
                             ]
@@ -391,7 +421,7 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
         ]
     }
 
-    r = await client.post("/webhooks/whatsapp", json=webhook_payload)
+    r = await post_signed_webhook(client, webhook_payload)
     assert r.status_code == 200
 
     # Verify Op is re-gated and transitioned back to AWAITING_APPROVAL with updated params
@@ -409,6 +439,86 @@ async def test_whatsapp_e2e_modify_flow(mock_client_class, client, db_engine):
     payload = kwargs["json"]
     # Check that the second card references the modified domain
     assert "woktok.co" in str(payload)
+
+
+@patch("app.whatsapp.httpx.AsyncClient")
+async def test_whatsapp_webhook_idempotency(mock_client_class, client, db_engine):
+    from app.models import Approval
+    # Setup WhatsApp mock config
+    import app.whatsapp as wa
+    mainmod.WHATSAPP_APP_SECRET = "test_secret"
+    wa.WHATSAPP_TOKEN = "mock_token"
+    wa.WHATSAPP_PHONE_NUMBER_ID = "12345"
+    wa.WHATSAPP_APPROVER_PHONE = "919999999999"
+
+    # Mock AsyncClient
+    mock_client = AsyncMock()
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"messages": [{"id": "mock_wamid_idemp_test"}]}
+    mock_client.post.return_value = mock_response
+
+    # Propose Op
+    r = await client.post("/tenants", json={"name": "Tanmatra", "brand_name": "Wok-Tok"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+    H = {"X-Tenant-ID": tid}
+    r = await client.post("/intents", headers=H,
+                    json={"brand_id": bid, "text": "host woktok.in please"})
+    op_id = r.json()["cards"][0]["op_id"]
+
+    webhook_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "messages": [
+                                {
+                                    "from": "919999999999",
+                                    "id": "msg_id_idemp_123",
+                                    "type": "button",
+                                    "button": {
+                                        "payload": f"approve_{op_id}",
+                                        "text": "Approve"
+                                    }
+                                }
+                            ]
+                        },
+                        "field": "messages"
+                    }
+                ]
+            }
+        ]
+    }
+
+    # 1. Send webhook first time
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify Op is transitioned to DONE
+    r = await client.get(f"/ops/{op_id}", headers=H)
+    assert r.json()["state"] == "DONE"
+
+    # Verify exactly one Approval row was created
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
+
+    # 2. Send EXACT SAME webhook second time (duplicate msg_id)
+    r = await post_signed_webhook(client, webhook_payload)
+    assert r.status_code == 200
+
+    # Verify still exactly one Approval row exists (did not process again)
+    async with async_session() as s:
+        res = await s.execute(select(Approval).where(Approval.op_id == op_id))
+        approvals = res.scalars().all()
+        assert len(approvals) == 1
 
 
 # ------------------------------------------------------------- trust engine E2E
@@ -717,7 +827,7 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
     async with async_session() as s:
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
 
 
 
@@ -728,13 +838,27 @@ async def test_cost_ledger_ingestion_and_rollups(client, db_engine):
         # - service_account_create: 150 paise (1.50 INR)
         # Total execution cost = 2150 paise
         op_total = await get_op_cost_total(s, op_id)
-        # Total cost for op_id should be planning (57) + execution (2150) = 2207 paise
-        assert op_total == 2207
+        # Total cost for op_id should be planning (57) + execution (2150) + recipe (250000) = 252207 paise
+        assert op_total == 252207
 
         tenant_rollup = await get_tenant_cost_rollup(s, "t1")
         assert tenant_rollup.get("llm_tokens") == 57
         assert tenant_rollup.get("api_call") == 2150
-        assert tenant_rollup.get("gcp_resource") == 1240
+        assert tenant_rollup.get("gcp_resource") == 251240
+
+        # Verify actor attribution on costs
+        from app.models import CostEntry
+        # Planning cost (llm_tokens) should be attributed to 'chat'
+        res_plan = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "llm_tokens"))
+        plan_cost = res_plan.scalar_one()
+        assert plan_cost.actor == "chat"
+
+        # Execution costs (api_call) should be attributed to 'chandan' (who approved the Op)
+        res_exec = await s.execute(select(CostEntry).where(CostEntry.op_id == op_id, CostEntry.kind == "api_call"))
+        exec_costs = res_exec.scalars().all()
+        assert len(exec_costs) == 2
+        for cost in exec_costs:
+            assert cost.actor == "chandan"
 
 
 @pytest.mark.asyncio
@@ -808,6 +932,243 @@ async def test_observability_and_trace_propagation(client, db_engine, capsys):
         outbox_item = res_outbox.scalar_one()
         assert outbox_item.trace_id == "tr-http-555"
 
+
+def test_build_rules_parameterizes_thresholds():
+    """RulesetParams() reproduces the defaults (the 3 policy tests above are the
+    regression lock); raising a limit relaxes the gate. Precursor to policy what-if."""
+    from app.kernel.services import build_rules, RulesetParams
+    op = _spec(cost_estimate=Money(2_000_000))  # 20,000 > default 10,000 ceiling
+    assert evaluate_gates(op).blocked  # default ruleset still blocks
+    relaxed = build_rules(RulesetParams(provision_cost_ceiling_minor=2_500_000))
+    assert not evaluate_gates(op, rules=relaxed).blocked  # parameterized ceiling lets it pass
+
+
+async def test_decision_latency_is_measured(db_engine):
+    """North-star clock (§1): latency_ms populated from the AWAITING_APPROVAL marker."""
+    from app.models import Approval
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        row = await loop.propose(s, _spec(), actor="test")
+        row.state = "AWAITING_APPROVAL"
+        s.add(OpTrace(op_id=row.id, kind="transition", detail={"to": "AWAITING_APPROVAL"},
+                      ts=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)))
+        await s.commit()
+    async with async_session() as s:
+        db_row = await s.get(OpRow, row.id)
+        await loop.decide(s, db_row, decision="approve", actor="c", role="owner", surface="web")
+        await s.commit()
+    async with async_session() as s:
+        appr = (await s.execute(select(Approval).where(Approval.op_id == row.id))).scalar_one()
+        assert appr.latency_ms is not None and appr.latency_ms >= 2000
+
+
+async def test_approval_latency_rollup_is_tenant_scoped(db_engine):
+    from app.models import Approval
+    from app.kernel.services import approval_latency_rollup
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        for tid, lat in [("t1", 1000), ("t1", 3000), ("t2", 9999)]:
+            r = await loop.propose(s, _spec(tenant_id=tid), actor="t")
+            s.add(Approval(op_id=r.id, actor="a", role="owner", surface="web",
+                           decision="approve", latency_ms=lat))
+        await s.commit()
+        roll = await approval_latency_rollup(s, "t1")
+        assert roll["count"] == 2                      # t2's approval excluded
+        assert roll["median_ms"] in (1000, 3000)
+        assert roll["expired_cards"] == 0
+
+
+@pytest.mark.asyncio
+async def test_recipe_promotion_endpoint(client):
+    import shutil
+
+    # 1. Setup mock experimental recipe folder
+    RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
+    exp_path = os.path.join(RECIPES_ROOT, "experimental", "test-promo", "0.1.0")
+    prod_path = os.path.join(RECIPES_ROOT, "test-promo", "0.1.0")
+
+    os.makedirs(exp_path, exist_ok=True)
+    with open(os.path.join(exp_path, "recipe.yaml"), "w") as f:
+        f.write("name: test-promo\nversion: 0.1.0")
+    with open(os.path.join(exp_path, "main.tf"), "w") as f:
+        f.write("output \"test\" { value = 1 }")
+
+    try:
+        # 2. Execute promotion
+        H = {"X-Tenant-Id": "t1"}
+        r = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo"})
+        assert r.status_code == 200, f"Promo failed: {r.status_code} - {r.text}"
+        data = r.json()
+        assert data["status"] == "promoted"
+        assert data["recipe_name"] == "test-promo"
+
+        # 3. Assert files copied
+        assert os.path.exists(os.path.join(prod_path, "recipe.yaml"))
+        assert os.path.exists(os.path.join(prod_path, "main.tf"))
+
+        # 4. Assert 404 for non-existent recipe promotion
+        r_404 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "missing-recipe"})
+        assert r_404.status_code == 404
+
+        # 5. Assert 400 for missing file promotion
+        exp_bad = os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad", "0.1.0")
+        os.makedirs(exp_bad, exist_ok=True)
+        with open(os.path.join(exp_bad, "recipe.yaml"), "w") as f:
+            f.write("bad recipe")
+        r_400 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo-bad"})
+        assert r_400.status_code == 400
+
+    finally:
+        # Cleanup mock folders
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo"), ignore_errors=True)
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad"), ignore_errors=True)
+        shutil.rmtree(os.path.join(RECIPES_ROOT, "test-promo"), ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_ops_list_endpoint_and_filtering(client, db_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.models import OpRow
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Pre-seed Ops for tenant t1
+        s.add(OpRow(
+            id="op_t1_1", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="PENDING", params={},
+            preview_summary="preview 1", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_1"
+        ))
+        s.add(OpRow(
+            id="op_t1_2", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="APPROVED", params={},
+            preview_summary="preview 2", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_2"
+        ))
+        s.add(OpRow(
+            id="op_t1_3", tenant_id="t1", brand_id="b2", domain="dns",
+            action="dns.record.create", state="PENDING", params={},
+            preview_summary="preview 3", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t1_3"
+        ))
+        # Pre-seed Op for tenant t2 (should be hidden due to RLS/scoping)
+        s.add(OpRow(
+            id="op_t2_1", tenant_id="t2", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="PENDING", params={},
+            preview_summary="preview 4", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_t2_1"
+        ))
+        await s.commit()
+
+    # 1. Query all ops for tenant t1
+    H1 = {"X-Tenant-Id": "t1"}
+    r = await client.get("/ops", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 3
+    # Ordered desc by ID
+    assert data[0]["op_id"] == "op_t1_3"
+    assert data[1]["op_id"] == "op_t1_2"
+    assert data[2]["op_id"] == "op_t1_1"
+
+    # 2. Test pagination (limit=2, offset=1)
+    r = await client.get("/ops?limit=2&offset=1", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["op_id"] == "op_t1_2"
+    assert data[1]["op_id"] == "op_t1_1"
+
+    # 3. Test filtering by state=APPROVED
+    r = await client.get("/ops?state=APPROVED", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["op_id"] == "op_t1_2"
+
+    # 4. Test filtering by domain=dns
+    r = await client.get("/ops?domain=dns", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["op_id"] == "op_t1_3"
+
+    # 5. Test filtering by brand_id=b1
+    r = await client.get("/ops?brand_id=b1", headers=H1)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["op_id"] == "op_t1_2"
+    assert data[1]["op_id"] == "op_t1_1"
+
+
+@pytest.mark.asyncio
+async def test_ops_list_endpoint_401_failure(client):
+    r = await client.get("/ops")
+    assert r.status_code == 401
+    assert "X-Tenant-ID header is missing" in r.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_endpoint(client, db_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.models import OpRow
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Pre-seed an Op awaiting approval
+        s.add(OpRow(
+            id="op_dash_1", tenant_id="t1", brand_id="b1", domain="provision",
+            action="provision.web_host.create", state="AWAITING_APPROVAL", params={},
+            preview_summary="special site preview", impact=1, reversibility="REVERSIBLE",
+            idem_key="idem_dash_1"
+        ))
+        await s.commit()
+
+    # 1. Query dashboard with tenant_id query param
+    r = await client.get("/dashboard?tenant_id=t1")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    assert "special site preview" in r.text
+    assert "op_dash_1" in r.text
+    assert "provision.web_host.create" in r.text
+
+    # 2. Query dashboard with X-Tenant-Id header
+    r_hdr = await client.get("/dashboard", headers={"X-Tenant-Id": "t1"})
+    assert r_hdr.status_code == 200
+    assert "special site preview" in r_hdr.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_401_missing_tenant(client):
+    r = await client.get("/dashboard")
+    assert r.status_code == 401
+    assert "X-Tenant-Id header or tenant_id query parameter required" in r.text
+
+
+@pytest.mark.asyncio
+async def test_chat_intent_parsing_and_planning(client):
+    H = {"X-Tenant-Id": "t1"}
+    
+    # 1. Test static hosting request
+    r_static = await client.post("/chat", headers=H, json={
+        "brand_id": "b1", "text": "hey, please set up static hosting for woktok.co"
+    })
+    assert r_static.status_code == 200
+    data_static = r_static.json()
+    assert "static website hosting for woktok.co" in data_static["reply"]
+    assert len(data_static["cards"]) == 1
+    assert data_static["cards"][0]["action"] == "provision.static_host.create"
+
+    # 2. Test email DNS request
+    r_dns = await client.post("/chat", headers=H, json={
+        "brand_id": "b1", "text": "I need SPF and MX records for domain mailer.in"
+    })
+    assert r_dns.status_code == 200
+    data_dns = r_dns.json()
+    assert "configure email dns routing for domain mailer.in" in data_dns["reply"]
+    assert len(data_dns["cards"]) == 1
+    assert data_dns["cards"][0]["action"] == "provision.email_dns.create"
 
 
 

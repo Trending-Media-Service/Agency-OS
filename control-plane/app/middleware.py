@@ -34,12 +34,12 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     tenant_id = request.headers.get("X-Tenant-ID")
 
     # Bypass validation strictly on public API paths
-    if request.url.path in ["/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots"]:
+    if request.url.path in ["/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/dashboard"]:
       return await call_next(request)
 
     if not tenant_id:
       return JSONResponse(
-          status_code=status.HTTP_400_BAD_REQUEST,
+          status_code=status.HTTP_401_UNAUTHORIZED,
           content={"detail": "X-Tenant-ID header is missing."},
       )
 

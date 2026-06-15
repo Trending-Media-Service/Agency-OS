@@ -1,45 +1,39 @@
-# Agency OS Codebase
+# Agency OS
 
-This repository contains the Agency OS project codebase. The structure preserves the `google3` namespace to ensure internal import paths remain compatible.
+This repository contains the Agency OS project codebase, containing the governance control plane and infrastructure recipes.
 
 ## Project Structure
 
-*   `google3/learning/gemini/agents/projects/agency_os/`: The core Agency OS codebase.
-    *   `webapp/`: The control panel web application (Flask backend + Tailwind CSS frontend).
-    *   `*engine.py` / `*worker.py`: Individual optimization and analysis modules (LTV, MMM, Sentiment, etc.).
+*   `control-plane/`: The FastAPI backend control plane containing the governance kernel, safety primitives, trust engine, and adapters.
+*   `recipes/`: Parameterized, idempotent infrastructure provisioning blueprints (e.g., `brand-baseline`, `webapp-postgres`, `web-host`).
+*   `docs/archive/`: Legacy design reference guides (archived).
 
-## Running the Web Application Locally
+## Running the Control Plane Locally
 
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/tanmatra6-wq/Agency-OS.git
-    cd Agency-OS
-    ```
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/Trending-Media-Service/Agency-OS.git
+   cd Agency-OS
+   ```
 
-2.  **Install dependencies**:
-    Ensure you have Python 3 installed. Navigate to the webapp directory and install Flask:
-    ```bash
-    cd google3/learning/gemini/agents/projects/agency_os/webapp
-    pip install -r requirements.txt
-    ```
+2. **Install dependencies**:
+   Ensure you have Python 3 installed. Navigate to the `control-plane` directory and install the requirements:
+   ```bash
+   cd control-plane
+   pip install -r requirements.txt
+   ```
 
-3.  **Set PYTHONPATH**:
-    You must set `PYTHONPATH` to the root of the cloned repository (the directory containing `google3`) so the imports can resolve correctly:
-    ```bash
-    # From the 'Agency-OS' root directory:
-    export PYTHONPATH=$(pwd)
-    
-    # Or specify the absolute path:
-    export PYTHONPATH=/path/to/Agency-OS
-    ```
+3. **Run the test suite**:
+   ```bash
+   pytest
+   ```
 
-4.  **Run the application**:
-    ```bash
-    python3 google3/learning/gemini/agents/projects/agency_os/webapp/app.py
-    ```
-    Open `http://localhost:8080` in your web browser.
+4. **Start the application**:
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+   The control plane API will be serving at `http://127.0.0.1:8000`.
 
-## Deploying to GCP Cloud Run
+## Configuration
 
-The webapp is containerized and ready to deploy to Google Cloud Run.
-See the deployment instructions in [google3/learning/gemini/agents/projects/agency_os/webapp/README.md](google3/learning/gemini/agents/projects/agency_os/webapp/README.md).
+The control plane runs SQLite by default. To override with an external Postgres database, specify `AOS_DB_URL`.

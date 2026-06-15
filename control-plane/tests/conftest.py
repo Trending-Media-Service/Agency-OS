@@ -89,10 +89,18 @@ def mock_terraform_cli():
             # Determine recipe
             if "db_connection_name" in vars_dict:
                 recipe = "n8n"
+            elif "gtm_container_config" in vars_dict:
+                recipe = "sgtm-capi"
+            elif "dkim_record" in vars_dict:
+                recipe = "email-dns"
+            elif "bucket_name" in vars_dict:
+                recipe = "static-host"
+            elif "domain" in vars_dict or "custom_domain" in vars_dict:
+                recipe = "web-host"
+            elif "project_id" in vars_dict:
+                recipe = "webapp-postgres"
             elif "brand_id" in vars_dict:
                 recipe = "brand-baseline"
-            elif "domain" in vars_dict:
-                recipe = "web-host"
             elif "db_name" in vars_dict:
                 recipe = "postgres-db"
             else:
@@ -113,9 +121,17 @@ def mock_terraform_cli():
                     if recipe == "brand-baseline":
                         brand = vars_dict.get("brand_id", "example-brand")
                         mock_res.stdout = f"Plan: 3 to add, 0 to change, 0 to destroy.\n+ project {brand}\n+ database db-{brand}"
+                    elif recipe == "webapp-postgres":
+                        mock_res.stdout = "Plan: 8 to add, 0 to change, 0 to destroy.\n+ sql_instance postgres\n+ secret db_url\n+ artifact_registry repo"
                     elif recipe == "web-host":
-                        domain = vars_dict.get("domain", "example.in")
+                        domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                         mock_res.stdout = f"Plan: 5 to add, 0 to change, 0 to destroy.\n+ cloud_dns zone {domain}\n"
+                    elif recipe == "sgtm-capi":
+                        mock_res.stdout = "Plan: 5 to add, 0 to change, 0 to destroy.\n+ google_cloud_run_service sgtm\n+ google_secret_manager_secret capi_token\n+ google_secret_manager_secret capi_pixel"
+                    elif recipe == "email-dns":
+                        mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_dns_record_set mx\n+ google_dns_record_set spf\n+ google_dns_record_set dkim"
+                    elif recipe == "static-host":
+                        mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ google_storage_bucket static_bucket\n+ google_storage_bucket_iam_member public_read"
                     elif recipe == "n8n":
                         mock_res.stdout = "Plan: 2 to add, 0 to change, 0 to destroy.\n+ cloud_run n8n-service\n"
                     elif recipe == "postgres-db":
@@ -124,7 +140,8 @@ def mock_terraform_cli():
                     else:
                         mock_res.stdout = "Plan: 0 to add"
             elif subcomm == "apply":
-                if vars_dict.get("domain") == "fail.in" or vars_dict.get("project_id") == "fail-project":
+                domain = vars_dict.get("domain") or vars_dict.get("custom_domain")
+                if domain == "fail.in" or vars_dict.get("project_id") == "fail-project":
                     mock_res.returncode = 1
                     mock_res.stderr = "Terraform apply failed: simulated error"
                     mock_res.stdout = "Apply failed!"
@@ -140,11 +157,32 @@ def mock_terraform_cli():
                         "db_connection_name": {"type": "string", "value": "" if tier == "dedicated" else "aos-shared-tier:asia-south1:aos-shared-postgres"}
                     }
                 elif recipe == "web-host":
-                    domain = vars_dict.get("domain", "example.in")
+                    domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                     outputs = {
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
-                        "dns_zone": {"type": "string", "value": f"zone-{domain}"},
-                        "cert_id": {"type": "string", "value": "cert-123"}
+                        "lb_ip": {"type": "string", "value": "34.120.15.22"}
+                    }
+                elif recipe == "sgtm-capi":
+                    outputs = {
+                        "sgtm_url": {"type": "string", "value": "https://sgtm-container-123.run.app"},
+                        "dns_verified": {"type": "bool", "value": True}
+                    }
+                elif recipe == "webapp-postgres":
+                    outputs = {
+                        "frontend_url": {"type": "string", "value": "https://tanmatra-mock-url.run.app"},
+                        "api_url": {"type": "string", "value": "https://wellness-foods-mock-url.run.app"},
+                        "db_connection_name": {"type": "string", "value": "aos-brand-b1:asia-south2:brand-b1-db"}
+                    }
+                elif recipe == "email-dns":
+                    outputs = {
+                        "dns_verified": {"type": "bool", "value": True}
+                    }
+                elif recipe == "static-host":
+                    bucket = vars_dict.get("bucket_name", "brand-bucket")
+                    domain = vars_dict.get("domain", "brand.in")
+                    outputs = {
+                        "bucket_url": {"type": "string", "value": f"https://storage.googleapis.com/{bucket}"},
+                        "cdn_url": {"type": "string", "value": f"https://static-{domain}"}
                     }
                 elif recipe == "n8n":
                     outputs = {

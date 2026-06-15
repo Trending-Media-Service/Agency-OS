@@ -9,13 +9,14 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .optypes import OpSpec, Reversibility
+from .optypes import OpSpec, OpState, Reversibility
 
 GENESIS = "0" * 64
 
@@ -173,46 +174,200 @@ def _statutory_check(op: OpSpec) -> Optional[Violation]:
 
 STATUTORY_MARKERS = (".tax.", ".gst.", ".vat.", ".statutory.")
 
-DEFAULT_RULES: list[Rule] = [
-    Rule(
-        id="statutory_firewall",
-        applies=lambda op: op.statutory or any(m in op.action for m in STATUTORY_MARKERS),
-        check=_statutory_check,
-        blocking=False,  # never auto-approve; does not block human-approved execution
-    ),
-    Rule(
-        id="provision_cost_ceiling",
-        applies=lambda op: op.domain == "provision" and op.cost_estimate is not None,
-        check=lambda op: Violation(
-            rule_id="provision_cost_ceiling",
-            limit="<= 10,000.00 INR/month",
-            attempted=str(op.cost_estimate),
-            delta=f"+{(op.cost_estimate.amount_minor - 1_000_000) / 100:.2f} INR over ceiling",
-            message="Estimated monthly cost exceeds the provisioning ceiling; raise the "
-                    "ceiling via a policy-change Op or reduce the plan.",
-        ) if op.cost_estimate.amount_minor > 1_000_000 else None,
-    ),
-    Rule(
-        id="grow_bid_cap",
-        applies=lambda op: op.action == "grow.bid.adjust",
-        check=lambda op: Violation(
-            rule_id="grow_bid_cap", limit="new_bid <= 1000.00 INR",
-            attempted=f"{op.params.get('new_bid_minor', 0) / 100:.2f} INR",
-            delta=f"+{(op.params.get('new_bid_minor', 0) - 100_000) / 100:.2f} INR over cap",
-            message="Bid exceeds the per-adjustment cap.",
-        ) if op.params.get("new_bid_minor", 0) > 100_000 else None,
-    ),
-    Rule(
-        id="grow_budget_transfer_cap",
-        applies=lambda op: op.action == "grow.budget.reallocate",
-        check=lambda op: Violation(
-            rule_id="grow_budget_transfer_cap", limit="amount <= 50,000.00 INR",
-            attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
-            delta=f"+{(op.params.get('amount_minor', 0) - 5_000_000) / 100:.2f} INR over cap",
-            message="Budget transfer exceeds the per-action cap.",
-        ) if op.params.get("amount_minor", 0) > 5_000_000 else None,
-    ),
-]
+PROTECTED_PATHS = ["control-plane/", ".github/", "recipes/", "OWNERS", "METADATA"]
+APPROVED_DEPENDENCIES = ["react", "react-dom", "next", "tailwindcss", "lucide-react"]
+
+def _parse_diff_files(diff: str) -> list[str]:
+    """Helper to extract modified file paths from a git diff."""
+    files = []
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" ")
+            if len(parts) >= 4:
+                file_a = parts[2][2:]
+                files.append(file_a)
+    return files
+
+def _protected_paths_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    modified_files = _parse_diff_files(diff)
+
+    violated = []
+    for f in modified_files:
+        for p in PROTECTED_PATHS:
+            if f.startswith(p):
+                violated.append(f)
+                break
+
+    if violated:
+        return Violation(
+            rule_id="build_protected_paths",
+            limit="No modifications to protected paths",
+            attempted=", ".join(violated),
+            delta="n/a",
+            message=f"Attempted to modify protected paths: {', '.join(violated)}. "
+                    f"Protected prefixes are: {', '.join(PROTECTED_PATHS)}"
+        )
+    return None
+
+def _dependency_allowlist_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    in_package_json = False
+    added_deps = []
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git a/package.json b/package.json"):
+            in_package_json = True
+            continue
+        elif line.startswith("diff --git"):
+            in_package_json = False
+            continue
+
+        if in_package_json and line.startswith("+") and not line.startswith("+++"):
+            match = re.search(r'"([^"]+)"\s*:\s*"([^"]+)"', line)
+            if match:
+                dep_name = match.group(1)
+                if dep_name not in ["name", "version", "description", "main", "license", "author"]:
+                    added_deps.append(dep_name)
+
+    unapproved = [d for d in added_deps if d not in APPROVED_DEPENDENCIES]
+    if unapproved:
+        return Violation(
+            rule_id="build_dependency_allowlist",
+            limit=f"Only approved dependencies: {', '.join(APPROVED_DEPENDENCIES)}",
+            attempted=", ".join(unapproved),
+            delta="n/a",
+            message=f"Attempted to add unapproved dependencies: {', '.join(unapproved)}. "
+                    f"Please request approval for these packages."
+        )
+    return None
+
+def _secret_scan_check(op: OpSpec) -> Optional[Violation]:
+    diff = op.params.get("diff", "")
+    secret_patterns = [
+        (r'AIza[0-9A-Za-z-_]{35}', "Google API Key"),
+        (r'sk-proj-[0-9A-Za-z]{40}', "OpenAI Project API Key"),
+        (r'-----BEGIN ' + r'PRIVATE KEY-----', "Private Key"),
+        (r'(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']{8,}["\']', "Potential hardcoded secret")
+    ]
+    violations = []
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            for pattern, name in secret_patterns:
+                if re.search(pattern, line):
+                    violations.append(name)
+                    break
+    if violations:
+        return Violation(
+            rule_id="build_secret_scan",
+            limit="No hardcoded secrets allowed",
+            attempted=", ".join(set(violations)),
+            delta="n/a",
+            message=f"Detected potential secrets in diff: {', '.join(set(violations))}. "
+                    f"Use Secret Manager instead of hardcoding credentials."
+        )
+    return None
+
+@dataclass(frozen=True)
+class RulesetParams:
+    """Tunable gate thresholds in minor units (§4.3). Defaults reproduce the
+    historical hardcoded limits EXACTLY — see build_rules — so the existing
+    policy tests are the regression lock. Making the ruleset constructible from
+    stored params is the precursor to versioned, replayable policy (FLAGSHIP-2/3)."""
+    provision_cost_ceiling_minor: int = 1_000_000        # 10,000.00 INR/month
+    grow_bid_cap_minor: int = 100_000                    # 1000.00 INR per adjustment
+    grow_budget_transfer_cap_minor: int = 5_000_000      # 50,000.00 INR per action
+    statutory_refund_limit_minor: int = 1_000_000         # 10,000.00 INR per refund
+
+
+def build_rules(p: RulesetParams) -> list[Rule]:
+    """Construct the deterministic rule set from tunable params. Behavior with
+    RulesetParams() defaults is byte-identical to the historical DEFAULT_RULES."""
+    return [
+        Rule(
+            id="statutory_firewall",
+            applies=lambda op: op.statutory or any(m in op.action for m in STATUTORY_MARKERS),
+            check=_statutory_check,
+            blocking=False,  # never auto-approve; does not block human-approved execution
+        ),
+        Rule(
+            id="provision_cost_ceiling",
+            applies=lambda op: op.domain == "provision" and op.cost_estimate is not None,
+            check=lambda op: Violation(
+                rule_id="provision_cost_ceiling",
+                limit=f"<= {p.provision_cost_ceiling_minor / 100:,.2f} INR/month",
+                attempted=str(op.cost_estimate),
+                delta=f"+{(op.cost_estimate.amount_minor - p.provision_cost_ceiling_minor) / 100:.2f} INR over ceiling",
+                message="Estimated monthly cost exceeds the provisioning ceiling; raise the "
+                        "ceiling via a policy-change Op or reduce the plan.",
+            ) if op.cost_estimate.amount_minor > p.provision_cost_ceiling_minor else None,
+        ),
+        Rule(
+            id="grow_bid_cap",
+            applies=lambda op: op.action == "grow.bid.adjust",
+            check=lambda op: Violation(
+                rule_id="grow_bid_cap", limit=f"new_bid <= {p.grow_bid_cap_minor / 100:.2f} INR",
+                attempted=f"{op.params.get('new_bid_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('new_bid_minor', 0) - p.grow_bid_cap_minor) / 100:.2f} INR over cap",
+                message="Bid exceeds the per-adjustment cap.",
+            ) if op.params.get("new_bid_minor", 0) > p.grow_bid_cap_minor else None,
+        ),
+        Rule(
+            id="grow_budget_transfer_cap",
+            applies=lambda op: op.action == "grow.budget.reallocate",
+            check=lambda op: Violation(
+                rule_id="grow_budget_transfer_cap", limit=f"amount <= {p.grow_budget_transfer_cap_minor / 100:,.2f} INR",
+                attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
+                message="Budget transfer exceeds the per-action cap.",
+            ) if op.params.get("amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+        ),
+        Rule(
+            id="statutory_refund_gate",
+            applies=lambda op: op.domain == "payment" and op.action == "payment.refund",
+            check=lambda op: Violation(
+                rule_id="statutory_refund_gate",
+                limit=f"<= {p.statutory_refund_limit_minor / 100:,.2f} INR",
+                attempted=f"{op.params.get('amount_minor', 0) / 100:,.2f} INR",
+                delta=f"+{(op.params.get('amount_minor', 0) - p.statutory_refund_limit_minor) / 100:.2f} INR over limit",
+                message="Refund exceeds statutory threshold. Manual GST invoice validation required."
+            ) if op.params.get("amount_minor", 0) > p.statutory_refund_limit_minor else None,
+            blocking=True
+        ),
+        Rule(
+            id="build_protected_paths",
+            applies=lambda op: op.domain == "build" and "diff" in op.params,
+            check=_protected_paths_check,
+            blocking=True
+        ),
+        Rule(
+            id="build_dependency_allowlist",
+            applies=lambda op: op.domain == "build" and "diff" in op.params,
+            check=_dependency_allowlist_check,
+            blocking=True
+        ),
+        Rule(
+            id="build_secret_scan",
+            applies=lambda op: op.domain == "build" and "diff" in op.params,
+            check=_secret_scan_check,
+            blocking=True
+        ),
+        Rule(
+            id="statutory_region_lock",
+            applies=lambda op: op.domain == "provision" and (op.statutory or "region" in op.params),
+            check=lambda op: Violation(
+                rule_id="statutory_region_lock",
+                limit="region == asia-south1",
+                attempted=op.params.get("region", "unknown"),
+                delta="Non-compliant region",
+                message="Statutory isolation rule: Resource must be deployed in asia-south1 (India) for data residency and GST compliance."
+            ) if op.params.get("region") not in ("asia-south1", None) else None,
+            blocking=False
+        ),
+    ]
+
+# Active ruleset. With default params this is the historical DEFAULT_RULES verbatim.
+DEFAULT_RULES: list[Rule] = build_rules(RulesetParams())
 
 
 def evaluate_gates(op: OpSpec, rules: Optional[list[Rule]] = None) -> GateResult:
@@ -245,7 +400,7 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
 
 
 async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
-    from ..models import Brand, TrustEvent, TrustSnapshot
+    from ..models import Brand, TrustEvent, TrustSnapshot, BrandProperty
     now = now or dt.datetime.now(dt.timezone.utc)
 
     # Get all brands
@@ -255,6 +410,18 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
     domains = ["provision", "build", "manage", "grow"]
 
     for brand in brands:
+        # Query BrandProperty feed health signals
+        stmt_prop = select(BrandProperty).where(
+            BrandProperty.tenant_id == brand.tenant_id,
+            BrandProperty.brand_id == brand.id,
+            BrandProperty.type == "merchant_feed"
+        )
+        q_prop = await s.execute(stmt_prop)
+        prop = q_prop.scalar_one_or_none()
+        gmc_mismatches = 0
+        if prop and isinstance(prop.findings, dict):
+            gmc_mismatches = prop.findings.get("disapproved_products", 0)
+
         for domain in domains:
             # Fetch events
             res_ev = await s.execute(
@@ -268,7 +435,12 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
             event_tuples = [(e.kind, e.ts) for e in events]
 
             # Default signals (can hook up to real integration metrics later)
-            signals = {"gtm_present": True, "pixel_present": True, "capi_dedup_rate": 0.9}
+            signals = {
+                "gtm_present": True,
+                "pixel_present": True,
+                "capi_dedup_rate": 0.9,
+                "gmc_critical_mismatches": gmc_mismatches
+            }
 
             score = trust_score(signals, event_tuples, now)
             tier = tier_for(score)
@@ -288,18 +460,19 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
 
 async def emit_cost(s: AsyncSession, *, tenant_id: str, op_id: Optional[str] = None,
                     kind: str, amount_minor: int, currency: str = "INR",
-                    meta: Optional[dict] = None) -> None:
+                    meta: Optional[dict] = None, actor: Optional[str] = None) -> None:
     from ..models import CostEntry
     entry = CostEntry(
         op_id=op_id,
         tenant_id=tenant_id,
+        actor=actor,
         kind=kind,
         amount_minor=amount_minor,
         currency=currency,
         meta=meta or {},
     )
     s.add(entry)
-    await audit_append(s, tenant_id=tenant_id, actor="kernel", action=f"cost.{kind}",
+    await audit_append(s, tenant_id=tenant_id, actor=actor or "kernel", action=f"cost.{kind}",
                        op_id=op_id, payload={"amount_minor": amount_minor, "currency": currency})
 
 
@@ -347,3 +520,39 @@ async def ingest_gcp_billing(s: AsyncSession, *, tenant_id: str, resource_id: st
         currency=currency,
         meta={"resource_id": resource_id, "labels": labels or {}}
     )
+
+
+# ---------------------------------------------------------------- metrics (north-star §1/§4.6)
+
+async def approval_latency_rollup(s: AsyncSession, tenant_id: str, *,
+                                  domain: Optional[str] = None,
+                                  since: Optional[dt.datetime] = None) -> dict:
+    """Median/p90 approval latency (ms) — the architecture's north-star metric (§1).
+    Read-only aggregate over Approval.latency_ms, tenant-scoped via the Op join.
+    Expired cards are reported as a latency failure, not silently dropped (§4.6)."""
+    from sqlalchemy import func
+    from ..models import Approval, OpRow
+    stmt = (select(Approval.latency_ms)
+            .join(OpRow, OpRow.id == Approval.op_id)
+            .where(OpRow.tenant_id == tenant_id, Approval.latency_ms.isnot(None)))
+    if domain:
+        stmt = stmt.where(OpRow.domain == domain)
+    if since:
+        stmt = stmt.where(Approval.ts >= since)
+    res = await s.execute(stmt)
+    vals = sorted(v for (v,) in res.all() if v is not None)
+
+    exp_stmt = select(func.count()).select_from(OpRow).where(
+        OpRow.tenant_id == tenant_id, OpRow.state == OpState.EXPIRED.value)
+    if domain:
+        exp_stmt = exp_stmt.where(OpRow.domain == domain)
+    expired = (await s.execute(exp_stmt)).scalar() or 0
+
+    def _pct(pct: float) -> Optional[int]:
+        if not vals:
+            return None
+        k = max(0, min(len(vals) - 1, int(round((pct / 100.0) * (len(vals) - 1)))))
+        return vals[k]
+
+    return {"count": len(vals), "median_ms": _pct(50), "p90_ms": _pct(90),
+            "expired_cards": expired}

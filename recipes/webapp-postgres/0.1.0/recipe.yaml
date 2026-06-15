@@ -1,0 +1,21 @@
+name: webapp-postgres
+version: 0.1.0
+description: Deploy a multi-service web app (API + Frontend) with managed Postgres database, Secret Manager, and Cloud Run public access
+inputs:
+  project_id: {type: string, required: true}
+  brand_id: {type: string, required: true}
+  tenant_id: {type: string, required: true}
+  region: {type: string, default: asia-south2}
+  db_tier: {type: string, default: db-f1-micro}
+  api_service: {type: string, default: wellness-foods}
+  frontend_service: {type: string, default: tanmatra}
+  repo_url: {type: string, default: "https://github.com/chan8822/Wellness-Foods.git"}
+outputs: [frontend_url, api_url, db_connection_name]
+cost_estimate_monthly: {amount_minor: 250_000, currency: INR}
+severity: {impact: 2, reversibility: COMPENSATABLE}
+reversibility_map:
+  database: REVERSIBLE
+  secrets: REVERSIBLE
+  services: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [http_200, db_reachable]
