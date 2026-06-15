@@ -335,9 +335,14 @@ async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks
     row = await s.get(OpRow, op_id)
     if not row or row.tenant_id != tid:
         raise HTTPException(404, "op not found for tenant")
-    await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
-                surface=body.surface, reason=body.reason)
-    await s.commit()
+    try:
+        await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
+                    surface=body.surface, reason=body.reason)
+        await s.commit()
+    except loop.RBACError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     enqueue_drain(background_tasks, worker_session_maker)
     return {"op_id": row.id, "state": row.state}
 
