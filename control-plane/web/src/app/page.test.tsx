@@ -22,7 +22,7 @@ vi.mock("@/lib/api-client", () => ({
   }),
 }));
 
-describe("Governance Dashboard Home Page", () => {
+describe("Conversational Chat UI and Dashboard", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
@@ -44,104 +44,103 @@ describe("Governance Dashboard Home Page", () => {
     );
   };
 
-  it("renders operations queue table with active items", async () => {
-    mockRequest.mockImplementation((path: string) => {
-      if (path === "/ops") {
-        return Promise.resolve([
-          {
-            op_id: "op-1",
-            tenant_id: "t1",
-            brand_id: "brand-1",
-            domain: "grow",
-            action: "grow.campaign.pause",
-            state: "AWAITING_APPROVAL",
-            preview: "Pause Shopify active marketing campaigns",
-            cost_estimate: "150.00 INR",
-          },
-        ]);
-      }
+  it("renders partner chat panel and submits user prompts", async () => {
+    mockRequest.mockImplementation((path: string, method?: string) => {
+      if (path === "/ops") return Promise.resolve([]);
       if (path === "/connections") return Promise.resolve([]);
       if (path === "/circuit-breakers") return Promise.resolve([]);
       if (path === "/audit/events") return Promise.resolve([]);
       if (path === "/audit/verify") return Promise.resolve({ ok: true });
+      
+      if (path === "/chat" && method === "post") {
+        return Promise.resolve({
+          reply: "I have planned your request. Please approve the proposal.",
+          cards: [
+            {
+              op_id: "op-grow-bid",
+              action: "grow.bid.adjust",
+              state: "AWAITING_APPROVAL",
+              preview: "Adjust bid for campaign camp-123 to 50 INR",
+              cost_estimate: "Free",
+              violations: [],
+            }
+          ]
+        });
+      }
       return Promise.resolve(null);
     });
 
     renderWithProviders();
 
-    // Check header
-    expect(screen.getByText("Governance Console")).toBeTruthy();
+    expect(screen.getByText(/Partner Chat/i)).toBeTruthy();
+    expect(screen.getByText(/Hello! I am your Agency OS partner agent/i)).toBeTruthy();
 
-    // Operations list
+    const input = screen.getByPlaceholderText(/e.g. configure email dns routing/i);
+    fireEvent.change(input, { target: { value: "adjust bid for campaign camp-123" } });
+    fireEvent.submit(input.closest("form")!);
+
     await waitFor(() => {
-      expect(screen.getByText("grow.campaign.pause")).toBeTruthy();
-      expect(screen.getByText("Pause Shopify active marketing campaigns")).toBeTruthy();
-      expect(screen.getByText("AWAITING_APPROVAL")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+      expect(mockRequest).toHaveBeenCalledWith("/chat", "post", {
+        brand_id: "brand-bootstrap",
+        text: "adjust bid for campaign camp-123"
+      });
+      expect(screen.getByText("I have planned your request. Please approve the proposal.")).toBeTruthy();
+      expect(screen.getByText("grow.bid.adjust")).toBeTruthy();
+      expect(screen.getByText("Adjust bid for campaign camp-123 to 50 INR")).toBeTruthy();
+      
+      const approveBtn = screen.getAllByRole("button", { name: "Approve" })[0];
+      expect(approveBtn).toBeTruthy();
     });
   });
 
-  it("displays red warning banner when a circuit breaker trips (state is OPEN)", async () => {
-    mockRequest.mockImplementation((path: string) => {
+  it("triggers decision mutation when clicking approve on a proposal card", async () => {
+    mockRequest.mockImplementation((path: string, method?: string) => {
       if (path === "/ops") return Promise.resolve([]);
       if (path === "/connections") return Promise.resolve([]);
-      if (path === "/circuit-breakers") {
-        return Promise.resolve([
-          {
-            brand_id: "brand-1",
-            domain: "grow",
-            state: "OPEN",
-            consecutive_failures: 3,
-            tripped_at: "2026-06-15T08:00:00Z",
-            last_failure_at: "2026-06-15T08:00:00Z",
-          },
-        ]);
-      }
-      if (path === "/audit/events") return Promise.resolve([]);
-      if (path === "/audit/verify") return Promise.resolve({ ok: true });
-      return Promise.resolve(null);
-    });
-
-    renderWithProviders();
-
-    await waitFor(() => {
-      expect(screen.getByText(/Safety shutdown active on domain/)).toBeTruthy();
-      expect(screen.getByText(/'grow'/)).toBeTruthy();
-    });
-  });
-
-  it("renders active connection cards in connections tab", async () => {
-    mockRequest.mockImplementation((path: string) => {
-      if (path === "/ops") return Promise.resolve([]);
-      if (path === "/connections") {
-        return Promise.resolve([
-          {
-            id: "conn-1",
-            provider: "shopify",
-            scope: "read_products,write_orders",
-            secret_ref: "gcp:secret:shopify",
-            config: { shop_url: "tanmatra.myshopify.com" },
-            created_at: "2026-06-15T08:00:00Z",
-          },
-        ]);
-      }
       if (path === "/circuit-breakers") return Promise.resolve([]);
       if (path === "/audit/events") return Promise.resolve([]);
       if (path === "/audit/verify") return Promise.resolve({ ok: true });
+      
+      if (path === "/chat" && method === "post") {
+        return Promise.resolve({
+          reply: "Planned.",
+          cards: [
+            {
+              op_id: "op-approve-test",
+              action: "grow.bid.adjust",
+              state: "AWAITING_APPROVAL",
+              preview: "Test Approve",
+              cost_estimate: "Free",
+            }
+          ]
+        });
+      }
+      
+      if (path === "/ops/op-approve-test/decision" && method === "post") {
+        return Promise.resolve({ op_id: "op-approve-test", state: "APPROVED" });
+      }
+      
       return Promise.resolve(null);
     });
 
     renderWithProviders();
 
-    // Click on Active Connections tab
-    const tabButton = screen.getByRole("button", { name: /Active Connections/ });
-    fireEvent.click(tabButton);
+    const input = screen.getByPlaceholderText(/e.g. configure email dns routing/i);
+    fireEvent.change(input, { target: { value: "test approve" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(async () => {
+      const approveBtn = screen.getAllByRole("button", { name: "Approve" })[0];
+      fireEvent.click(approveBtn);
+    });
 
     await waitFor(() => {
-      expect(screen.getByText("shopify")).toBeTruthy();
-      expect(screen.getByText("read_products,write_orders")).toBeTruthy();
-      expect(screen.getByText("gcp:secret:shopify")).toBeTruthy();
+      expect(mockRequest).toHaveBeenCalledWith("/ops/op-approve-test/decision", "post", {
+        decision: "approve",
+        actor: "chandan",
+        role: "AGENCY_OWNER",
+        surface: "web"
+      });
     });
   });
 });
