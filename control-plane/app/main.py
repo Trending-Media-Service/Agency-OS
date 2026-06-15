@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi.responses import HTMLResponse
 
-from app.database import get_db, get_worker_db, get_worker_session_maker
+from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware, TraceMiddleware
 from app.observability import setup_logging
@@ -17,8 +17,10 @@ from app.adapters.presence import PresenceAdapter
 from app.adapters.grow import GrowAdapter
 from app.adapters.manage import ManageAdapter
 from app.adapters.build import BuildAdapter
+from app.adapters.governance import GovernanceAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
+from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection
 
 # Setup Sentry SDK if DSN is set
@@ -41,6 +43,10 @@ loop.register(PresenceAdapter())
 loop.register(GrowAdapter())
 loop.register(ManageAdapter())
 loop.register(BuildAdapter())
+loop.register(GovernanceAdapter())
+
+register_plugin(ShopifyPlugin())
+
 
 logger = logging.getLogger(__name__)
 RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
@@ -91,8 +97,57 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
                worker_session_maker = Depends(get_worker_session_maker),
                tid: str = Depends(tenant_id)):
     """Conversational intent routing endpoint. Translates text to structured adapter intents."""
+    from app.kernel.tools import registry as tool_registry, parse_chat_to_tool_call
+    tool_match = parse_chat_to_tool_call(body.text)
+    if tool_match:
+        tool_name, args = tool_match
+        tool = tool_registry.get_tool(tool_name)
+        if tool:
+            handler = tool["handler"]
+            # Call the handler with tenant_id injected
+            specs = handler(tenant_id=tid, **args)
+            
+            # Resolve trust tier for this domain (defaults to 1 supervised)
+            domain_name = specs[0].domain
+            stmt = (
+                select(TrustSnapshot.tier)
+                .where(
+                    TrustSnapshot.tenant_id == tid,
+                    TrustSnapshot.brand_id == body.brand_id,
+                    TrustSnapshot.domain == domain_name
+                )
+                .order_by(TrustSnapshot.ts.desc())
+                .limit(1)
+            )
+            res = await s.execute(stmt)
+            tier = res.scalar_one_or_none()
+            if tier is None:
+                tier = 1
+
+            cards = []
+            for spec in specs:
+                # Propose and gate the operation! RLS and safety gates apply unconditionally.
+                row = await loop.propose(s, spec, actor="chat:tool")
+                gate, requirement = await loop.preview_and_gate(s, row, tier=tier, actor="chat:tool")
+                
+                cards.append({
+                    "op_id": row.id, "action": row.action, "state": row.state,
+                    "requirement": requirement,
+                    "preview": row.preview_summary,
+                    "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                                      if row.cost_amount_minor else None),
+                    "violations": [v.as_dict() for v in gate.violations],
+                })
+                if row.state == "AWAITING_APPROVAL":
+                    background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+            
+            await s.commit()
+            return {
+                "reply": f"Structured request parsed. Generated {len(cards)} proposal(s) under safety gates.",
+                "cards": cards
+            }
+
     normalized = body.text.lower()
-    
     if "static" in normalized:
         words = body.text.replace(",", " ").split()
         domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
@@ -226,7 +281,7 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
                                   if row.cost_amount_minor else None),
                 "violations": [v.as_dict() for v in gate.violations],
             })
-            if row.state == "AWAITING_APPROVAL":
+            if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
                 background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
     await s.commit()
     return {"cards": cards}
@@ -720,26 +775,21 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
             stmt_dup_saga = select(OpRow).where(
                 OpRow.tenant_id == tenant_id,
                 OpRow.brand_id == brand_id,
-                OpRow.action == "grow.reallocate_budget.apply",
+                OpRow.action == "grow.budget.reallocate",
                 OpRow.state == "PROPOSED"
             )
             res_dup_saga = await s.execute(stmt_dup_saga)
             if not res_dup_saga.scalar_one_or_none():
                 logger.warning(f"Optimization triggered: Proposing budget reallocation from Google Ads ({worst_google_id}) to Meta Ads ({best_meta_id})")
 
-                saga_id = uuid.uuid4().hex
+                from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
 
-                # Parent Saga
-                parent_saga = OpRow(
-                    id=saga_id,
+                # Propose Parent Saga
+                parent_saga = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
-                    action="grow.reallocate_budget.apply",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
-                    preview_summary=f"Budget Transfer: Move 1,000.00 INR from Google Ads ({worst_google['op'].params.get('name')}) to Meta Ads ({best_meta['op'].params.get('name')}) due to ROAS performance difference (Meta: {best_meta['roas']:.2f}, Google: {worst_google['roas']:.2f}).",
+                    action="grow.budget.reallocate",
                     params={
                         "transfer_amount_minor": transfer_amount_minor,
                         "source_campaign_id": worst_google_id,
@@ -747,21 +797,16 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "target_campaign_id": best_meta_id,
                         "target_provider": "meta-ads"
                     },
-                    idem_key=f"idem_saga_{saga_id}"
-                )
-                s.add(parent_saga)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                ), actor="optimizer")
 
-                # Child 1: Decrease Google Ads campaign budget
-                child1_id = uuid.uuid4().hex
-                child1 = OpRow(
-                    id=child1_id,
+                # Propose Child 1: Decrease Google Ads campaign budget
+                child1 = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
                     action="grow.campaign.update",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
                     params={
                         "campaign_id": worst_google_id,
                         "provider": "google-ads",
@@ -769,23 +814,18 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "previous_budget_minor": worst_google["budget_minor"],
                         "bid_minor": worst_google["op"].params.get("bid_minor")
                     },
-                    parent_op_id=saga_id,
-                    sequence_order=1,
-                    idem_key=f"idem_child1_{child1_id}"
-                )
-                s.add(child1)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                    parent_op_id=parent_saga.id,
+                    sequence_order=1
+                ), actor="optimizer")
 
-                # Child 2: Increase Meta Ads campaign budget
-                child2_id = uuid.uuid4().hex
-                child2 = OpRow(
-                    id=child2_id,
+                # Propose Child 2: Increase Meta Ads campaign budget
+                child2 = await loop.propose(s, OpSpec(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     domain="grow",
                     action="grow.campaign.update",
-                    state="PROPOSED",
-                    impact=2,
-                    reversibility="COMPENSATABLE",
                     params={
                         "campaign_id": best_meta_id,
                         "provider": "meta-ads",
@@ -793,11 +833,11 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
                         "previous_budget_minor": best_meta["budget_minor"],
                         "bid_minor": best_meta["op"].params.get("bid_minor")
                     },
-                    parent_op_id=saga_id,
-                    sequence_order=2,
-                    idem_key=f"idem_child2_{child2_id}"
-                )
-                s.add(child2)
+                    severity=Severity(2, Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0, "INR"),
+                    parent_op_id=parent_saga.id,
+                    sequence_order=2
+                ), actor="optimizer")
 
                 logger.info("Inserted budget reallocation proposed Saga Op with 2 children")
 
@@ -911,3 +951,130 @@ async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid
         "shopify_connected": True,
         "metrics": metrics
     }
+
+@app.get("/brands/{brand_id}/poas")
+async def get_brand_poas(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+    
+    from app.profit.poas import calculate_campaign_poas
+    reports = await calculate_campaign_poas(s, tid, brand_id)
+    return {"brand_id": brand_id, "reports": reports}
+
+@app.get("/brands/{brand_id}/performance-score")
+async def get_brand_performance_score(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+    
+    from app.profit.brand_score import calculate_brand_score
+    score = await calculate_brand_score(s, tid, brand_id)
+    return {"brand_id": brand_id, "performance_score": score}
+
+
+async def _find_connection(s: AsyncSession, provider: str, identifier: str) -> Connection | None:
+    stmt = select(Connection).where(Connection.provider == provider)
+    res = await s.execute(stmt)
+    conns = res.scalars().all()
+    for conn in conns:
+        if provider == "shopify" and conn.config.get("shop_url") == identifier:
+            return conn
+    return None
+
+
+@app.post("/webhooks/plugins/{provider}")
+async def plugin_webhook(
+    provider: str,
+    request: Request,
+    x_shopify_hmac_sha256: str | None = Header(default=None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_topic: str | None = Header(default=None, alias="X-Shopify-Topic"),
+    s: AsyncSession = Depends(get_worker_db)
+):
+    plugin = get_plugin(provider)
+    if not plugin:
+        raise HTTPException(404, f"No plugin registered for provider: {provider}")
+
+    headers = dict(request.headers)
+    raw_body = await request.body()
+    try:
+        import json
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        payload = {}
+
+    # 1. Resolve identifier
+    identifier = await plugin.resolve_connection_identifier(headers, payload)
+    if not identifier:
+        raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
+
+    # 2. Find Connection (RLS is bypassed in get_worker_db session)
+    conn = await _find_connection(s, provider, identifier)
+    if not conn:
+        raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
+
+    # 3. Retrieve signature and secret key
+    signature = None
+    if provider == "shopify":
+        signature = x_shopify_hmac_sha256
+    if not signature:
+        signature = headers.get("x-signature")
+
+    if not signature:
+        raise HTTPException(401, "Webhook signature header missing")
+
+    # In production, secret would be retrieved from Secret Manager using conn.secret_ref.
+    # For local/testing, we use secret_ref directly as the secret key.
+    secret_key = conn.secret_ref
+
+    # 4. Verify signature
+    if not await plugin.verify_signature(raw_body, signature, secret_key):
+        raise HTTPException(401, "Webhook signature mismatch")
+
+    # 5. Translate webhook payload to OpSpecs
+    event_type = x_shopify_topic or headers.get("x-event-type", "")
+    specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+
+    proposed_ops = []
+    # 6. Propose and gate each Op under the connection's tenant_id context
+    token = tenant_context.set(conn.tenant_id)
+    try:
+        # Set app.current_tenant_id at the DB connection level for local RLS checks
+        if s.bind.dialect.name == "postgresql":
+            await s.execute(
+                text("SET LOCAL app.current_tenant_id = :tenant_id"),
+                {"tenant_id": conn.tenant_id},
+            )
+
+        for spec in specs:
+            row = await loop.propose(s, spec, actor=f"webhook.{provider}")
+            
+            # Resolve trust snapshot to find tier
+            from app.models import TrustSnapshot
+            stmt_tier = (
+                select(TrustSnapshot.tier)
+                .where(
+                    TrustSnapshot.tenant_id == conn.tenant_id,
+                    TrustSnapshot.brand_id == conn.brand_id,
+                    TrustSnapshot.domain == spec.domain
+                )
+                .order_by(TrustSnapshot.ts.desc())
+                .limit(1)
+            )
+            res_tier = await s.execute(stmt_tier)
+            tier = res_tier.scalar_one_or_none()
+            if tier is None:
+                tier = 1  # fallback to supervised
+
+            await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
+            proposed_ops.append(row.id)
+            
+        await s.commit()
+    except Exception:
+        await s.rollback()
+        raise
+    finally:
+        tenant_context.reset(token)
+
+    return {"status": "accepted", "proposed_ops": proposed_ops}
+

@@ -28,7 +28,7 @@ class MockMarketingClient:
         logger.info(f"Mock created campaign {campaign_id} ({name}) via {self.provider} with budget {budget_minor/100:.2f}")
         return True
 
-    async def update_campaign(self, campaign_id: str, budget_minor: int = None, bid_minor: int = None) -> bool:
+    async def update_campaign(self, campaign_id: str, budget_minor: int = None, bid_minor: int = None, status: str = None) -> bool:
         if campaign_id not in self._campaigns:
             logger.error(f"Campaign {campaign_id} not found")
             return False
@@ -36,7 +36,9 @@ class MockMarketingClient:
             self._campaigns[campaign_id]["budget_minor"] = budget_minor
         if bid_minor is not None:
             self._campaigns[campaign_id]["bid_minor"] = bid_minor
-        logger.info(f"Mock updated campaign {campaign_id}: budget={budget_minor}, bid={bid_minor}")
+        if status is not None:
+            self._campaigns[campaign_id]["status"] = status
+        logger.info(f"Mock updated campaign {campaign_id}: budget={budget_minor}, bid={bid_minor}, status={status}")
         return True
 
     async def delete_campaign(self, campaign_id: str) -> bool:

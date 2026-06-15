@@ -26,6 +26,8 @@ Every operation in every pillar is the same primitive: a proposed **Op**, previe
 **Positioning:** The competitor is not Lovable, Vercel, or an ad tool. It is the traditional agency without leverage. Buyers are brands who want outcomes, not tools; they never touch code or consoles. The moat is the governance trail plus full-stack visibility (a brand we host and build for gives Grow first-party data no standalone ad tool can match).
 
 **North-star product metric:** median approval latency < 2 minutes from card delivery to decision. If approvals rot, the product dies regardless of intelligence.
+  - **Latency measurement:** Measured in milliseconds as the duration between card delivery (traced via `whatsapp_card_sent` trace, falling back to the `AWAITING_APPROVAL` state transition timestamp if the card trace is missing) and the `Approval` commit time.
+  - **Rollup Aggregation:** The control plane provides a tenant-scoped read-only aggregate endpoint (`/metrics/approval-latency`) computing count, median, p90, and count of expired cards within a selectable time window.
 
 ---
 
@@ -61,7 +63,9 @@ GCP Organization
 - **Control plane** (`aos-control-plane`): FastAPI service(s) on Cloud Run, Cloud SQL Postgres (system of record), Cloud Tasks (queue), Secret Manager (platform secrets), Cloud Build (CI), Sentry + Cloud Logging.
 - **Dedicated tier:** one GCP project per brand. Native billing isolation, IAM boundary, budget alerts, and credential blast-radius containment. A compromised brand service account structurally cannot see another brand's project. Brand-scoped third-party credentials (Shopify tokens, ad-platform creds) live in **that brand's** Secret Manager, not the control plane's.
 - **Shared tier:** scale-to-zero Cloud Run services + per-tenant databases on a shared Cloud SQL instance (or Supabase/Neon for tiny tenants), inside `aos-shared-tier`. Exists because a dedicated project has a ~$30–60/month cost floor before traffic. Brands graduate to dedicated at a defined revenue/usage threshold. **The two tiers are the hosting price list.**
-- **Control-plane data isolation:** every table carries `tenant_id`; Postgres row-level security enforced; every request passes tenant-assertion middleware. App-level checks are defense-in-depth on top of project isolation, not a substitute for it.
+- **Control-plane data isolation:** every table containing tenant-scoped data carries a `tenant_id` column with Postgres Row-Level Security (RLS) enabled and forced.
+  - The following tables are subject to RLS policy: `brands`, `ops`, `audit_events`, `trust_events`, `trust_snapshots`, `cost_ledger`, `connections`, `brand_properties`, `cadences`, `op_traces`, `approvals`, `orders`, `order_lines`, `refunds`, `fulfillment_costs`, `campaigns`, `spend_facts`, `touchpoints`, `circuit_breakers`, `op_dependencies`, `policy_versions`.
+  - Every session transaction sets the session configuration `app.current_tenant_id` via middleware before executing queries. If no tenant context is set, the session is isolated and denied read/write access to all rows. App-level checks are defense-in-depth on top of project isolation, not a substitute for it.
 - **Service accounts:** per-brand, minimally scoped, short-lived tokens where the platform supports them. No standing org-wide credentials.
 
 ---
@@ -101,6 +105,15 @@ No Kafka, no Temporal. At this scale:
 
 OPA-style deterministic rules, versioned in the repo, evaluated at Preview and re-evaluated at Execute (state may have changed in between):
 
+- **Ruleset Parameterization:** Rule validation thresholds are parameterized via the `RulesetParams` dataclass. The ruleset can be dynamically initialized using parameters stored in control-plane database tables (`policy_versions`), allowing for versioned, dynamic, and replayable policy checks.
+- **DEFAULT_RULES:** Initialized with default `RulesetParams` corresponding to historical limits:
+  - `provision_cost_ceiling_minor` = 1,000,000 minor units (10,000.00 INR/month)
+  - `grow_bid_cap_minor` = 100,000 minor units (1,000.00 INR per adjustment)
+  - `grow_budget_transfer_cap_minor` = 5,000,000 minor units (50,000.00 INR per transfer)
+  - `statutory_refund_limit_minor` = 1,000,000 minor units (10,000.00 INR per refund)
+  - `allowed_regions` = `("asia-south1",)`
+  - `approved_dependencies` = `("react", "react-dom", "next", "tailwindcss", "lucide-react")`
+  - `protected_paths` = `("control-plane/", ".github/", "recipes/", "OWNERS", "METADATA")`
 - Per-domain rule packs (Provision: cost ceilings, region allowlist; Build: protected paths, dependency allowlist; Manage: write-scope limits; Grow: bid caps, budget-transfer caps, multiplier limits).
 - Every rejection produces a structured explanation: rule id, limit, attempted value, delta. This renders in the UI/WhatsApp verbatim — no generic errors.
 - Rule changes are themselves Ops (governed, audited).
@@ -175,6 +188,17 @@ class Op:                       # vendor-neutral — NO platform vocabulary here
 ```
 
 Third-party connectivity standardizes on **MCP** where servers exist (Shopify's MCP suite is the first target); plain REST adapters elsewhere. Quoted rate limits in any doc are advisory only — adapters read current platform documentation and enforce their own client-side limiter + circuit breaker.
+
+### 5.1 Plugin webhooks and routers
+For event-driven third-party triggers (such as Shopify `orders/create`), the control plane exposes a generic, RLS-bypassed endpoint `/webhooks/plugins/{provider}`. 
+- **Plugin Protocol:** Every third-party platform registers a `Plugin` helper detailing:
+  - `verify_signature(raw_body, signature, secret)`: Custom platform-specific cryptographical validation (e.g. HMAC-SHA256).
+  - `resolve_connection_identifier(headers, payload)`: Extracts the platform identifier (e.g. shopify store URL).
+  - `translate_webhook(event_type, payload, tenant, brand)`: Maps events to vendor-neutral `OpSpec` objects (e.g. `manage.shopify.sync_order`).
+- **Isolation and Scope Validation:**
+  - The webhook router queries the global `connections` table bypassing RLS using a privileged database session to match the provider and connection identifier, resolving the correct `tenant_id` and `brand_id`.
+  - Signature validation is strictly completed using the stored `secret_ref`. If validation fails, or if no connection matches, a `401 Unauthorized` or `404 Not Found` is returned.
+  - Upon successful verification, the router sets the active `tenant_context` context variable and writes proposed Ops to the database, ensuring all downstream policy evaluation and auditing executes safely within that tenant's RLS isolation boundary.
 
 ---
 
@@ -260,6 +284,12 @@ The front door for all pillars. Intent parsing → adapter `plan()` → cards. T
 1. The interface **never executes**; it only proposes Ops. All authority lives in the kernel.
 2. Ambiguity resolves by asking, not assuming (an Op with wrong params that passes gates is still wrong).
 3. Every generated plan shows its cost estimate before approval.
+
+### 7.1 Tool Registry and Execution Gate
+For conversational interactions with agentic workflows (e.g. Gemini tool calling), the interface standardizes tool execution on the `ToolRegistry` ([tools.py](file:///google/src/cloud/chandansinghr/AgecyOSV1/sandbox/Agency-OS/control-plane/app/kernel/tools.py)).
+- **Action Decoupling:** Any tool call parsed from natural language (such as `grow_bid_adjust`) is routed directly to its corresponding tool handler. 
+- **Propose-Only Boundary:** The handler does not execute the action. It merely returns a vendor-neutral `OpSpec` object (pre-configured with appropriate severity and impact details).
+- **Mandatory Gating:** The `/chat` endpoint accepts the returned `OpSpec` and passes it through the standard `loop.propose` and `loop.preview_and_gate` pipelines. The tool execution path can only transition an Op to `PROPOSED` and then to `AWAITING_APPROVAL` or `BLOCKED` (or `APPROVED` if trust snapshot metrics qualify it for auto-approval); it cannot bypass safety gates or force immediate execution.
 
 Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previews). The A2UI modify-loop (§4.1) applies uniformly: "change the hero to teal and redeploy", "make it ₹40k", "use the .in domain instead".
 

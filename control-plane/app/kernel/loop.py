@@ -12,11 +12,11 @@ from typing import Optional, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent, CircuitBreakerRow
+from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent, CircuitBreakerRow, OpDependency
 from .optypes import (ExecResult, Money, OpSpec, OpState, PreviewArtifact,
                       Reversibility, Severity, VerifyResult, assert_transition)
 from .services import (GateResult, TRUST_CONFIG, approval_requirement, audit_append,
-                       evaluate_gates)
+                       evaluate_gates, load_active_rules)
 
 
 class Adapter(Protocol):
@@ -46,15 +46,15 @@ def _row_to_spec(row: OpRow) -> OpSpec:
     )
 
 
-def trace(s: AsyncSession, op_id: str, kind: str, detail: dict) -> None:
-    s.add(OpTrace(op_id=op_id, kind=kind, detail=detail))
+def trace(s: AsyncSession, op_id: str, tenant_id: str, kind: str, detail: dict) -> None:
+    s.add(OpTrace(op_id=op_id, tenant_id=tenant_id, kind=kind, detail=detail))
 
 
 async def transition(s: AsyncSession, row: OpRow, target: OpState, *, actor: str, detail: Optional[dict] = None) -> None:
     current = OpState(row.state)
     assert_transition(current, target)
     row.state = target.value
-    trace(s, row.id, "transition", {"from": current.value, "to": target.value, **(detail or {})})
+    trace(s, row.id, row.tenant_id, "transition", {"from": current.value, "to": target.value, **(detail or {})})
     await audit_append(s, tenant_id=row.tenant_id, actor=actor,
                  action=f"op.{target.value.lower()}", op_id=row.id, payload=detail or {})
 
@@ -72,6 +72,33 @@ async def propose(s: AsyncSession, spec: OpSpec, *, actor: str) -> OpRow:
     s.add(row)
     await audit_append(s, tenant_id=spec.tenant_id, actor=actor, action="op.proposed",
                  op_id=spec.id, payload={"action": spec.action})
+
+    # Create OpDependency rows
+    if spec.parent_op_id:
+        if spec.depends_on is not None:
+            for dep_id in spec.depends_on:
+                s.add(OpDependency(
+                    tenant_id=spec.tenant_id,
+                    parent_op_id=spec.parent_op_id,
+                    from_op_id=dep_id,
+                    to_op_id=spec.id
+                ))
+        elif spec.sequence_order > 1:
+            # Fallback to sequence_order chaining: find previous sibling in the parent saga
+            stmt = select(OpRow.id).where(
+                OpRow.parent_op_id == spec.parent_op_id,
+                OpRow.sequence_order == spec.sequence_order - 1
+            )
+            res = await s.execute(stmt)
+            prev_id = res.scalar_one_or_none()
+            if prev_id:
+                s.add(OpDependency(
+                    tenant_id=spec.tenant_id,
+                    parent_op_id=spec.parent_op_id,
+                    from_op_id=prev_id,
+                    to_op_id=spec.id
+                ))
+
     return row
 
 
@@ -82,12 +109,13 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
 
     artifact = adapter.preview(spec)
     row.preview_summary = artifact.summary
-    trace(s, row.id, "preview", {"kind": artifact.kind})
+    trace(s, row.id, row.tenant_id, "preview", {"kind": artifact.kind})
     if row.state != OpState.PREVIEWED.value:
         await transition(s, row, OpState.PREVIEWED, actor=actor)
 
-    gate = evaluate_gates(spec)
-    trace(s, row.id, "gate", {"violations": [v.as_dict() for v in gate.violations],
+    rules = await load_active_rules(s, row.tenant_id)
+    gate = evaluate_gates(spec, rules=rules)
+    trace(s, row.id, row.tenant_id, "gate", {"violations": [v.as_dict() for v in gate.violations],
                               "requires_human": gate.requires_human})
     requirement = approval_requirement(spec, tier, gate)
 
@@ -97,7 +125,7 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
     elif requirement == "AUTO":
         await transition(s, row, OpState.APPROVED, actor="kernel:tier2-auto",
                    detail={"tier": tier})
-        s.add(Approval(op_id=row.id, actor="kernel", role="tier2-auto",
+        s.add(Approval(op_id=row.id, tenant_id=row.tenant_id, actor="kernel", role="tier2-auto",
                        surface="auto", decision="approve"))
         enqueue(s, row.id)
     else:
@@ -308,24 +336,33 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
            latency_ms: Optional[int] = None) -> None:
     if latency_ms is None:  # populate the north-star metric (§1); never gates
         latency_ms = await _decision_latency_ms(s, row.id)
-    s.add(Approval(op_id=row.id, actor=actor, role=role, surface=surface,
+    s.add(Approval(op_id=row.id, tenant_id=row.tenant_id, actor=actor, role=role, surface=surface,
                    decision=decision, reason=reason, latency_ms=latency_ms))
     if decision == "approve":
         spec = _row_to_spec(row)
-        gate = evaluate_gates(spec)
+        rules = await load_active_rules(s, row.tenant_id)
+        gate = evaluate_gates(spec, rules=rules)
         if gate.violations:
             if not reason or not reason.strip():
                 raise ValueError("Override reason is mandatory for approved ops with policy violations")
             emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "override", reason=reason)
         
         # Fetch children
-        res_children = await s.execute(select(OpRow).where(OpRow.parent_op_id == row.id).order_by(OpRow.sequence_order))
+        res_children = await s.execute(select(OpRow).where(OpRow.parent_op_id == row.id))
         children = res_children.scalars().all()
         if children:
             await transition(s, row, OpState.APPROVED, actor=actor)
             for child in children:
                 await transition(s, child, OpState.APPROVED, actor=actor)
-            enqueue(s, children[0].id)
+            
+            # Find root children (no incoming dependencies)
+            stmt_non_roots = select(OpDependency.to_op_id).where(OpDependency.parent_op_id == row.id)
+            res_non_roots = await s.execute(stmt_non_roots)
+            non_root_ids = set(res_non_roots.scalars().all())
+            
+            for child in children:
+                if child.id not in non_root_ids:
+                    enqueue(s, child.id)
         else:
             await transition(s, row, OpState.APPROVED, actor=actor)
             enqueue(s, row.id)
@@ -394,6 +431,15 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
         token = trace_context.set(item.trace_id)
         try:
             row = await s.get(OpRow, item.op_id)
+            if not row:
+                item.status = "DEAD"
+                processed += 1
+                continue
+
+            if OpState(row.state) in (OpState.FAILED, OpState.ROLLED_BACK, OpState.REJECTED, OpState.BLOCKED):
+                item.status = "DEAD"
+                processed += 1
+                continue
 
             # 1. Cooldown Check
             is_cooldown_ok = await check_cooldown(s, row)
@@ -421,7 +467,7 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
             # Reset Circuit Breaker failures on success
             await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
-            trace(s, row.id, "retry", {"attempt": item.attempts, "error": str(exc)})
+            trace(s, row.id, row.tenant_id, "retry", {"attempt": item.attempts, "error": str(exc)})
             
             # Record failure in Circuit Breaker
             await record_failure(s, row.tenant_id, row.brand_id, row.domain)
@@ -452,7 +498,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
 
     await transition(s, row, OpState.EXECUTING, actor="kernel")
     result = await adapter.execute(spec, idem_key=row.idem_key, session=s)
-    trace(s, row.id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
+    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
 
     # Record any execution costs returned by the adapter
     if hasattr(result, "costs") and result.costs:
@@ -479,40 +525,48 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
                          reason=f"Execution failed: {result.detail.get('error')}")
         await transition(s, row, OpState.FAILED, actor="kernel", detail=result.detail)
-        # Propagate failure to parent
+        # Propagate failure to parent, cancel siblings, and trigger rollback cascade
         if row.parent_op_id:
             parent = await s.get(OpRow, row.parent_op_id)
             if parent:
                 await transition(s, parent, OpState.FAILED, actor="kernel", detail={"failed_child_id": row.id})
+                await cancel_active_siblings(s, row)
+                await trigger_saga_rollback(s, row.parent_op_id)
         await _compensate(s, row, adapter, spec)
         return
 
     await transition(s, row, OpState.VERIFYING, actor="kernel")
     verdict = await adapter.verify(spec)
-    trace(s, row.id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
+    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verified_success")
         await transition(s, row, OpState.DONE, actor="kernel")
 
-        # SAGA SEQUENCING:
+        # SAGA SEQUENCING (DAG):
         if row.parent_op_id:
-            # Find next child of the same parent
-            stmt = (
-                select(OpRow)
-                .where(
-                    OpRow.parent_op_id == row.parent_op_id,
-                    OpRow.sequence_order > row.sequence_order
-                )
-                .order_by(OpRow.sequence_order.asc())
-                .limit(1)
-            )
+            # Find children that depend on this completed child
+            stmt = select(OpDependency.to_op_id).where(OpDependency.from_op_id == row.id)
             res = await s.execute(stmt)
-            next_child = res.scalar_one_or_none()
-            if next_child:
-                enqueue(s, next_child.id)
-            else:
-                # No more children! Transition parent to DONE via VERIFYING
+            dependent_op_ids = res.scalars().all()
+            for dep_id in dependent_op_ids:
+                # Check if all dependencies for dep_id are DONE
+                stmt_all_deps = select(OpDependency.from_op_id).where(OpDependency.to_op_id == dep_id)
+                res_all_deps = await s.execute(stmt_all_deps)
+                required_op_ids = res_all_deps.scalars().all()
+                
+                stmt_states = select(OpRow).where(OpRow.id.in_(required_op_ids))
+                res_states = await s.execute(stmt_states)
+                dep_rows = res_states.scalars().all()
+                
+                if all(d.state == OpState.DONE.value for d in dep_rows):
+                    enqueue(s, dep_id)
+            
+            # Check if all children of the parent are DONE
+            stmt_all_children = select(OpRow).where(OpRow.parent_op_id == row.parent_op_id)
+            res_all_children = await s.execute(stmt_all_children)
+            all_children = res_all_children.scalars().all()
+            if all(c.state == OpState.DONE.value for c in all_children):
                 parent = await s.get(OpRow, row.parent_op_id)
                 if parent:
                     await transition(s, parent, OpState.VERIFYING, actor="kernel")
@@ -522,50 +576,102 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
                          reason=f"Verification checks failed: {verdict.checks}")
         await transition(s, row, OpState.FAILED, actor="kernel",
                    detail={"checks": verdict.checks, "note": verdict.detail})
-        # Propagate failure to parent
+        # Propagate failure to parent, cancel siblings, and trigger rollback cascade
         if row.parent_op_id:
             parent = await s.get(OpRow, row.parent_op_id)
             if parent:
                 await transition(s, parent, OpState.FAILED, actor="kernel", detail={"failed_child_id": row.id})
+                await cancel_active_siblings(s, row)
+                await trigger_saga_rollback(s, row.parent_op_id)
         await _compensate(s, row, adapter, spec)
+
+
+async def cancel_active_siblings(s: AsyncSession, failed_child: OpRow):
+    stmt = select(OpRow).where(
+        OpRow.parent_op_id == failed_child.parent_op_id,
+        OpRow.id != failed_child.id,
+        OpRow.state.in_([OpState.APPROVED.value, OpState.EXECUTING.value, OpState.VERIFYING.value])
+    )
+    res = await s.execute(stmt)
+    active_siblings = res.scalars().all()
+    for sib in active_siblings:
+        prev_state = sib.state
+        # Move state to FAILED
+        await transition(s, sib, OpState.FAILED, actor="kernel", detail={"note": "Cancelled due to sibling failure"})
+        # If it was active (executing/verifying), compensate it
+        if prev_state in (OpState.EXECUTING.value, OpState.VERIFYING.value):
+            adapter = REGISTRY[sib.domain]
+            spec = _row_to_spec(sib)
+            await _compensate(s, sib, adapter, spec)
+        elif prev_state == OpState.APPROVED.value:
+            # For unexecuted APPROVED siblings, transition them cleanly to ROLLED_BACK via COMPENSATING without adapter calls
+            await transition(s, sib, OpState.COMPENSATING, actor="kernel")
+            await transition(s, sib, OpState.ROLLED_BACK, actor="kernel")
+
+
+async def trigger_saga_rollback(s: AsyncSession, parent_id: str):
+    res = await s.execute(select(OpRow).where(OpRow.parent_op_id == parent_id))
+    children = res.scalars().all()
+    
+    for child in children:
+        if child.state == OpState.DONE.value:
+            stmt_deps = select(OpRow).where(
+                OpRow.id.in_(
+                    select(OpDependency.to_op_id).where(OpDependency.from_op_id == child.id)
+                )
+            )
+            res_deps = await s.execute(stmt_deps)
+            deps = res_deps.scalars().all()
+            
+            if all(d.state in (OpState.ROLLED_BACK.value, OpState.FAILED.value, OpState.REJECTED.value) for d in deps):
+                adapter = REGISTRY[child.domain]
+                spec = _row_to_spec(child)
+                await _compensate(s, child, adapter, spec)
 
 
 async def _compensate(s: AsyncSession, row: OpRow, adapter: Adapter, spec: OpSpec) -> None:
     await transition(s, row, OpState.COMPENSATING, actor="kernel")
     comp_ops = adapter.compensate(spec)
-    trace(s, row.id, "note", {"compensation_ops": [c.action for c in comp_ops]})
+    trace(s, row.id, row.tenant_id, "note", {"compensation_ops": [c.action for c in comp_ops]})
     
+    if row.state != OpState.COMPENSATING.value:
+        await transition(s, row, OpState.COMPENSATING, actor="kernel")
+
     # Execute compensations if returned
     for comp in comp_ops:
         res = await adapter.execute(comp, idem_key=comp.idem_key or f"comp-{row.id}", session=s)
-        trace(s, row.id, "compensation_call", {"action": comp.action, "ok": res.ok, **res.detail})
+        trace(s, row.id, row.tenant_id, "compensation_call", {"action": comp.action, "ok": res.ok, **res.detail})
 
     await transition(s, row, OpState.ROLLED_BACK, actor="kernel")
 
-    # SAGA ROLLBACK SEQUENCING:
+    # SAGA ROLLBACK SEQUENCING (DAG):
     if row.parent_op_id:
-        # Find the previous child that completed successfully (is in DONE state)
-        stmt = (
-            select(OpRow)
-            .where(
-                OpRow.parent_op_id == row.parent_op_id,
-                OpRow.sequence_order < row.sequence_order,
-                OpRow.state == OpState.DONE.value
-            )
-            .order_by(OpRow.sequence_order.desc())
-            .limit(1)
-        )
+        stmt = select(OpDependency.from_op_id).where(OpDependency.to_op_id == row.id)
         res = await s.execute(stmt)
-        prev_child = res.scalar_one_or_none()
-        if prev_child:
-            # Trigger compensation for the previous child
-            prev_adapter = REGISTRY[prev_child.domain]
-            prev_spec = _row_to_spec(prev_child)
-            await _compensate(s, prev_child, prev_adapter, prev_spec)
-        else:
-            # No more completed children! Transition parent to ROLLED_BACK via COMPENSATING
+        required_ids = res.scalars().all()
+        
+        for y_id in required_ids:
+            y_row = await s.get(OpRow, y_id)
+            if y_row and y_row.state == OpState.DONE.value:
+                # Check if all outbound dependents of Y are compensated (ROLLED_BACK, FAILED, or REJECTED)
+                stmt_dependents = select(OpRow).where(
+                    OpRow.id.in_(
+                        select(OpDependency.to_op_id).where(OpDependency.from_op_id == y_id)
+                    )
+                )
+                res_deps = await s.execute(stmt_dependents)
+                deps = res_deps.scalars().all()
+                if all(d.state in (OpState.ROLLED_BACK.value, OpState.FAILED.value, OpState.REJECTED.value) for d in deps):
+                    prev_adapter = REGISTRY[y_row.domain]
+                    prev_spec = _row_to_spec(y_row)
+                    await _compensate(s, y_row, prev_adapter, prev_spec)
+        
+        # Transition parent to ROLLED_BACK if no DONE children remain
+        stmt_done = select(OpRow).where(OpRow.parent_op_id == row.parent_op_id, OpRow.state == OpState.DONE.value)
+        res_done = await s.execute(stmt_done)
+        if not res_done.scalars().first():
             parent = await s.get(OpRow, row.parent_op_id)
-            if parent:
+            if parent and parent.state not in (OpState.COMPENSATING.value, OpState.ROLLED_BACK.value):
                 await transition(s, parent, OpState.COMPENSATING, actor="kernel")
                 await transition(s, parent, OpState.ROLLED_BACK, actor="kernel")
 

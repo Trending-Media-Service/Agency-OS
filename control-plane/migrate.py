@@ -10,9 +10,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from app.models import Base
 from app.database import DATABASE_URL
 
-async def migrate():
-    print(f"Connecting to {DATABASE_URL}...")
-    engine = create_async_engine(DATABASE_URL, echo=True)
+async def migrate(engine=None):
+    if engine is None:
+        print(f"Connecting to {DATABASE_URL}...")
+        engine = create_async_engine(DATABASE_URL, echo=True)
+        should_dispose = True
+    else:
+        should_dispose = False
 
     print("Creating tables...")
     async with engine.begin() as conn:
@@ -21,7 +25,11 @@ async def migrate():
 
         tables_with_tenant = [
             "brands", "ops", "audit_events", "trust_events",
-            "trust_snapshots", "cost_ledger", "connections"
+            "trust_snapshots", "cost_ledger", "connections",
+            "brand_properties", "cadences", "op_traces", "approvals",
+            "orders", "order_lines", "refunds", "fulfillment_costs",
+            "campaigns", "spend_facts", "touchpoints", "circuit_breakers",
+            "op_dependencies", "policy_versions"
         ]
 
         print("Enabling Row-Level Security (RLS)...")
@@ -45,7 +53,8 @@ async def migrate():
             """))
 
     print("Migration complete.")
-    await engine.dispose()
+    if should_dispose:
+        await engine.dispose()
 
 if __name__ == "__main__":
     asyncio.run(migrate())

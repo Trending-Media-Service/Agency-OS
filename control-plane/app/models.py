@@ -114,6 +114,7 @@ class OpTrace(Base):
     """Execution trace (§4.5): every gate, call, retry, with reasons."""
     __tablename__ = "op_traces"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     op_id: Mapped[str] = mapped_column(String(32), index=True)
     ts: Mapped[dt.datetime] = mapped_column(default=_now)
     kind: Mapped[str] = mapped_column(String(40))  # transition|gate|adapter_call|retry|note
@@ -123,6 +124,7 @@ class OpTrace(Base):
 class Approval(Base):
     __tablename__ = "approvals"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     op_id: Mapped[str] = mapped_column(String(32), index=True)
     actor: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(60))
@@ -208,6 +210,26 @@ class Connection(Base):
     secret_ref: Mapped[str] = mapped_column(String(255))
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+class OpDependency(Base):
+    """Stores dependency edges for DAG-based sagas [L4]."""
+    __tablename__ = "op_dependencies"
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    parent_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
+    from_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
+    to_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
+
+
+class PolicyVersion(Base):
+    """Dynamic versioned policy configurations [L5]."""
+    __tablename__ = "policy_versions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    rules_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+
 class ProcessedWebhookMessage(Base):
     __tablename__ = "processed_webhook_messages"
     message_id: Mapped[str] = mapped_column(String(100), primary_key=True)

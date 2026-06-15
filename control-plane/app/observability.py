@@ -2,6 +2,7 @@ from contextvars import ContextVar
 import datetime as dt
 import json
 import logging
+import os
 from typing import Any, Optional
 
 # Context variable to hold the trace ID for the current async task
@@ -53,8 +54,10 @@ def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
     root = logging.getLogger()
     root.setLevel(level)
     
-    # Remove existing handlers
+    # Remove existing handlers, keeping pytest handlers intact
     for h in root.handlers[:]:
+        if "pytest" in type(h).__module__:
+            continue
         root.removeHandler(h)
         
     handler = logging.StreamHandler()

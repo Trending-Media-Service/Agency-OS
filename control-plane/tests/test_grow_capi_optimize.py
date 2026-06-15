@@ -109,7 +109,7 @@ async def test_grow_capi_and_budget_reallocation_saga(grow_adapter, session: Asy
     assert any(e.kind == "verified_success" for e in events)
     
     # 5. Assert budget optimization proposed Saga Op and its child updates were created!
-    stmt_saga = select(OpRow).where(OpRow.action == "grow.reallocate_budget.apply", OpRow.state == "AWAITING_APPROVAL")
+    stmt_saga = select(OpRow).where(OpRow.action == "grow.budget.reallocate", OpRow.state == "AWAITING_APPROVAL")
     q_saga = await session.execute(stmt_saga)
     sagas = q_saga.scalars().all()
     assert len(sagas) == 1

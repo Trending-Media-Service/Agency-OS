@@ -87,7 +87,9 @@ def mock_terraform_cli():
                     vars_dict = json.load(f)
 
             # Determine recipe
-            if "db_connection_name" in vars_dict:
+            if "db_tier" in vars_dict:
+                recipe = "wp-serverless-mysql"
+            elif "db_connection_name" in vars_dict:
                 recipe = "n8n"
             elif "gtm_container_config" in vars_dict:
                 recipe = "sgtm-capi"
@@ -137,6 +139,8 @@ def mock_terraform_cli():
                     elif recipe == "postgres-db":
                         db_name = vars_dict.get("db_name", "brand-db")
                         mock_res.stdout = f"Plan: 1 to add, 0 to change, 0 to destroy.\n+ neon_database {db_name}\n"
+                    elif recipe == "wp-serverless-mysql":
+                        mock_res.stdout = "Plan: 3 to add, 0 to change, 0 to destroy.\n+ google_sql_database_instance mysql\n+ google_cloud_run_service wordpress\n+ google_storage_bucket uploads"
                     else:
                         mock_res.stdout = "Plan: 0 to add"
             elif subcomm == "apply":
@@ -193,6 +197,12 @@ def mock_terraform_cli():
                     outputs = {
                         "connection_uri": {"type": "string", "value": f"postgresql://aos-user:mock-pass@neon-host.in/{db_name}"},
                         "db_host": {"type": "string", "value": "neon-host.in"}
+                    }
+                elif recipe == "wp-serverless-mysql":
+                    outputs = {
+                        "service_url": {"type": "string", "value": "https://wordpress-app.run.app"},
+                        "db_instance_name": {"type": "string", "value": "wp-mysql-instance"},
+                        "uploads_bucket": {"type": "string", "value": "gs://wp-uploads-bucket"}
                     }
                 else:
                     outputs = {}

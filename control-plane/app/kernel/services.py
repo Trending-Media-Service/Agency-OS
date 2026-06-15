@@ -188,13 +188,13 @@ def _parse_diff_files(diff: str) -> list[str]:
                 files.append(file_a)
     return files
 
-def _protected_paths_check(op: OpSpec) -> Optional[Violation]:
+def _protected_paths_check(op: OpSpec, protected_paths: tuple[str, ...]) -> Optional[Violation]:
     diff = op.params.get("diff", "")
     modified_files = _parse_diff_files(diff)
 
     violated = []
     for f in modified_files:
-        for p in PROTECTED_PATHS:
+        for p in protected_paths:
             if f.startswith(p):
                 violated.append(f)
                 break
@@ -206,11 +206,11 @@ def _protected_paths_check(op: OpSpec) -> Optional[Violation]:
             attempted=", ".join(violated),
             delta="n/a",
             message=f"Attempted to modify protected paths: {', '.join(violated)}. "
-                    f"Protected prefixes are: {', '.join(PROTECTED_PATHS)}"
+                    f"Protected prefixes are: {', '.join(protected_paths)}"
         )
     return None
 
-def _dependency_allowlist_check(op: OpSpec) -> Optional[Violation]:
+def _dependency_allowlist_check(op: OpSpec, approved_dependencies: tuple[str, ...]) -> Optional[Violation]:
     diff = op.params.get("diff", "")
     in_package_json = False
     added_deps = []
@@ -230,11 +230,11 @@ def _dependency_allowlist_check(op: OpSpec) -> Optional[Violation]:
                 if dep_name not in ["name", "version", "description", "main", "license", "author"]:
                     added_deps.append(dep_name)
 
-    unapproved = [d for d in added_deps if d not in APPROVED_DEPENDENCIES]
+    unapproved = [d for d in added_deps if d not in approved_dependencies]
     if unapproved:
         return Violation(
             rule_id="build_dependency_allowlist",
-            limit=f"Only approved dependencies: {', '.join(APPROVED_DEPENDENCIES)}",
+            limit=f"Only approved dependencies: {', '.join(approved_dependencies)}",
             attempted=", ".join(unapproved),
             delta="n/a",
             message=f"Attempted to add unapproved dependencies: {', '.join(unapproved)}. "
@@ -278,6 +278,9 @@ class RulesetParams:
     grow_bid_cap_minor: int = 100_000                    # 1000.00 INR per adjustment
     grow_budget_transfer_cap_minor: int = 5_000_000      # 50,000.00 INR per action
     statutory_refund_limit_minor: int = 1_000_000         # 10,000.00 INR per refund
+    allowed_regions: tuple[str, ...] = ("asia-south1",)
+    approved_dependencies: tuple[str, ...] = ("react", "react-dom", "next", "tailwindcss", "lucide-react")
+    protected_paths: tuple[str, ...] = ("control-plane/", ".github/", "recipes/", "OWNERS", "METADATA")
 
 
 def build_rules(p: RulesetParams) -> list[Rule]:
@@ -317,10 +320,10 @@ def build_rules(p: RulesetParams) -> list[Rule]:
             applies=lambda op: op.action == "grow.budget.reallocate",
             check=lambda op: Violation(
                 rule_id="grow_budget_transfer_cap", limit=f"amount <= {p.grow_budget_transfer_cap_minor / 100:,.2f} INR",
-                attempted=f"{op.params.get('amount_minor', 0) / 100:.2f} INR",
-                delta=f"+{(op.params.get('amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
+                attempted=f"{op.params.get('transfer_amount_minor', 0) / 100:.2f} INR",
+                delta=f"+{(op.params.get('transfer_amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
                 message="Budget transfer exceeds the per-action cap.",
-            ) if op.params.get("amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+            ) if op.params.get("transfer_amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
         ),
         Rule(
             id="statutory_refund_gate",
@@ -337,13 +340,13 @@ def build_rules(p: RulesetParams) -> list[Rule]:
         Rule(
             id="build_protected_paths",
             applies=lambda op: op.domain == "build" and "diff" in op.params,
-            check=_protected_paths_check,
+            check=lambda op: _protected_paths_check(op, p.protected_paths),
             blocking=True
         ),
         Rule(
             id="build_dependency_allowlist",
             applies=lambda op: op.domain == "build" and "diff" in op.params,
-            check=_dependency_allowlist_check,
+            check=lambda op: _dependency_allowlist_check(op, p.approved_dependencies),
             blocking=True
         ),
         Rule(
@@ -357,17 +360,37 @@ def build_rules(p: RulesetParams) -> list[Rule]:
             applies=lambda op: op.domain == "provision" and (op.statutory or "region" in op.params),
             check=lambda op: Violation(
                 rule_id="statutory_region_lock",
-                limit="region == asia-south1",
+                limit=f"region in {p.allowed_regions}",
                 attempted=op.params.get("region", "unknown"),
                 delta="Non-compliant region",
-                message="Statutory isolation rule: Resource must be deployed in asia-south1 (India) for data residency and GST compliance."
-            ) if op.params.get("region") not in ("asia-south1", None) else None,
+                message=f"Statutory isolation rule: Resource must be deployed in one of {p.allowed_regions} for data residency and GST compliance."
+            ) if op.params.get("region") not in p.allowed_regions and op.params.get("region") is not None else None,
             blocking=False
         ),
     ]
 
 # Active ruleset. With default params this is the historical DEFAULT_RULES verbatim.
 DEFAULT_RULES: list[Rule] = build_rules(RulesetParams())
+
+
+async def load_active_rules(s: AsyncSession, tenant_id: str) -> list[Rule]:
+    from ..models import PolicyVersion
+    stmt = (
+        select(PolicyVersion)
+        .where(PolicyVersion.tenant_id == tenant_id)
+        .order_by(PolicyVersion.version.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    policy = res.scalar_one_or_none()
+    if policy:
+        rj = policy.rules_json.copy() if policy.rules_json else {}
+        for key in ("allowed_regions", "approved_dependencies", "protected_paths"):
+            if key in rj and isinstance(rj[key], list):
+                rj[key] = tuple(rj[key])
+        params = RulesetParams(**rj)
+        return build_rules(params)
+    return DEFAULT_RULES
 
 
 def evaluate_gates(op: OpSpec, rules: Optional[list[Rule]] = None) -> GateResult:
@@ -391,6 +414,8 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
     within gates, impact <= 2, never irreversible, never statutory-flagged."""
     if gate.blocked:
         return "BLOCKED"
+    if op.action == "grow.alert.dispatch":
+        return "AUTO"
     if tier == 0:
         return "BLOCKED"  # lockout: state-changing Ops do not proceed
     if (tier == 2 and not gate.requires_human and op.severity.impact <= 2
