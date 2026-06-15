@@ -26,6 +26,8 @@ Every operation in every pillar is the same primitive: a proposed **Op**, previe
 **Positioning:** The competitor is not Lovable, Vercel, or an ad tool. It is the traditional agency without leverage. Buyers are brands who want outcomes, not tools; they never touch code or consoles. The moat is the governance trail plus full-stack visibility (a brand we host and build for gives Grow first-party data no standalone ad tool can match).
 
 **North-star product metric:** median approval latency < 2 minutes from card delivery to decision. If approvals rot, the product dies regardless of intelligence.
+  - **Latency measurement:** Measured in milliseconds as the duration between card delivery (traced via `whatsapp_card_sent` trace, falling back to the `AWAITING_APPROVAL` state transition timestamp if the card trace is missing) and the `Approval` commit time.
+  - **Rollup Aggregation:** The control plane provides a tenant-scoped read-only aggregate endpoint (`/metrics/approval-latency`) computing count, median, p90, and count of expired cards within a selectable time window.
 
 ---
 
@@ -103,6 +105,15 @@ No Kafka, no Temporal. At this scale:
 
 OPA-style deterministic rules, versioned in the repo, evaluated at Preview and re-evaluated at Execute (state may have changed in between):
 
+- **Ruleset Parameterization:** Rule validation thresholds are parameterized via the `RulesetParams` dataclass. The ruleset can be dynamically initialized using parameters stored in control-plane database tables (`policy_versions`), allowing for versioned, dynamic, and replayable policy checks.
+- **DEFAULT_RULES:** Initialized with default `RulesetParams` corresponding to historical limits:
+  - `provision_cost_ceiling_minor` = 1,000,000 minor units (10,000.00 INR/month)
+  - `grow_bid_cap_minor` = 100,000 minor units (1,000.00 INR per adjustment)
+  - `grow_budget_transfer_cap_minor` = 5,000,000 minor units (50,000.00 INR per transfer)
+  - `statutory_refund_limit_minor` = 1,000,000 minor units (10,000.00 INR per refund)
+  - `allowed_regions` = `("asia-south1",)`
+  - `approved_dependencies` = `("react", "react-dom", "next", "tailwindcss", "lucide-react")`
+  - `protected_paths` = `("control-plane/", ".github/", "recipes/", "OWNERS", "METADATA")`
 - Per-domain rule packs (Provision: cost ceilings, region allowlist; Build: protected paths, dependency allowlist; Manage: write-scope limits; Grow: bid caps, budget-transfer caps, multiplier limits).
 - Every rejection produces a structured explanation: rule id, limit, attempted value, delta. This renders in the UI/WhatsApp verbatim — no generic errors.
 - Rule changes are themselves Ops (governed, audited).
