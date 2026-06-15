@@ -344,6 +344,59 @@ async def _decision_latency_ms(s: AsyncSession, op_id: str) -> Optional[int]:
     return max(0, int((now - start).total_seconds() * 1000))
 
 
+async def _record_shadow_decision(s: AsyncSession, row: OpRow, human_decision: str) -> None:
+    from ..models import TrustSnapshot, ShadowDecision
+    
+    # Only shadow when the brand-domain is not already Tier 2
+    stmt = (
+        select(TrustSnapshot.tier)
+        .where(
+            TrustSnapshot.tenant_id == row.tenant_id,
+            TrustSnapshot.brand_id == row.brand_id,
+            TrustSnapshot.domain == row.domain
+        )
+        .order_by(TrustSnapshot.ts.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    tier = res.scalar_one_or_none()
+    if tier == 2:
+        return
+
+    spec = _row_to_spec(row)
+    rules = await load_active_rules(s, row.tenant_id)
+    gate = evaluate_gates(spec, rules=rules)
+    
+    consent_violation = await check_consent_gate(s, row.tenant_id, spec)
+    if consent_violation:
+        gate.violations.append(consent_violation)
+        gate.blocked = True
+        
+    shadow_req = approval_requirement(spec, 2, gate)
+    
+    if shadow_req == "AUTO":
+        agreed = (human_decision == "approve")
+    elif shadow_req == "BLOCKED":
+        agreed = (human_decision != "approve")
+    else:  # HUMAN
+        agreed = True
+        
+    shadow = ShadowDecision(
+        tenant_id=row.tenant_id,
+        op_id=row.id,
+        human_decision=human_decision,
+        shadow_tier=2,
+        shadow_requirement=shadow_req,
+        agreed=agreed,
+        violations={
+            "violations": [v.as_dict() for v in gate.violations],
+            "requires_human": gate.requires_human,
+            "blocked": gate.blocked
+        }
+    )
+    s.add(shadow)
+
+
 async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role: str,
            surface: str, reason: Optional[str] = None,
            latency_ms: Optional[int] = None) -> None:
@@ -427,6 +480,12 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         await preview_and_gate(s, row, tier=tier, actor=actor)
     else:
         raise ValueError(f"unknown decision {decision!r}")
+
+    # Record shadow decision (autonomy confidence)
+    try:
+        await _record_shadow_decision(s, row, decision)
+    except Exception as e:
+        logger.exception(f"Failed to record shadow decision for op {row.id}: {e}")
 
 # ------------------------------------------------------------------- outbox
 

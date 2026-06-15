@@ -26,15 +26,25 @@ ADMIN_URL = os.getenv(
 
 
 def _pg_reachable(url: str) -> bool:
-    p = urlparse(url.replace("+asyncpg", ""))
-    try:
-        with socket.create_connection((p.hostname or "localhost", p.port or 5432), timeout=1):
+    import asyncio
+    async def check():
+        # Short timeout for connection attempt
+        engine = create_async_engine(url, connect_args={"timeout": 1.0}, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
             return True
-    except OSError:
+        except Exception:
+            return False
+        finally:
+            await engine.dispose()
+    try:
+        return asyncio.run(check())
+    except Exception:
         return False
 
 if not _pg_reachable(ADMIN_URL):
-    pytest.skip("postgres not reachable — RLS test runs in CI", allow_module_level=True)
+    pytest.skip("postgres not reachable or not responding — RLS test skipped", allow_module_level=True)
 
 APP_ROLE, APP_PW = "aos_app_rls", "aos_app_rls_pw"
 
