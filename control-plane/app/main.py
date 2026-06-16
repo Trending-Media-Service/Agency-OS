@@ -177,7 +177,7 @@ class AuditVerifyOut(BaseModel):
 
 
 @app.post("/tenants")
-async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_db)):
+async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
     t = Tenant(name=body.name)
     s.add(t)
     await s.flush()

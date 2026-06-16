@@ -84,8 +84,8 @@ export default function Home() {
       setNewTenantName("");
       setNewBrandName("");
       setShowCreateTenant(false);
-    } catch (err: any) {
-      setCreateTenantError(err.message || "Failed to create tenant");
+    } catch (err: unknown) {
+      setCreateTenantError(err instanceof Error ? err.message : "Failed to create tenant");
     } finally {
       setCreateTenantLoading(false);
     }
