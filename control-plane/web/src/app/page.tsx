@@ -55,10 +55,42 @@ interface Message {
 
 export default function Home() {
   const { request } = useApi();
-  const { tenantId, role, setRole } = useTenant();
+  const { tenantId, setTenantId, activeBrandId, role, setRole, knownTenants, addKnownTenant } = useTenant();
   const [activeTab, setActiveTab] = useState<"ops" | "connections" | "audit" | "safety">("ops");
   const [selectedOpId, setSelectedOpId] = useState<string | null>(null);
   
+  // Onboarding & Tenant Creation state
+  const [showCreateTenant, setShowCreateTenant] = useState(false);
+  const [newTenantName, setNewTenantName] = useState("");
+  const [newBrandName, setNewBrandName] = useState("");
+  const [createTenantLoading, setCreateTenantLoading] = useState(false);
+  const [createTenantError, setCreateTenantError] = useState<string | null>(null);
+
+  const handleCreateTenant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTenantName.trim() || !newBrandName.trim()) return;
+
+    setCreateTenantLoading(true);
+    setCreateTenantError(null);
+    try {
+      const res = await request("/tenants", "post", {
+        name: newTenantName.trim(),
+        brand_name: newBrandName.trim()
+      }) as { tenant_id: string; brand_id: string };
+      
+      addKnownTenant(res.tenant_id, newTenantName.trim(), res.brand_id, newBrandName.trim());
+      setTenantId(res.tenant_id);
+      
+      setNewTenantName("");
+      setNewBrandName("");
+      setShowCreateTenant(false);
+    } catch (err: unknown) {
+      setCreateTenantError(err instanceof Error ? err.message : "Failed to create tenant");
+    } finally {
+      setCreateTenantLoading(false);
+    }
+  };
+
   // Chat state
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
@@ -130,7 +162,7 @@ export default function Home() {
   const chatMutation = useMutation({
     mutationFn: async (text: string) => {
       const res = await request("/chat", "post", {
-        brand_id: "brand-bootstrap", // default brand context
+        brand_id: activeBrandId || "brand-bootstrap", // Dynamic brand context!
         text
       });
       return res as ChatResponse;
@@ -212,9 +244,33 @@ export default function Home() {
 
       {/* Header */}
       <header className="border-b border-zinc-900 px-8 py-4 flex items-center justify-between">
-        <div className="space-y-0.5">
-          <h1 className="text-base font-bold tracking-tight">Governance Console</h1>
-          <p className="text-[10px] text-zinc-500 font-mono">Tenant Context: {tenantId} | Role: {role}</p>
+        <div className="flex items-center space-x-6">
+          <div className="space-y-0.5">
+            <h1 className="text-base font-bold tracking-tight">Governance Console</h1>
+            <div className="flex items-center space-x-2 text-[10px] text-zinc-500 font-mono">
+              <span>Tenant:</span>
+              <select 
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5 text-zinc-300 focus:outline-none focus:border-zinc-700 font-sans"
+              >
+                {knownTenants.map((t) => (
+                  <option key={t.tenantId} value={t.tenantId}>
+                    {t.tenantName} ({t.tenantId})
+                  </option>
+                ))}
+              </select>
+              <span>| Role: {role}</span>
+            </div>
+          </div>
+          
+          <Button
+            size="sm"
+            onClick={() => setShowCreateTenant(true)}
+            className="bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-800 text-[10px] h-7 px-2.5 rounded gap-1"
+          >
+            + New Tenant
+          </Button>
         </div>
         
         <div className="flex items-center space-x-3">
@@ -418,9 +474,17 @@ export default function Home() {
                 {opsLoading && <div className="text-zinc-500 text-xs py-10 text-center">Loading operations queue...</div>}
                 
                 {ops && ops.length === 0 && (
-                  <div className="text-center py-16 border border-dashed border-zinc-800 rounded-lg">
-                    <p className="text-xs text-zinc-400">No active or proposed operations found.</p>
-                    <p className="text-[10px] text-zinc-600 mt-1">Submit an intent via conversational partner interface to see execution flows.</p>
+                  <div className="text-center py-16 border border-dashed border-zinc-800 rounded-lg max-w-md mx-auto space-y-3 bg-zinc-900/5 my-8">
+                    <p className="text-xs font-semibold text-zinc-300">No active or proposed operations</p>
+                    <p className="text-[10px] text-zinc-500 leading-relaxed">
+                      This governance console is ready! To bootstrap your first brand and spin up its GCP resources, type an onboarding intent in the chat on the left.
+                    </p>
+                    <div className="pt-2">
+                      <span className="text-[9px] uppercase tracking-wider text-zinc-600 font-bold block mb-1.5">Example Intent to Copy:</span>
+                      <code className="inline-block p-2 bg-zinc-950 text-emerald-400 rounded text-[9px] font-mono border border-zinc-900 select-all">
+                        onboard brand ableys ableys.in
+                      </code>
+                    </div>
                   </div>
                 )}
 
@@ -706,6 +770,68 @@ export default function Home() {
           onDecision={handleDecision}
           role={role}
         />
+      )}
+
+      {showCreateTenant && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-950 border border-zinc-900 rounded-lg p-6 max-w-sm w-full space-y-4 shadow-xl">
+            <div className="space-y-1">
+              <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">Onboard New Tenant</h3>
+              <p className="text-[10px] text-zinc-500">Create a clean tenant namespace and bootstrap its first brand.</p>
+            </div>
+            
+            <form onSubmit={handleCreateTenant} className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-zinc-400 font-semibold">Tenant Name</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="e.g. Ableys"
+                  value={newTenantName}
+                  onChange={(e) => setNewTenantName(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-zinc-400 font-semibold">First Brand Name</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="e.g. Ableys Retail"
+                  value={newBrandName}
+                  onChange={(e) => setNewBrandName(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
+                />
+              </div>
+
+              {createTenantError && (
+                <p className="text-[10px] text-red-400 font-mono">{createTenantError}</p>
+              )}
+
+              <div className="flex justify-end space-x-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setShowCreateTenant(false);
+                    setCreateTenantError(null);
+                  }}
+                  className="border-zinc-800 text-zinc-400 hover:bg-zinc-900 text-[10px] h-7 px-3 rounded"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={createTenantLoading}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-[10px] h-7 px-3 rounded disabled:opacity-50"
+                >
+                  {createTenantLoading ? "Creating..." : "Create Tenant"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

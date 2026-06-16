@@ -54,7 +54,10 @@ async def rls_db():
     admin = create_async_engine(ADMIN_URL, poolclass=NullPool)
     async with admin.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-    
+        # drop_all leaves Alembic's version table; without dropping it, run_migrate
+        # below would no-op and leave no tables (order-independent robustness).
+        await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
     # Run migration to create tables and enable RLS
     await run_migrate(admin)
 

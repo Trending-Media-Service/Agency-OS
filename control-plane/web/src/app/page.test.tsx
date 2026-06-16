@@ -10,8 +10,15 @@ const mockSetRole = vi.fn();
 vi.mock("@/contexts/TenantContext", () => ({
   useTenant: () => ({
     tenantId: "t1",
+    setTenantId: vi.fn(),
+    activeBrandId: "brand-bootstrap",
+    setActiveBrandId: vi.fn(),
     role: mockRole,
     setRole: mockSetRole,
+    knownTenants: [
+      { tenantId: "t1", tenantName: "Bootstrap Developer", brandId: "brand-bootstrap", brandName: "Bootstrap Brand" },
+    ],
+    addKnownTenant: vi.fn(),
   }),
 }));
 
