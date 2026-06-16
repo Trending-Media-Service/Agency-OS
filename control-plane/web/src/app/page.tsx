@@ -65,6 +65,7 @@ export default function Home() {
   const [newBrandName, setNewBrandName] = useState("");
   const [createTenantLoading, setCreateTenantLoading] = useState(false);
   const [createTenantError, setCreateTenantError] = useState<string | null>(null);
+  const [showDashboardOverride, setShowDashboardOverride] = useState(false);
 
   const handleCreateTenant = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -228,6 +229,81 @@ export default function Home() {
   };
 
   const trippedBreakers = breakers?.filter((b) => b.state.toUpperCase() === "OPEN") || [];
+
+  const isFirstRun = knownTenants.length <= 1 && tenantId === "t1";
+
+  if (isFirstRun && !showDashboardOverride) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-950 text-zinc-50 font-sans p-4">
+        <div className="max-w-md w-full bg-zinc-900/40 border border-zinc-900 rounded-xl p-8 space-y-6 shadow-2xl backdrop-blur-sm">
+          <div className="space-y-2 text-center">
+            <div className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-400 mb-2">
+              <Bot className="h-5 w-5" />
+            </div>
+            <h1 className="text-lg font-bold tracking-tight text-zinc-100">Welcome to Agency-OS</h1>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Before launching the governance console, bootstrap your operator workspace by creating your tenant namespace and first brand.
+            </p>
+          </div>
+
+          <form onSubmit={handleCreateTenant} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Tenant Name</label>
+              <input 
+                type="text"
+                required
+                placeholder="e.g. Trending Media Group"
+                value={newTenantName}
+                onChange={(e) => setNewTenantName(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">First Brand Name</label>
+              <input 
+                type="text"
+                required
+                placeholder="e.g. Ableys Retail"
+                value={newBrandName}
+                onChange={(e) => setNewBrandName(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
+              />
+            </div>
+
+            {createTenantError && (
+              <p className="text-[11px] text-red-400 font-mono text-center bg-red-950/20 border border-red-900/30 py-2 rounded">
+                {createTenantError}
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              disabled={createTenantLoading}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs h-9 rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {createTenantLoading ? "Bootstrapping Workspace..." : "Onboard & Launch Console"}
+            </Button>
+          </form>
+
+          <div className="relative flex py-2 items-center">
+            <div className="flex-grow border-t border-zinc-900"></div>
+            <span className="flex-shrink mx-4 text-[9px] uppercase tracking-widest text-zinc-600 font-bold">Or</span>
+            <div className="flex-grow border-t border-zinc-900"></div>
+          </div>
+
+          <div className="text-center">
+            <button
+              onClick={() => setShowDashboardOverride(true)}
+              className="text-[10px] text-zinc-500 hover:text-zinc-300 font-mono underline transition-colors"
+            >
+              Explore Developer Sandbox (t1) &rarr;
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col bg-zinc-950 text-zinc-50 font-sans">
