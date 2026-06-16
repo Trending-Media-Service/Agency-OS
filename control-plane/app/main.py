@@ -5,7 +5,7 @@ import datetime as dt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -178,12 +178,23 @@ class AuditVerifyOut(BaseModel):
 
 @app.post("/tenants")
 async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
-    t = Tenant(name=body.name)
+    import uuid
+    tenant_id = uuid.uuid4().hex
+    
+    # Set the tenant context in the session to satisfy RLS policies on tenants and brands tables
+    await s.execute(
+        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+        {"tenant_id": tenant_id}
+    )
+    
+    t = Tenant(id=tenant_id, name=body.name)
     s.add(t)
     await s.flush()
+    
     b = Brand(tenant_id=t.id, name=body.brand_name)
     s.add(b)
     await s.flush()
+    
     return {"tenant_id": t.id, "brand_id": b.id}
 
 
