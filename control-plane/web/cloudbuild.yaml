@@ -1,0 +1,11 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '--build-arg', 'NEXT_PUBLIC_API_URL=$_NEXT_PUBLIC_API_URL',
+    '-t', 'asia-south1-docker.pkg.dev/aos-control-plane-tmg/aos-docker/control-plane-web:latest',
+    '-f', 'Dockerfile',
+    '.'
+  ]
+images:
+- 'asia-south1-docker.pkg.dev/aos-control-plane-tmg/aos-docker/control-plane-web:latest'
