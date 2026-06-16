@@ -39,7 +39,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     if tenant_id and session.bind.dialect.name == "postgresql":
       # Local variable valid strictly inside the active transaction block
       await session.execute(
-          text("SET LOCAL app.current_tenant_id = :tenant_id"),
+          text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
           {"tenant_id": tenant_id},
       )
     try:

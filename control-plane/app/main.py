@@ -1279,7 +1279,7 @@ async def plugin_webhook(
         # Set app.current_tenant_id at the DB connection level for local RLS checks
         if s.bind.dialect.name == "postgresql":
             await s.execute(
-                text("SET LOCAL app.current_tenant_id = :tenant_id"),
+                text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
                 {"tenant_id": conn.tenant_id},
             )
 
