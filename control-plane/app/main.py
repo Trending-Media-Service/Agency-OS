@@ -1182,6 +1182,33 @@ async def get_brand_performance_score(brand_id: str, s: AsyncSession = Depends(g
     score = await calculate_brand_score(s, tid, brand_id)
     return {"brand_id": brand_id, "performance_score": score}
 
+@app.get("/metrics/brand-performance")
+async def brand_performance(
+    brand_id: str,
+    w_ux: float | None = Query(default=None, ge=0.0, le=10.0),
+    w_organic: float | None = Query(default=None, ge=0.0, le=10.0),
+    w_paid: float | None = Query(default=None, ge=0.0, le=10.0),
+    w_pr: float | None = Query(default=None, ge=0.0, le=10.0),
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    """Computes the composite Brand Performance Score. Advisory only; read-only."""
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found for tenant")
+
+    from app.profit.brand_score import calculate_brand_performance_score
+    score_report = await calculate_brand_performance_score(
+        s,
+        tenant_id=tid,
+        brand_id=brand_id,
+        w_ux=w_ux,
+        w_organic=w_organic,
+        w_paid=w_paid,
+        w_pr=w_pr
+    )
+    return score_report
+
 
 async def _find_connection(s: AsyncSession, provider: str, identifier: str) -> Connection | None:
     stmt = select(Connection).where(Connection.provider == provider)

@@ -231,6 +231,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/autonomy-confidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autonomy Confidence
+         * @description Computes autonomy confidence metrics (agreement rate, critical disagreements)
+         *     for shadow Tier-2 decisions against human Tier-1 decisions.
+         */
+        get: operations["autonomy_confidence_autonomy_confidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/policy-simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Policy Simulate
+         * @description Replays historical operations against proposed ruleset changes and returns the differences.
+         */
+        post: operations["policy_simulate_policy_simulate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/recipes/promote": {
         parameters: {
             query?: never;
@@ -439,6 +480,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/metrics/brand-performance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Brand Performance
+         * @description Computes the composite Brand Performance Score. Advisory only; read-only.
+         */
+        get: operations["brand_performance_metrics_brand_performance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/plugins/{provider}": {
         parameters: {
             query?: never;
@@ -585,6 +646,32 @@ export interface components {
             preview?: string | null;
             /** Cost Estimate */
             cost_estimate?: string | null;
+        };
+        /** PolicySimulateIn */
+        PolicySimulateIn: {
+            /** Proposed Params */
+            proposed_params: {
+                [key: string]: unknown;
+            };
+            /**
+             * Window Days
+             * @default 30
+             */
+            window_days: number | null;
+            /**
+             * Max Ops
+             * @default 500
+             */
+            max_ops: number;
+            /**
+             * Save Draft
+             * @default false
+             */
+            save_draft: boolean;
+            /** Note */
+            note?: string | null;
+            /** Created By */
+            created_by?: string | null;
         };
         /** RecipePromoteIn */
         RecipePromoteIn: {
@@ -1024,6 +1111,76 @@ export interface operations {
             };
         };
     };
+    autonomy_confidence_autonomy_confidence_get: {
+        parameters: {
+            query?: {
+                brand_id?: string | null;
+                domain?: string | null;
+                window_days?: number | null;
+            };
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    policy_simulate_policy_simulate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicySimulateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     promote_recipe_recipes_promote_post: {
         parameters: {
             query?: never;
@@ -1351,6 +1508,43 @@ export interface operations {
             path: {
                 brand_id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    brand_performance_metrics_brand_performance_get: {
+        parameters: {
+            query: {
+                brand_id: string;
+                w_ux?: number | null;
+                w_organic?: number | null;
+                w_paid?: number | null;
+                w_pr?: number | null;
+            };
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
