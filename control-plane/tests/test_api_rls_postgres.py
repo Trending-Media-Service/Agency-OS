@@ -52,10 +52,14 @@ async def setup_postgres_schema():
     """Initializes the postgres database schema, creates the RLS role, and grants permissions."""
     admin_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
     
-    # Reset database schema
+    # Reset database schema. NOTE: Base.metadata.drop_all does NOT drop Alembic's
+    # alembic_version table — if left behind, run_migrate (alembic upgrade head) becomes
+    # a no-op and the tables are never recreated, which breaks any later Postgres test
+    # that shares this database. Drop it explicitly so migrations always rebuild.
     async with admin_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-    
+        await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
     # Run migrations to create tables & enable RLS
     await run_migrate(admin_engine)
 
@@ -71,9 +75,12 @@ async def setup_postgres_schema():
 
     yield admin_engine
 
-    # Cleanup RLS role and tables
+    # Cleanup RLS role and tables. Drop alembic_version too so this test leaves a clean
+    # slate — otherwise the next Postgres test's run_migrate no-ops and its tables are
+    # missing (this is what was erroring test_rls.py with 'relation "tenants" does not exist').
     async with admin_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await conn.execute(text(f"DROP OWNED BY {APP_ROLE}"))
         await conn.execute(text(f"DROP ROLE IF EXISTS {APP_ROLE}"))
     await admin_engine.dispose()
