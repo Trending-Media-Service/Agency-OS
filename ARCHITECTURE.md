@@ -148,6 +148,9 @@ S = clamp( S_health − P_signals + S_history , 0, 100 )
 - `S_history` — dynamic component (max e.g. 30) earned from outcomes: verified successful Ops add; human overrides/rejections and verification failures subtract; **all events decay exponentially** (half-life ~30–60 days, tune per domain) so the score reflects recent behavior, not ancient history. Every human override reason is logged — that log *is* this component's training data.
 - All weights, caps, τ, and half-lives live in versioned config, with worked examples in tests. No magic numbers in code, no fabricated-precision examples in docs.
 - **Autonomy Confidence (Shadow Mode):** To safely evaluate potential promotions to Tier 2, human decisions (Tier 1) are audited against what the system *would* have done under shadow Tier-2 logic. If a human rejects an operation that shadow mode would have auto-approved, it is flagged as a critical disagreement (indicating unsafe auto-approval risk). This shadow evaluation is strictly advisory and does not affect operation execution.
+- **Advisory Brand Performance Score (B):** Separate from the safety-critical `trust_score` (S), the system exposes a composite performance score `B = w1*UX + w2*Organic + w3*Paid + w4*PR` representing overall channel execution quality.
+  - **Non-Gating Invariant:** The score `B` is strictly advisory. It **must never gate** execution, nor should it ever appear inside the path of `approval_requirement` or `evaluate_gates` checks. Altering weights or score values leaves all Op decision records byte-identical.
+  - **Read-Only:** The computation is entirely read-only and has no side effects on the database state or audit records.
 
 ### 4.5 Record layer
 
