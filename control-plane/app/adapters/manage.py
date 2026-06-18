@@ -314,6 +314,39 @@ class ManageAdapter(Adapter):
                 
             return ExecResult(ok=True, detail={"message": "Diagnostics clean. No error patterns detected."})
             
+        elif op.action == "manage.shopify.sync_order":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session required"})
+            from app.models import Order
+            order_id = op.params.get("order_id")
+            amount_minor = op.params.get("amount_minor")
+            stmt = select(Order).where(Order.id == str(order_id))
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            if not existing:
+                import datetime as dt
+                placed_at_raw = op.params.get("placed_at")
+                placed_at = None
+                if placed_at_raw:
+                    if isinstance(placed_at_raw, str):
+                        try:
+                            placed_at = dt.datetime.fromisoformat(placed_at_raw.replace("Z", "+00:00"))
+                        except ValueError:
+                            placed_at = dt.datetime.now(dt.timezone.utc)
+                    elif isinstance(placed_at_raw, (int, float)):
+                        placed_at = dt.datetime.fromtimestamp(placed_at_raw, dt.timezone.utc)
+                
+                order = Order(
+                    id=str(order_id),
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    amount_minor=int(amount_minor or 0),
+                    placed_at=placed_at or dt.datetime.now(dt.timezone.utc)
+                )
+                session.add(order)
+                logger.info(f"Synchronized Shopify order {order_id} to DB")
+            return ExecResult(ok=True, detail={"message": f"Order {order_id} synced"})
+            
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
     async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:

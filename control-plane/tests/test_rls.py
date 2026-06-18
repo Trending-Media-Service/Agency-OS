@@ -92,6 +92,10 @@ async def rls_db():
             "INSERT INTO orders (id, tenant_id, brand_id, amount_minor, currency, placed_at, created_at) VALUES "
             "('order-a', 'tenant-a', 'brand-wok', 100, 'INR', now(), now()), "
             "('order-b', 'tenant-b', 'brand-abl', 100, 'INR', now(), now())"))
+        await conn.execute(text(
+            "INSERT INTO outbox (id, tenant_id, payload, status, created_at) VALUES "
+            "('msg-a', 'tenant-a', '{}', 'pending', now()), "
+            "('msg-b', 'tenant-b', '{}', 'pending', now())"))
 
     p = urlparse(ADMIN_URL)
     app_url = f"postgresql+asyncpg://{APP_ROLE}:{APP_PW}@{p.hostname}:{p.port or 5432}{p.path}"
@@ -183,4 +187,12 @@ async def test_rls_blocks_cross_tenant_read(rls_db):
 
             res_order = await s.execute(text("SELECT id FROM orders WHERE id = 'order-b'"))
             assert res_order.scalar_one_or_none() is None
+
+            res_msg = await s.execute(text("SELECT id FROM outbox WHERE id = 'msg-b'"))
+            assert res_msg.scalar_one_or_none() is None
+
+
+async def test_rls_isolates_outbox(rls_db):
+    assert await _get_ids(rls_db, "outbox", "tenant-a") == ["msg-a"]
+    assert await _get_ids(rls_db, "outbox", "tenant-b") == ["msg-b"]
 
