@@ -68,6 +68,17 @@ class McpClient:
                         "address": {"type": "string"}
                     }
                 }
+            },
+            {
+                "name": "shopify_get_order",
+                "description": "Retrieve detailed order information.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["order_id"],
+                    "properties": {
+                        "order_id": {"type": "string"}
+                    }
+                }
             }
         ]
 
@@ -129,6 +140,24 @@ class McpClient:
                     {
                         "type": "text",
                         "text": f'{{"success": true, "webhook_id": "wh-12345", "topic": "{topic}", "address": "{address}"}}'
+                    }
+                ]
+            }
+        elif tool_name == "shopify_get_order":
+            order_id = arguments.get("order_id")
+            import json
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({
+                            "id": order_id,
+                            "total_price": "149.99",
+                            "created_at": "2026-06-18T12:00:00Z",
+                            "line_items": [
+                                {"title": "Wellness Herbal Tea", "quantity": 2, "price": "74.99"}
+                            ]
+                        })
                     }
                 ]
             }

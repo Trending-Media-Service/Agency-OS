@@ -181,3 +181,62 @@ async def test_dr_restore_drill_failure_simulated_verification(client, db_engine
         )
         res = await s.execute(stmt)
         assert res.scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
+async def test_dr_restore_drill_temporary_file_cleanup(db_engine):
+    import os
+    import tempfile
+    from app.adapters.dr import DRAdapter
+    from app.kernel.optypes import OpSpec, Severity, Reversibility
+    from app.models import Tenant, Brand
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        tenant = Tenant(name="DR Leak Tenant", hosting_tier="shared")
+        s.add(tenant)
+        await s.commit()
+        tenant_id = tenant.id
+        brand = Brand(tenant_id=tenant_id, name="Tanmatra DR Leak")
+        s.add(brand)
+        await s.commit()
+        brand_id = brand.id
+        
+        await audit_append(s, tenant_id=tenant_id, actor="tester", action="test.boot")
+        await s.commit()
+
+    adapter = DRAdapter()
+    op_spec = OpSpec(
+        id="unique-dr-op-id-abc",
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        domain="dr",
+        action="dr.restore_verify",
+        params={"brand_id": brand_id},
+        severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE)
+    )
+
+    temp_dir = tempfile.gettempdir()
+    expected_db_path = os.path.join(temp_dir, f"scratch_restore_{op_spec.id}.db")
+
+    # A. Run SUCCESS execution and verification
+    async with async_session() as s:
+        res = await adapter.execute(op_spec, "idem_dr_leak_1", session=s)
+        assert res.ok is True
+        assert os.path.exists(expected_db_path) is True
+        
+        verdict = await adapter.verify(op_spec, session=s)
+        assert verdict.ok is True
+        assert os.path.exists(expected_db_path) is False
+
+    # B. Run FAILED verification
+    async with async_session() as s:
+        res = await adapter.execute(op_spec, "idem_dr_leak_2", session=s)
+        assert res.ok is True
+        assert os.path.exists(expected_db_path) is True
+
+    op_spec.params["simulate_verify_failure"] = True
+    async with async_session() as s:
+        verdict = await adapter.verify(op_spec, session=s)
+        assert verdict.ok is False
+        assert os.path.exists(expected_db_path) is False

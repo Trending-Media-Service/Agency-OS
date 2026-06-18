@@ -1318,92 +1318,122 @@ async def plugin_webhook(
     x_shopify_topic: str | None = Header(default=None, alias="X-Shopify-Topic"),
     s: AsyncSession = Depends(get_worker_db)
 ):
-    plugin = get_plugin(provider)
-    if not plugin:
-        raise HTTPException(404, f"No plugin registered for provider: {provider}")
-
-    headers = dict(request.headers)
-    raw_body = await request.body()
     try:
-        import json
-        payload = json.loads(raw_body)
-    except json.JSONDecodeError:
-        payload = {}
+        plugin = get_plugin(provider)
+        if not plugin:
+            raise HTTPException(404, f"No plugin registered for provider: {provider}")
 
-    # 1. Resolve identifier
-    identifier = await plugin.resolve_connection_identifier(headers, payload)
-    if not identifier:
-        raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
+        headers = dict(request.headers)
+        raw_body = await request.body()
+        try:
+            import json
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            payload = {}
 
-    # 2. Find Connection (RLS is bypassed in get_worker_db session)
-    conn = await _find_connection(s, provider, identifier)
-    if not conn:
-        raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
+        # Deduplicate webhook using ProcessedWebhookMessage
+        from app.models import ProcessedWebhookMessage
+        from sqlalchemy.exc import IntegrityError
+        webhook_id = headers.get("x-shopify-webhook-id") or headers.get("x-webhook-id") or headers.get("x-request-id")
+        if webhook_id:
+            try:
+                async with s.begin_nested():
+                    s.add(ProcessedWebhookMessage(message_id=webhook_id))
+            except IntegrityError:
+                logger.info(f"Duplicate plugin webhook message ID ignored: {webhook_id}")
+                return {"status": "ignored", "detail": "duplicate webhook"}
 
-    # 3. Retrieve signature and secret key
-    signature = None
-    if provider == "shopify":
-        signature = x_shopify_hmac_sha256
-    if not signature:
-        signature = headers.get("x-signature")
+        # 1. Resolve identifier
+        identifier = await plugin.resolve_connection_identifier(headers, payload)
+        if not identifier:
+            raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
 
-    if not signature:
-        raise HTTPException(401, "Webhook signature header missing")
+        # 2. Find Connection (RLS is bypassed in get_worker_db session)
+        conn = await _find_connection(s, provider, identifier)
+        if not conn:
+            raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
 
-    # In production, secret would be retrieved from Secret Manager using conn.secret_ref.
-    # For local/testing, we use secret_ref directly as the secret key.
-    secret_key = conn.secret_ref
+        # Retrieve tenant to determine dedicated GCP project ID for secret isolation
+        stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+        res_tenant = await s.execute(stmt_tenant)
+        tenant = res_tenant.scalar_one_or_none()
+        gcp_project = tenant.gcp_project if tenant else None
 
-    # 4. Verify signature
-    if not await plugin.verify_signature(raw_body, signature, secret_key):
-        raise HTTPException(401, "Webhook signature mismatch")
+        # 3. Retrieve signature and secret key
+        signature = None
+        if provider == "shopify":
+            signature = x_shopify_hmac_sha256
+        if not signature:
+            signature = headers.get("x-signature")
 
-    # 5. Translate webhook payload to OpSpecs
-    event_type = x_shopify_topic or headers.get("x-event-type", "")
-    specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+        if not signature:
+            raise HTTPException(401, "Webhook signature header missing")
 
-    proposed_ops = []
-    # 6. Propose and gate each Op under the connection's tenant_id context
-    token = tenant_context.set(conn.tenant_id)
-    try:
-        # Set app.current_tenant_id at the DB connection level for local RLS checks
-        if s.bind.dialect.name == "postgresql":
-            await s.execute(
-                text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
-                {"tenant_id": conn.tenant_id},
-            )
+        # Resolve actual secret key from Secret Manager (Falling back to secret_ref if not in Secret Manager)
+        from app.services.secrets import SecretManagerClient
+        try:
+            secrets_client = SecretManagerClient(project_id=gcp_project)
+            secret_key = await secrets_client.read_secret(conn.secret_ref)
+        except ValueError as e:
+            logger.warning(f"Secret not found in registry: {e}. Falling back to literal ref.")
+            secret_key = conn.secret_ref
+        except Exception as e:
+            logger.error(f"Failed to read webhook secret from Secret Manager: {e}")
+            raise HTTPException(500, "Internal secret resolution error")
 
-        for spec in specs:
-            row = await loop.propose(s, spec, actor=f"webhook.{provider}")
-            
-            # Resolve trust snapshot to find tier
-            from app.models import TrustSnapshot
-            stmt_tier = (
-                select(TrustSnapshot.tier)
-                .where(
-                    TrustSnapshot.tenant_id == conn.tenant_id,
-                    TrustSnapshot.brand_id == conn.brand_id,
-                    TrustSnapshot.domain == spec.domain
+        # 4. Verify signature
+        if not await plugin.verify_signature(raw_body, signature, secret_key):
+            raise HTTPException(401, "Webhook signature mismatch")
+
+        # 5. Translate webhook payload to OpSpecs
+        event_type = x_shopify_topic or headers.get("x-event-type", "")
+        specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+
+        proposed_ops = []
+        # 6. Propose and gate each Op under the connection's tenant_id context
+        token = tenant_context.set(conn.tenant_id)
+        try:
+            # Set app.current_tenant_id at the DB connection level for local RLS checks
+            if s.bind.dialect.name == "postgresql":
+                await s.execute(
+                    text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+                    {"tenant_id": conn.tenant_id},
                 )
-                .order_by(TrustSnapshot.ts.desc())
-                .limit(1)
-            )
-            res_tier = await s.execute(stmt_tier)
-            tier = res_tier.scalar_one_or_none()
-            if tier is None:
-                tier = 1  # fallback to supervised
 
-            await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
-            proposed_ops.append(row.id)
-            
-        await s.commit()
-    except Exception:
-        await s.rollback()
+            for spec in specs:
+                row = await loop.propose(s, spec, actor=f"webhook.{provider}")
+                
+                # Resolve trust snapshot to find tier
+                from app.models import TrustSnapshot
+                stmt_tier = (
+                    select(TrustSnapshot.tier)
+                    .where(
+                        TrustSnapshot.tenant_id == conn.tenant_id,
+                        TrustSnapshot.brand_id == conn.brand_id,
+                        TrustSnapshot.domain == spec.domain
+                    )
+                    .order_by(TrustSnapshot.ts.desc())
+                    .limit(1)
+                )
+                res_tier = await s.execute(stmt_tier)
+                tier = res_tier.scalar_one_or_none()
+                if tier is None:
+                    tier = 1  # fallback to supervised
+
+                await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
+                proposed_ops.append(row.id)
+                
+            await s.commit()
+        except Exception:
+            await s.rollback()
+            raise
+        finally:
+            tenant_context.reset(token)
+
+        return {"status": "accepted", "proposed_ops": proposed_ops}
+    except Exception as e:
+        logger.exception("WEBHOOK EXCEPTION ENCOUNTERED:")
         raise
-    finally:
-        tenant_context.reset(token)
-
-    return {"status": "accepted", "proposed_ops": proposed_ops}
 
 
 @app.get("/debug/db", dependencies=[Depends(verify_operator_auth)])
