@@ -47,9 +47,9 @@ def get_marketing_client(provider: str, token: Optional[str] = None, config: Opt
             from app.services.google_ads import GoogleAdsClient
             return GoogleAdsClient(token=token, config=config)
             
-        # Meta Ads is not implemented yet in this step (P3-1).
-        # Raise NotImplementedError until P3-2.
-        raise NotImplementedError(f"Real integration for provider {provider} is not implemented in this phase")
+        if provider == "meta-ads":
+            from app.services.meta_ads import MetaAdsClient
+            return MetaAdsClient(token=token, config=config)
 
     # 3. For any unknown providers, raise ValueError
     raise ValueError(f"Unsupported marketing provider: {provider}")
