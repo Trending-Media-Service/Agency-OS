@@ -192,3 +192,56 @@ async def test_manage_adapter_backup_execute_delete(adapter, backup_op):
     res = await adapter.execute(delete_op, "idem_delete_123")
     assert res.ok is True
     assert "deleted" in res.detail["message"]
+
+
+async def test_manage_adapter_backup_degraded_flow(adapter, backup_op, monkeypatch):
+    from app.services.storage import GcsClient
+    import os
+    import shutil
+    
+    # Simulate production mode with GCS outage
+    gcs_instance = GcsClient()
+    gcs_instance._client = object() # Mock active GCP client
+    
+    async def mock_upload(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+        
+    async def mock_exists(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+        
+    monkeypatch.setattr(gcs_instance, "upload_from_string", mock_upload)
+    monkeypatch.setattr(gcs_instance, "blob_exists", mock_exists)
+    monkeypatch.setattr("app.adapters.manage.GcsClient", lambda *a, **kw: gcs_instance)
+    
+    # Clear fallback directory
+    fallback_dir = os.path.join(os.path.dirname(__file__), "../scratch/fallback_backups")
+    if os.path.exists(fallback_dir):
+        shutil.rmtree(fallback_dir)
+        
+    # 1. Execute backup (should fallback to local disk and return degraded success)
+    res = await adapter.execute(backup_op, "idem_backup_degraded_123")
+    assert res.ok is True
+    assert res.detail["storage_status"] == "degraded"
+    assert "fallback_file" in res.detail
+    fallback_file = res.detail["fallback_file"]
+    assert os.path.exists(fallback_file)
+    
+    # 2. Verify backup (should check fallback storage and return degraded success)
+    verdict = await adapter.verify(backup_op)
+    assert verdict.ok is True
+    assert verdict.checks["file_exists_in_fallback"] is True
+    assert verdict.checks["storage_status"] == "degraded"
+    
+    # 3. Compensate (delete)
+    compensations = adapter.compensate(backup_op)
+    delete_op = compensations[0]
+    
+    async def mock_delete(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+    monkeypatch.setattr(gcs_instance, "delete_blob", mock_delete)
+    
+    # Delete should clean up fallback file and return degraded success
+    res_del = await adapter.execute(delete_op, "idem_delete_degraded_123")
+    assert res_del.ok is True
+    assert res_del.detail["storage_status"] == "degraded"
+    assert not os.path.exists(fallback_file)

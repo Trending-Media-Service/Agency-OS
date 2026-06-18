@@ -273,7 +273,9 @@ async def client(db_engine):
         return async_session
 
     from app.services.secrets import SecretManagerClient
+    from app.services.storage import GcsClient
     SecretManagerClient.clear()
+    GcsClient.clear()
     print("DEBUG APP ID IN CONFTEST:", id(mainmod.app))
     mainmod.app.dependency_overrides[get_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_db] = override_get_db
@@ -283,6 +285,7 @@ async def client(db_engine):
         yield ac
     mainmod.app.dependency_overrides.clear()
     SecretManagerClient.clear()
+    GcsClient.clear()
 
 
 @pytest.fixture(autouse=True)
