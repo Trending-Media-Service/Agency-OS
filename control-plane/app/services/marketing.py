@@ -1,8 +1,55 @@
 import logging
 import json
 import os
+from typing import Protocol, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+class MarketingClient(Protocol):
+    """Universal interface for marketing channel integrations (§5)."""
+    provider: str
+
+    async def create_campaign(self, campaign_id: str, name: str, budget_minor: int, bid_minor: int) -> bool:
+        ...
+
+    async def update_campaign(
+        self, 
+        campaign_id: str, 
+        budget_minor: Optional[int] = None, 
+        bid_minor: Optional[int] = None, 
+        status: Optional[str] = None
+    ) -> bool:
+        ...
+
+    async def delete_campaign(self, campaign_id: str) -> bool:
+        ...
+
+    async def get_campaign(self, campaign_id: str) -> Optional[dict]:
+        ...
+
+    async def get_performance(self, campaign_id: str) -> Optional[dict]:
+        ...
+
+
+def get_marketing_client(provider: str, token: Optional[str] = None) -> MarketingClient:
+    """Factory to resolve the active marketing client for a provider."""
+    # 1. Check for test environment or explicit mock provider
+    env = os.getenv("AOS_ENV", "development")
+    if env == "test" or provider == "mock":
+        return MockMarketingClient(provider=provider)
+
+    # 2. If no credentials (token) are provided for real channels, raise ValueError
+    if provider in ("google-ads", "meta-ads"):
+        if not token:
+            raise ValueError(f"Credentials (token) are required for provider: {provider}")
+        
+        # In this phase (P2-2), real integrations are not implemented yet.
+        # Raise NotImplementedError as a placeholder until P3.
+        raise NotImplementedError(f"Real integration for provider {provider} is not implemented in this phase")
+
+    # 3. For any unknown providers, raise ValueError
+    raise ValueError(f"Unsupported marketing provider: {provider}")
+
 
 class MockMarketingClient:
     # Persistent storage file in the workspace scratch directory

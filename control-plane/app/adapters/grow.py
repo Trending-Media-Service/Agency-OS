@@ -5,7 +5,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
 from app.kernel.loop import Adapter
-from app.services.marketing import MockMarketingClient
+from app.services.marketing import get_marketing_client
 from app.models import Connection, Campaign
 from app.services.secrets import SecretManagerClient
 
@@ -372,7 +372,33 @@ class GrowAdapter(Adapter):
             await session.execute(stmt_del)
             return ExecResult(ok=True, detail={"message": f"Connection to {provider} removed from DB and Secret Manager"})
 
-        client = MockMarketingClient(provider=op.params.get("provider", "google-ads"))
+        # Resolve credentials from the brand's active connection
+        provider = op.params.get("provider", "google-ads")
+        token = None
+        if session:
+            stmt_conn = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res_conn = await session.execute(stmt_conn)
+            conn = res_conn.scalar_one_or_none()
+            if conn:
+                # Retrieve tenant to determine dedicated GCP project ID for secret isolation
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                try:
+                    secrets_client = SecretManagerClient(project_id=gcp_project)
+                    token = await secrets_client.read_secret(conn.secret_ref)
+                except Exception as e:
+                    logger.warning(f"Failed to read marketing secret from Secret Manager: {e}. Falling back to raw ref.")
+                    token = conn.secret_ref
+
+        client = get_marketing_client(provider=provider, token=token)
         campaign_id = op.params.get("campaign_id")
 
         if op.action == "grow.campaign.create":
@@ -507,7 +533,7 @@ class GrowAdapter(Adapter):
             return VerifyResult(ok=True, checks={"disconnected": True})
 
         campaign_id = op.params.get("campaign_id")
-        client = MockMarketingClient(provider=op.params.get("provider", "google-ads"))
+        client = get_marketing_client(provider=op.params.get("provider", "google-ads"))
 
         if op.action == "grow.campaign.create":
             try:
