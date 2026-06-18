@@ -158,6 +158,15 @@ async def _get_op_traces_op_ids(sessions, tenant_id):
             return [r[0] for r in rows]
 
 
+async def _get_outbox_op_ids(sessions, tenant_id):
+    async with sessions() as s:
+        async with s.begin():
+            if tenant_id is not None:
+                await s.execute(text("SELECT set_config('app.current_tenant_id', :t, true)"), {"t": tenant_id})
+            rows = await s.execute(text("SELECT op_id FROM outbox ORDER BY op_id"))
+            return [r[0] for r in rows]
+
+
 async def test_rls_isolates_op_traces(rls_db):
     assert await _get_op_traces_op_ids(rls_db, "tenant-a") == ["op-a"]
     assert await _get_op_traces_op_ids(rls_db, "tenant-b") == ["op-b"]
@@ -190,15 +199,6 @@ async def test_rls_blocks_cross_tenant_read(rls_db):
 
             res_msg = await s.execute(text("SELECT op_id FROM outbox WHERE op_id = 'msg-b'"))
             assert res_msg.scalar_one_or_none() is None
-
-
-async def _get_outbox_op_ids(sessions, tenant_id):
-    async with sessions() as s:
-        async with s.begin():
-            if tenant_id is not None:
-                await s.execute(text("SELECT set_config('app.current_tenant_id', :t, true)"), {"t": tenant_id})
-            rows = await s.execute(text("SELECT op_id FROM outbox ORDER BY op_id"))
-            return [r[0] for r in rows]
 
 
 async def test_rls_isolates_outbox(rls_db):
