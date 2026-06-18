@@ -10,10 +10,22 @@ class TraceMiddleware(BaseHTTPMiddleware):
   """Generates or propagates trace IDs to coordinate logs and telemetry across service hops."""
 
   async def dispatch(self, request: Request, call_next):
-    trace_id = request.headers.get("X-Trace-ID") or request.headers.get("traceparent")
+    raw_trace_id = request.headers.get("X-Trace-ID") or request.headers.get("traceparent") or request.headers.get("x-cloud-trace-context")
+    trace_id = None
+    
+    if raw_trace_id:
+      # 1. Parse W3C traceparent: 00-trace_id-span_id-flags
+      if raw_trace_id.startswith("00-") and len(raw_trace_id.split("-")) == 4:
+        trace_id = raw_trace_id.split("-")[1]
+      # 2. Parse X-Cloud-Trace-Context: trace_id/span_id;o=options
+      elif "/" in raw_trace_id:
+        trace_id = raw_trace_id.split("/")[0]
+      else:
+        trace_id = raw_trace_id[:32]  # fallback truncate
+        
     if not trace_id:
       trace_id = f"tr-{uuid.uuid4().hex[:16]}"
-
+      
     token = trace_context.set(trace_id)
     try:
       response = await call_next(request)

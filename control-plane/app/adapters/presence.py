@@ -170,7 +170,7 @@ class PresenceAdapter(Adapter):
                 alert_row = await loop.propose(session, alert_op, actor="presence_audit")
                 await loop.transition(session, alert_row, OpState.PREVIEWED, actor="presence_audit")
                 await loop.transition(session, alert_row, OpState.APPROVED, actor="presence_audit")
-                loop.enqueue(session, alert_row.id)
+                loop.enqueue(session, alert_row.id, alert_row.tenant_id)
 
             return ExecResult(ok=True, detail={"message": "GMC Audit completed", "status": prop.status, "findings": prop.findings})
 

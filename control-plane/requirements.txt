@@ -14,3 +14,4 @@ alembic==1.14.1
 smart-open==7.1.0
 google-meridian
 playwright==1.49.0
+google-cloud-storage==3.11.0

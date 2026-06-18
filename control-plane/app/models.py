@@ -191,6 +191,7 @@ class OutboxItem(Base):
     __tablename__ = "outbox"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     op_id: Mapped[str] = mapped_column(String(32), unique=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)  # PENDING|IN_FLIGHT|DONE|DEAD
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[dt.datetime] = mapped_column(default=_now)

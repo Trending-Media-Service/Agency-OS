@@ -8,6 +8,7 @@ import yaml
 import importlib.util
 import uuid
 import re
+import asyncio
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -336,8 +337,8 @@ class ProvisionAdapter(Adapter):
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
             
-            # Run init
-            code, out, err = self._run_terraform(op, self._get_init_args(op), temp_dir)
+            # Run init (non-blocking)
+            code, out, err = await asyncio.to_thread(self._run_terraform, op, self._get_init_args(op), temp_dir)
             if code != 0:
                 return ExecResult(ok=False, detail={"error": f"Init failed: {err}"})
                 
@@ -345,17 +346,17 @@ class ProvisionAdapter(Adapter):
                 # Copy plan to temp dir and apply it
                 shutil.copy2(plan_file_path, os.path.join(temp_dir, "tfplan"))
                 logger.info(f"Applying saved terraform plan for Op {op.id}")
-                code, out, err = self._run_terraform(op, ["apply", "-input=false", "-no-color", "tfplan"], temp_dir)
+                code, out, err = await asyncio.to_thread(self._run_terraform, op, ["apply", "-input=false", "-no-color", "tfplan"], temp_dir)
                 try:
                     os.remove(plan_file_path)
                 except OSError:
                     pass
             else:
-                # Fallback: run apply/destroy with auto-approve
+                # Fallback: run apply/destroy with auto-approve (non-blocking)
                 if verb in ("create", "apply"):
-                    code, out, err = self._run_terraform(op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
+                    code, out, err = await asyncio.to_thread(self._run_terraform, op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
                 elif verb == "destroy":
-                    code, out, err = self._run_terraform(op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)
+                    code, out, err = await asyncio.to_thread(self._run_terraform, op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)
                 else:
                     return ExecResult(ok=False, detail={"error": f"Unknown action verb: {verb}"})
                 
@@ -365,7 +366,7 @@ class ProvisionAdapter(Adapter):
             # Read outputs
             outputs = {}
             if verb == "create":
-                code_out, out_out, err_out = self._run_terraform(op, ["output", "-json"], temp_dir)
+                code_out, out_out, err_out = await asyncio.to_thread(self._run_terraform, op, ["output", "-json"], temp_dir)
                 if code_out == 0:
                     try:
                         tf_outputs = json.loads(out_out)
@@ -420,12 +421,12 @@ class ProvisionAdapter(Adapter):
         with tempfile.TemporaryDirectory() as temp_dir:
             self._prepare_dir(op, temp_dir)
             # Run init
-            code, out, err = self._run_terraform(op, self._get_init_args(op), temp_dir)
+            code, out, err = await asyncio.to_thread(self._run_terraform, op, self._get_init_args(op), temp_dir)
             if code != 0:
                 return VerifyResult(ok=False, checks={}, detail={"error": f"Init failed for verify: {err}"})
 
-            # Read outputs
-            code_out, out_out, err_out = self._run_terraform(op, ["output", "-json"], temp_dir)
+            # Read outputs (non-blocking)
+            code_out, out_out, err_out = await asyncio.to_thread(self._run_terraform, op, ["output", "-json"], temp_dir)
             if code_out != 0:
                 return VerifyResult(ok=False, checks={}, detail={"error": f"Failed to read outputs: {err_out}"})
                 
@@ -541,7 +542,7 @@ terraform {
                 var_values["custom_domain"] = op.params["domain"]
             elif key == "project_id" and "project_id" not in op.params:
                 resolved = self._resolve_project_id_from_baseline(op)
-                var_values["project_id"] = resolved or f"aos-brand-{op.brand_id}"
+                var_values["project_id"] = resolved or os.getenv("GCP_PROJECT") or f"aos-brand-{op.brand_id}"
                 
         vars_file = os.path.join(temp_dir, "terraform.tfvars.json")
         logger.info(f"TFVARS generated for Op {op.action}: {json.dumps(var_values)}")
@@ -554,17 +555,24 @@ terraform {
         if not state_bucket:
             return None
             
-        gcs_path = f"gs://{state_bucket}/provision/{op.tenant_id}/{op.brand_id}/brand-baseline/default/state/default.tfstate"
         try:
-            res = subprocess.run(["gsutil", "cat", gcs_path], capture_output=True, text=True, check=False)
-            if res.returncode == 0:
-                state_data = json.loads(res.stdout)
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(state_bucket)
+            blob_path = f"provision/{op.tenant_id}/{op.brand_id}/brand-baseline/default/state/default.tfstate"
+            blob = bucket.blob(blob_path)
+            
+            if blob.exists():
+                content = blob.download_as_text()
+                state_data = json.loads(content)
                 project_id = state_data.get("outputs", {}).get("project_id", {}).get("value")
                 if project_id:
                     logger.info(f"Resolved parent project ID '{project_id}' from baseline state in GCS for brand '{op.brand_id}'")
                     return project_id
+            else:
+                logger.warning(f"Baseline state file not found in GCS: gs://{state_bucket}/{blob_path}")
         except Exception as e:
-            logger.warning(f"Failed to resolve project ID from GCS baseline state: {e}")
+            logger.warning(f"Failed to resolve project ID from GCS baseline state using client library: {e}")
         return None
 
     def _get_init_args(self, op: OpSpec) -> list[str]:

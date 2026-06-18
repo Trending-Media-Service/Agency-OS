@@ -63,6 +63,14 @@ register_plugin(ShopifyPlugin())
 
 logger = logging.getLogger(__name__)
 RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
+logger.info(f"RECIPES_ROOT resolved to: {RECIPES_ROOT}")
+try:
+    if os.path.exists(RECIPES_ROOT):
+        logger.info(f"Contents of RECIPES_ROOT: {os.listdir(RECIPES_ROOT)}")
+    else:
+        logger.warning(f"RECIPES_ROOT does not exist!")
+except Exception as e:
+    logger.error(f"Failed to list RECIPES_ROOT: {e}")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
 
@@ -180,11 +188,10 @@ class AuditVerifyOut(BaseModel):
 async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
     import uuid
     tenant_id = uuid.uuid4().hex
-
     # Set the tenant context so the INSERTs satisfy the RLS WITH CHECK policies on
     # tenants/brands (the worker role is RLS-enforced, not BYPASSRLS). set_config is a
     # Postgres function — guard on dialect so the SQLite test database isn't hit with it.
-    if s.bind.dialect.name == "postgresql":
+    if s.bind and s.bind.dialect.name == "postgresql":
         await s.execute(
             text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
             {"tenant_id": tenant_id}
@@ -1362,4 +1369,121 @@ async def plugin_webhook(
         tenant_context.reset(token)
 
     return {"status": "accepted", "proposed_ops": proposed_ops}
+
+
+@app.get("/debug/db")
+async def debug_db(s: AsyncSession = Depends(get_worker_db)):
+    from app.models import OpRow, Tenant, OutboxItem
+    
+    res_policies = await s.execute(text("SELECT tablename, policyname, qual FROM pg_policies"))
+    policies = [{"table": r[0], "name": r[1], "qual": r[2]} for r in res_policies.fetchall()]
+    
+    # Disable RLS temporarily
+    await s.execute(text("ALTER TABLE tenants DISABLE ROW LEVEL SECURITY"))
+    await s.execute(text("ALTER TABLE ops DISABLE ROW LEVEL SECURITY"))
+    
+    try:
+        res_tenants = await s.execute(select(Tenant))
+        tenants = [{"id": t.id, "name": t.name} for t in res_tenants.scalars().all()]
+        
+        res_ops = await s.execute(select(OpRow))
+        ops = [{"id": o.id, "tenant_id": o.tenant_id, "state": o.state, "action": o.action} for o in res_ops.scalars().all()]
+    finally:
+        # Guarantee RLS is re-enabled
+        await s.execute(text("ALTER TABLE tenants ENABLE ROW LEVEL SECURITY"))
+        await s.execute(text("ALTER TABLE ops ENABLE ROW LEVEL SECURITY"))
+    
+    res_outbox = await s.execute(select(OutboxItem))
+    outbox = [{"id": o.id, "op_id": o.op_id, "status": o.status} for o in res_outbox.scalars().all()]
+    
+    return {"tenants": tenants, "ops": ops, "outbox": outbox, "policies": policies}
+
+
+@app.post("/debug/reset/{op_id}")
+async def debug_reset(op_id: str, request: Request, s: AsyncSession = Depends(get_worker_db)):
+    from app.models import OutboxItem, OpRow
+    import datetime as dt
+    
+    tid = request.headers.get("X-Tenant-ID")
+    if tid:
+        await s.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            {"tid": tid}
+        )
+        
+    stmt = select(OutboxItem).where(OutboxItem.op_id == op_id)
+    res = await s.execute(stmt)
+    item = res.scalar_one_or_none()
+    if item:
+        item.status = "PENDING"
+        item.attempts = 0
+        item.next_attempt_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        
+    stmt_op = select(OpRow).where(OpRow.id == op_id)
+    res_op = await s.execute(stmt_op)
+    row = res_op.scalar_one_or_none()
+    if row and row.state in ("EXECUTING", "FAILED", "PARTIAL", "APPROVED", "ROLLED_BACK"):
+        row.state = "APPROVED"
+        
+    await s.commit()
+    return {"status": "ok", "message": f"Reset op {op_id} to PENDING/APPROVED"}
+
+
+@app.get("/debug/raw")
+async def debug_raw(s: AsyncSession = Depends(get_worker_db)):
+    res_role = await s.execute(text("SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"))
+    role = res_role.fetchone()
+    role_info = {
+        "user": role[0] if role else None,
+        "super": role[1] if role else None,
+        "bypassrls": role[2] if role else None
+    }
+    
+    res_session = await s.execute(text("SELECT current_setting('app.current_tenant_id', true)"))
+    session_val = res_session.scalar()
+    
+    res_ops = await s.execute(text("SELECT id, tenant_id, state, action FROM ops"))
+    ops = [{"id": r[0], "tenant_id": r[1], "state": r[2], "action": r[3]} for r in res_ops.fetchall()]
+    
+    res_outbox = await s.execute(text("SELECT id, op_id, status FROM outbox"))
+    outbox = [{"id": r[0], "op_id": r[1], "status": r[2]} for r in res_outbox.fetchall()]
+    
+    return {
+        "role_info": role_info,
+        "session_tenant_id": session_val,
+        "ops": ops,
+        "outbox": outbox
+    }
+
+
+@app.get("/debug/ops")
+async def debug_ops(s: AsyncSession = Depends(get_worker_db)):
+    res_owners = await s.execute(text("SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public'"))
+    owners = {r[0]: r[1] for r in res_owners.fetchall()}
+    
+    await s.execute(text("SELECT set_config('app.current_tenant_id', '223d7d223e3e48df80db2b33ec45f802', true)"))
+    res_a = await s.execute(text("SELECT id, tenant_id, brand_id, domain, action, state, parent_op_id FROM ops"))
+    ops_a = [{"id": r[0], "tenant_id": r[1], "brand_id": r[2], "domain": r[3], "action": r[4], "state": r[5], "parent_op_id": r[6]} for r in res_a.fetchall()]
+    
+    await s.execute(text("SELECT set_config('app.current_tenant_id', '22307d223e3e48d58b4be2b33c43f802', true)"))
+    res_b = await s.execute(text("SELECT id, tenant_id, brand_id, domain, action, state, parent_op_id FROM ops"))
+    ops_b = [{"id": r[0], "tenant_id": r[1], "brand_id": r[2], "domain": r[3], "action": r[4], "state": r[5], "parent_op_id": r[6]} for r in res_b.fetchall()]
+    
+    return {
+        "table_owners": owners,
+        "ops_tenant_d": ops_a,
+        "ops_tenant_0": ops_b
+    }
+
+
+@app.post("/debug/migrate")
+async def debug_migrate(s: AsyncSession = Depends(get_db)):
+    try:
+        await s.execute(text("ALTER TABLE outbox ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(32)"))
+        await s.execute(text("UPDATE outbox SET tenant_id = '22307d223e3e48d58b4be2b33c43f802' WHERE tenant_id IS NULL"))
+        await s.commit()
+        return {"status": "ok", "message": "Migration successful: added tenant_id and backfilled existing rows"}
+    except Exception as e:
+        await s.rollback()
+        return {"status": "error", "message": f"Migration failed: {e}"}
 

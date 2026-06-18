@@ -10,7 +10,7 @@ import re
 import sentry_sdk
 from typing import Optional, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Approval, OpRow, OpTrace, OutboxItem, TrustEvent, CircuitBreakerRow, OpDependency
@@ -140,7 +140,7 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
                    detail={"tier": tier})
         s.add(Approval(op_id=row.id, tenant_id=row.tenant_id, actor="kernel", role="tier2-auto",
                        surface="auto", decision="approve"))
-        enqueue(s, row.id)
+        enqueue(s, row.id, row.tenant_id)
     else:
         await transition(s, row, OpState.AWAITING_APPROVAL, actor=actor, detail={"tier": tier})
     return gate, requirement
@@ -160,7 +160,7 @@ async def check_cooldown(s: AsyncSession, row: OpRow, window_seconds: int = 8640
         else:
             target_id = json.dumps(row.params, sort_keys=True)
 
-        since_time = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=window_seconds)
+        since_time = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=window_seconds)).replace(tzinfo=None)
 
         # Query recent similar DONE ops: same brand, same domain, same action, after since_time
         stmt = select(OpRow).where(
@@ -436,10 +436,10 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
             
             for child in children:
                 if child.id not in non_root_ids:
-                    enqueue(s, child.id)
+                    enqueue(s, child.id, child.tenant_id)
         else:
             await transition(s, row, OpState.APPROVED, actor=actor)
-            enqueue(s, row.id)
+            enqueue(s, row.id, row.tenant_id)
     elif decision == "reject":
         emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "rejection", reason=reason)
         await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
@@ -489,17 +489,24 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
 
 # ------------------------------------------------------------------- outbox
 
-def enqueue(s: AsyncSession, op_id: str) -> None:
+def enqueue(s: AsyncSession, op_id: str, tenant_id: str) -> None:
     from app.observability import trace_context
     trace_id = trace_context.get()
-    s.add(OutboxItem(op_id=op_id, trace_id=trace_id))  # same txn as the APPROVED transition (§4.2)
+    # Truncate trace_id to 32 chars to prevent DB truncation errors with long W3C headers
+    safe_trace_id = trace_id[:32] if trace_id else None
+    s.add(OutboxItem(op_id=op_id, tenant_id=tenant_id, trace_id=safe_trace_id))  # same txn as the APPROVED transition (§4.2)
 
 
 async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_items: int = 10) -> int:
     """v1 in-process drain. Cloud Tasks worker replaces the call site, not the logic."""
-    now = now or dt.datetime.now(dt.timezone.utc)
+    # Ensure now is timezone-naive to match DB schema (replaces tzinfo=None)
+    if now:
+        now = now.replace(tzinfo=None)
+    else:
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        
     await s.flush()  # stamp defaults on same-txn enqueues BEFORE the cutoff comparison
-    now = max(now, dt.datetime.now(dt.timezone.utc))
+    now = max(now, dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
     result = await s.execute(
         select(OutboxItem).where(OutboxItem.status == "PENDING",
                                  OutboxItem.next_attempt_at <= now)
@@ -509,7 +516,13 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
     for item in items:
         from app.observability import trace_context
         token = trace_context.set(item.trace_id)
+        row = None
         try:
+            tid = item.tenant_id if item.tenant_id else ""
+            await s.execute(
+                text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+                {"tid": tid}
+            )
             row = await s.get(OpRow, item.op_id)
             action_name = row.action if row else "unknown"
             
@@ -653,7 +666,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
                 dep_rows = res_states.scalars().all()
                 
                 if all(d.state == OpState.DONE.value for d in dep_rows):
-                    enqueue(s, dep_id)
+                    enqueue(s, dep_id, row.tenant_id)
             
             # Check if all children of the parent are DONE
             stmt_all_children = select(OpRow).where(OpRow.parent_op_id == row.parent_op_id)
