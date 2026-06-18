@@ -82,6 +82,18 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    from app.observability import trace_context
+    trace_id = trace_context.get("unknown")
+    logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "trace_id": trace_id},
+    )
+
+
 # The operator/brand console (control-plane/web) is served from a separate
 # Cloud Run origin, so browser calls to this API are cross-origin. Origins come
 # from ALLOWED_ORIGINS (comma-separated); localhost + the deployed console URL
@@ -108,8 +120,6 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
-
-
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
 if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
     raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
