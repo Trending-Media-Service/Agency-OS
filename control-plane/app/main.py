@@ -116,10 +116,11 @@ if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
 
 async def verify_operator_auth(authorization: str | None = Header(default=None)):
     """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
+    import hmac
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
     token = authorization[7:]
-    if token != OPERATOR_TOKEN:
+    if not hmac.compare_digest(token, OPERATOR_TOKEN):
         raise HTTPException(403, "Forbidden: Invalid operator token")
 
 
