@@ -1169,9 +1169,25 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok", "events_added": events_added}
 
 
-def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
-    """Verifies SHA256 signature using HMAC and Meta app secret."""
+async def resolve_whatsapp_secret() -> str | None:
+    """Resolves the WhatsApp App Secret from Secret Manager if configured as a ref, or env var."""
     if not WHATSAPP_APP_SECRET:
+        return None
+    if WHATSAPP_APP_SECRET.startswith("projects/"):
+        from app.services.secrets import SecretManagerClient
+        try:
+            secrets_client = SecretManagerClient()
+            return await secrets_client.read_secret(WHATSAPP_APP_SECRET)
+        except Exception as e:
+            logger.error(f"Failed to resolve WHATSAPP_APP_SECRET from Secret Manager reference {WHATSAPP_APP_SECRET}: {e}")
+            raise RuntimeError(f"Failed to resolve WhatsApp secret from Secret Manager: {e}")
+    return WHATSAPP_APP_SECRET
+
+
+async def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
+    """Verifies SHA256 signature using HMAC and Meta app secret."""
+    secret_value = await resolve_whatsapp_secret()
+    if not secret_value:
         logger.warning("WHATSAPP_APP_SECRET not configured. Signature check bypassed.")
         return True
     import hmac
@@ -1179,7 +1195,7 @@ def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
     if signature.startswith("sha256="):
         signature = signature[7:]
     expected = hmac.new(
-        WHATSAPP_APP_SECRET.encode("utf-8"),
+        secret_value.encode("utf-8"),
         payload,
         hashlib.sha256
     ).hexdigest()
@@ -1216,7 +1232,7 @@ async def whatsapp_webhook(
             logger.warning("Rejecting WhatsApp webhook: Missing X-Hub-Signature-256 header")
             raise HTTPException(401, "Signature missing")
 
-        if not verify_whatsapp_signature(raw_body, x_hub_signature_256):
+        if not await verify_whatsapp_signature(raw_body, x_hub_signature_256):
             logger.warning("Rejecting WhatsApp webhook: Signature mismatch")
             raise HTTPException(401, "Invalid signature")
 

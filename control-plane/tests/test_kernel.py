@@ -221,6 +221,31 @@ async def test_whatsapp_webhook_invalid_signature(client):
     assert r.status_code == 401
 
 
+async def test_whatsapp_webhook_signature_via_secret_manager(client):
+    # Set WHATSAPP_APP_SECRET to a Secret Manager reference
+    secret_ref = "projects/test-project/secrets/whatsapp-secret/versions/latest"
+    mainmod.WHATSAPP_APP_SECRET = secret_ref
+    
+    # Seed the mock secret registry using SecretManagerClient
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient(project_id="test-project")
+    await secrets_client.write_secret("whatsapp-secret", "super-secret-key-from-sm")
+    
+    # Post a payload signed with the resolved key
+    payload = {"object": "whatsapp_business_account", "entry": []}
+    
+    # 1. Post with signature signed using the correct key -> should succeed (200 status_code)
+    # Note: Since the entry list is empty, it will not trigger the background task, 
+    # but the signature verification itself should succeed and return {"status": "accepted"} / 200.
+    r = await post_signed_webhook(client, payload, secret="super-secret-key-from-sm")
+    assert r.status_code == 200
+    assert r.json() == {"status": "accepted"}
+    
+    # 2. Post with signature signed using a wrong key -> should fail (401 status_code)
+    r = await post_signed_webhook(client, payload, secret="wrong-key")
+    assert r.status_code == 401
+
+
 @patch("app.whatsapp.httpx.AsyncClient")
 async def test_whatsapp_e2e_approval_flow(mock_client_class, client, db_engine):
     # Setup WhatsApp mock config
