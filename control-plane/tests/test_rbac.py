@@ -99,3 +99,46 @@ async def test_rbac_enforcement_cases(client: AsyncClient, session):
     })
     assert res.status_code == 200
     assert res.json()["state"] == "APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_operator_authentication_enforcement(client: AsyncClient):
+    import app.main as mainmod
+    from app.main import verify_operator_auth
+
+    # 1. Remove the override temporarily
+    if verify_operator_auth in mainmod.app.dependency_overrides:
+        del mainmod.app.dependency_overrides[verify_operator_auth]
+
+    try:
+        # 2. GET /tenants without header -> 401
+        res = await client.get("/tenants")
+        assert res.status_code == 401
+        assert "Missing or invalid Authorization header" in res.json()["detail"]
+
+        # 3. GET /tenants with invalid Bearer token -> 403
+        res = await client.get("/tenants", headers={"Authorization": "Bearer wrong-token"})
+        assert res.status_code == 403
+        assert "Forbidden: Invalid operator token" in res.json()["detail"]
+
+        # 4. GET /tenants with valid Bearer token -> 200
+        res = await client.get("/tenants", headers={"Authorization": "Bearer default-dev-token"})
+        assert res.status_code == 200
+        assert isinstance(res.json(), list)
+        
+        # 5. POST /tenants without header -> 401
+        res = await client.post("/tenants", json={"name": "New Tenant", "brand_name": "New Brand"})
+        assert res.status_code == 401
+        
+        # 6. POST /tenants with valid Bearer token -> 200
+        res = await client.post(
+            "/tenants", 
+            headers={"Authorization": "Bearer default-dev-token"},
+            json={"name": "New Tenant", "brand_name": "New Brand"}
+        )
+        assert res.status_code == 200
+        assert "tenant_id" in res.json()
+
+    finally:
+        # 7. Restore override to prevent leaking to other tests
+        mainmod.app.dependency_overrides[verify_operator_auth] = lambda: None

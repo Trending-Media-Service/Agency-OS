@@ -28,7 +28,7 @@ class GovernanceAdapter(Adapter):
                 brand_id=brand_id,
                 domain=self.domain,
                 action="governance.policy.update",
-                params={"rules_json": {"provision_cost_ceiling_minor": cost_ceiling}},
+                params={"params": {"provision_cost_ceiling_minor": cost_ceiling}},
                 severity=Severity(impact=3, reversibility=Reversibility.REVERSIBLE),
                 cost_estimate=Money(amount_minor=0, currency="INR"),
                 statutory=True
@@ -79,7 +79,7 @@ class GovernanceAdapter(Adapter):
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
         if op.action == "governance.policy.update":
-            rules = op.params.get("rules_json", {})
+            rules = op.params.get("params", {})
             summary = "Policy Update:\n"
             for k, v in rules.items():
                 summary += f"  - Change parameter '{k}' to '{v}'\n"
@@ -101,21 +101,29 @@ class GovernanceAdapter(Adapter):
             if session is None:
                 return ExecResult(ok=False, detail={"error": "Session is required for execution"})
             
-            stmt = select(PolicyVersion).where(PolicyVersion.tenant_id == op.tenant_id).order_by(PolicyVersion.version.desc()).limit(1)
-            res = await session.execute(stmt)
-            curr = res.scalar_one_or_none()
+            stmt_latest = select(PolicyVersion).where(PolicyVersion.tenant_id == op.tenant_id).order_by(PolicyVersion.version.desc()).limit(1)
+            res_latest = await session.execute(stmt_latest)
+            curr_latest = res_latest.scalar_one_or_none()
+            next_version = (curr_latest.version + 1) if curr_latest else 1
             
-            next_version = (curr.version + 1) if curr else 1
-            new_rules = curr.rules_json.copy() if (curr and curr.rules_json) else {}
-            new_rules.update(op.params.get("rules_json", {}))
+            stmt_active = select(PolicyVersion).where(PolicyVersion.tenant_id == op.tenant_id, PolicyVersion.status == "active").limit(1)
+            res_active = await session.execute(stmt_active)
+            curr_active = res_active.scalar_one_or_none()
+            
+            new_params = curr_active.params.copy() if (curr_active and curr_active.params) else {}
+            new_params.update(op.params.get("params", {}))
+            
+            if curr_active:
+                curr_active.status = "superseded"
             
             pv = PolicyVersion(
                 tenant_id=op.tenant_id,
                 version=next_version,
-                rules_json=new_rules
+                params=new_params,
+                status="active"
             )
             session.add(pv)
-            return ExecResult(ok=True, detail={"version": next_version, "rules_json": new_rules})
+            return ExecResult(ok=True, detail={"version": next_version, "params": new_params})
             
         elif op.action == "governance.consent.grant":
             if session is None:

@@ -9,6 +9,8 @@ import uuid
 import tempfile
 import os
 from app.models import Connection, OpRow
+from app.services.secrets import SecretManagerClient
+from app.services.mcp import McpClient
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +126,15 @@ class ManageAdapter(Adapter):
 
         if op.action == "manage.shopify.connect":
             provider = op.params.get("provider")
-            secret_ref = op.params.get("secret_ref")
+            raw_token = op.params.get("secret_ref")
             config = op.params.get("config", {})
             
-            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret {secret_ref}")
+            # Write token to Secret Manager and get reference
+            secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
+            secrets_client = SecretManagerClient()
+            secret_ref = await secrets_client.write_secret(secret_id, raw_token)
+            
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret reference {secret_ref}")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -151,19 +158,31 @@ class ManageAdapter(Adapter):
                 session.add(conn)
                 logger.info("Created new connection")
                 
-            return ExecResult(ok=True, detail={"message": "Connection registered in DB"})
+            return ExecResult(ok=True, detail={"message": "Connection registered in DB and Secret Manager"})
             
         elif op.action == "manage.shopify.disconnect":
             provider = op.params.get("provider", "shopify")
             logger.info(f"Disconnecting {provider} for brand {op.brand_id}")
             
-            stmt = delete(Connection).where(
+            # Delete from Secret Manager first
+            stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
                 Connection.brand_id == op.brand_id,
                 Connection.provider == provider
             )
-            await session.execute(stmt)
-            return ExecResult(ok=True, detail={"message": "Connection removed from DB"})
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if conn:
+                secrets_client = SecretManagerClient()
+                await secrets_client.delete_secret(conn.secret_ref)
+            
+            stmt_del = delete(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            await session.execute(stmt_del)
+            return ExecResult(ok=True, detail={"message": "Connection removed from DB and Secret Manager"})
             
         elif op.action == "manage.backup.create":
             backup_file = op.params.get("backup_file")
@@ -297,18 +316,75 @@ class ManageAdapter(Adapter):
             
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
-    async def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         """Verifies connection or backup status."""
         if op.action == "manage.shopify.connect":
-            logger.info("Verifying Shopify connection via mock API call...")
+            logger.info("Verifying Shopify connection via Secret Manager and mock API...")
+            if not session:
+                return VerifyResult(ok=False, checks={"session_active": False}, detail={"error": "Database session required"})
+                
+            provider = op.params.get("provider", "shopify")
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return VerifyResult(ok=False, checks={"connection_in_db": False}, detail={"error": "Connection record not found"})
+                
+            try:
+                secrets_client = SecretManagerClient()
+                token = await secrets_client.read_secret(conn.secret_ref)
+                if not token:
+                    raise ValueError("Retrieved token is empty")
+                logger.info(f"Successfully retrieved Shopify token from Secret Manager (ref: {conn.secret_ref})")
+            except Exception as e:
+                logger.error(f"Failed to read Shopify token from Secret Manager: {e}")
+                return VerifyResult(
+                    ok=False, 
+                    checks={"credentials_valid": False, "secret_retrieval_ok": False}, 
+                    detail={"error": f"Secret Manager retrieval failed: {e}"}
+                )
+
+            # --- Real Shopify MCP Tool Call Integration ---
+            try:
+                mcp_url = conn.config.get("mcp_server_url")
+                mcp = McpClient(server_url=mcp_url)
+                tool_res = await mcp.call_tool("shopify_get_shop_info", {})
+                await mcp.close()
+                
+                import json
+                content_text = tool_res["content"][0]["text"]
+                shop_info = json.loads(content_text)
+                logger.info(f"Shopify MCP tool call shopify_get_shop_info succeeded: {shop_info}")
+            except Exception as e:
+                logger.error(f"Shopify MCP tool call failed: {e}")
+                return VerifyResult(
+                    ok=False,
+                    checks={
+                        "credentials_valid": True,
+                        "secret_retrieval_ok": True,
+                        "mcp_tool_call_ok": False
+                    },
+                    detail={"error": f"Shopify MCP tool call failed: {e}"}
+                )
+
             return VerifyResult(
                 ok=True,
                 checks={
                     "credentials_valid": True,
                     "shop_accessible": True,
-                    "read_scopes_ok": True
+                    "read_scopes_ok": True,
+                    "secret_retrieval_ok": True,
+                    "mcp_tool_call_ok": True
                 },
-                detail={"shop_name": "Mock Shop"}
+                detail={
+                    "shop_name": shop_info.get("shop_name", "Unknown Shop"),
+                    "domain": shop_info.get("domain", "unknown.myshopify.com"),
+                    "secret_ref": conn.secret_ref
+                }
             )
         elif op.action == "manage.shopify.disconnect":
             return VerifyResult(ok=True, checks={"disconnected": True})

@@ -105,7 +105,7 @@ class DRAdapter:
                     pass
             return ExecResult(ok=False, detail={"error": f"Restore execution error: {str(e)}"})
 
-    async def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         # In execute we returned the scratch db url in details, but wait!
         # verify() receives only the OpSpec! It does NOT receive the ExecResult!
         # Ah! Let's check `_execute_and_verify` in `loop.py`:

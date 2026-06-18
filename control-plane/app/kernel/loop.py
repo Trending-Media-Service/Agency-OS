@@ -26,7 +26,7 @@ class Adapter(Protocol):
     def plan(self, intent: str, tenant_id: str, brand_id: str) -> list[OpSpec]: ...
     def preview(self, op: OpSpec) -> PreviewArtifact: ...
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult: ...
-    async def verify(self, op: OpSpec) -> VerifyResult: ...
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult: ...
     def compensate(self, op: OpSpec) -> list[OpSpec]: ...
 
 
@@ -279,8 +279,10 @@ async def record_success(s: AsyncSession, tenant_id: str, brand_id: str, domain:
         logger.error(f"Failed to record success in circuit breaker: {e}")
 
 
-def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, kind: str, reason: Optional[str] = None):
-    delta = TRUST_CONFIG["history"]["deltas"].get(kind, 0.0)
+async def emit_trust_event(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, kind: str, reason: Optional[str] = None):
+    from .services import load_active_trust_config
+    cfg = await load_active_trust_config(s, tenant_id)
+    delta = cfg["history"]["deltas"].get(kind, 0.0)
     s.add(TrustEvent(
         tenant_id=tenant_id,
         brand_id=brand_id,
@@ -419,7 +421,7 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         if gate.violations:
             if not reason or not reason.strip():
                 raise ValueError("Override reason is mandatory for approved ops with policy violations")
-            emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "override", reason=reason)
+            await emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "override", reason=reason)
         
         # Fetch children
         res_children = await s.execute(select(OpRow).where(OpRow.parent_op_id == row.id))
@@ -441,7 +443,7 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
             await transition(s, row, OpState.APPROVED, actor=actor)
             enqueue(s, row.id, row.tenant_id)
     elif decision == "reject":
-        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "rejection", reason=reason)
+        await emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "rejection", reason=reason)
         await transition(s, row, OpState.REJECTED, actor=actor, detail={"reason": reason or ""})
         # Propagate rejection to children
         res_children = await s.execute(select(OpRow).where(OpRow.parent_op_id == row.id))
@@ -519,10 +521,11 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
         row = None
         try:
             tid = item.tenant_id if item.tenant_id else ""
-            await s.execute(
-                text("SELECT set_config('app.current_tenant_id', :tid, true)"),
-                {"tid": tid}
-            )
+            if s.bind and s.bind.dialect.name == "postgresql":
+                await s.execute(
+                    text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+                    {"tid": tid}
+                )
             row = await s.get(OpRow, item.op_id)
             action_name = row.action if row else "unknown"
             
@@ -569,9 +572,12 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
                 # Reset Circuit Breaker failures on success
                 await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
-            logger.exception(f"Drain execution error on op {row.id if row else item.op_id}")
+            op_id = row.id if row else item.op_id
+            tenant_id = row.tenant_id if row else item.tenant_id
+            logger.exception(f"Drain execution error on op {op_id}")
             sentry_sdk.capture_exception(exc)
-            trace(s, row.id, row.tenant_id, "retry", {"attempt": item.attempts, "error": str(exc)})
+            if op_id:
+                trace(s, op_id, tenant_id, "retry", {"attempt": item.attempts, "error": str(exc)})
             
             # Record failure in Circuit Breaker
             await record_failure(s, row.tenant_id, row.brand_id, row.domain)
@@ -603,7 +609,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
     await transition(s, row, OpState.EXECUTING, actor="kernel")
     with sentry_sdk.start_span(op="adapter.execute", description=row.action):
         result = await adapter.execute(spec, idem_key=row.idem_key, session=s)
-    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "execute", "ok": result.ok, **result.detail})
+    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "execute", "action": row.action, "ok": result.ok, **result.detail})
 
     # Record any execution costs returned by the adapter
     if hasattr(result, "costs") and result.costs:
@@ -627,7 +633,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
                 actor=approver
             )
     if not result.ok:
-        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
+        await emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
                          reason=f"Execution failed: {result.detail.get('error')}")
         await transition(s, row, OpState.FAILED, actor="kernel", detail=result.detail)
         # Propagate failure to parent, cancel siblings, and trigger rollback cascade
@@ -642,11 +648,11 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
 
     await transition(s, row, OpState.VERIFYING, actor="kernel")
     with sentry_sdk.start_span(op="adapter.verify", description=row.action):
-        verdict = await adapter.verify(spec)
-    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "verify", "ok": verdict.ok,
+        verdict = await adapter.verify(spec, session=s)
+    trace(s, row.id, row.tenant_id, "adapter_call", {"phase": "verify", "action": row.action, "ok": verdict.ok,
                                       "checks": verdict.checks})
     if verdict.ok:
-        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verified_success")
+        await emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verified_success")
         await transition(s, row, OpState.DONE, actor="kernel")
 
         # SAGA SEQUENCING (DAG):
@@ -678,7 +684,7 @@ async def _execute_and_verify(s: AsyncSession, row: OpRow) -> None:
                     await transition(s, parent, OpState.VERIFYING, actor="kernel")
                     await transition(s, parent, OpState.DONE, actor="kernel")
     else:
-        emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
+        await emit_trust_event(s, row.tenant_id, row.brand_id, row.domain, "verify_failure",
                          reason=f"Verification checks failed: {verdict.checks}")
         await transition(s, row, OpState.FAILED, actor="kernel",
                    detail={"checks": verdict.checks, "note": verdict.detail})
@@ -813,7 +819,7 @@ class DemoProvisionAdapter:
     def execute(self, op: OpSpec, idem_key: str) -> ExecResult:
         return ExecResult(ok=True, detail={"applied": 5, "idem_key": idem_key})
 
-    def verify(self, op: OpSpec) -> VerifyResult:
+    def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         return VerifyResult(ok=True, checks={"dns_resolves": True, "cert_issued": True,
                                              "http_200": True})
 

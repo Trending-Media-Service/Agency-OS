@@ -131,7 +131,7 @@ class BuildAdapter(Adapter):
         else:
             return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
-    async def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         """Verifies production deployment."""
         logger.info("Verifying production deployment")
         

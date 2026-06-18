@@ -10,8 +10,11 @@ import hashlib
 import json
 import math
 import re
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +62,8 @@ async def audit_verify(s: AsyncSession) -> tuple[bool, Optional[int]]:
 
 # ---------------------------------------------------------------- trust (§4.4)
 # Provisional config — versioned here, tuned on real Ableys data (§11.4).
+# ---------------------------------------------------------------- trust (§4.4)
+# Provisional config — versioned here, tuned on real Ableys data (§11.4).
 TRUST_CONFIG = {
     "health_weights": {"gtm_present": 20.0, "pixel_present": 20.0, "capi_dedup_rate": 30.0},  # max 70
     "penalties": {  # saturating: p_max * (1 - e^(-count/tau))
@@ -75,6 +80,23 @@ TRUST_CONFIG = {
 }
 
 
+async def load_active_trust_config(s: AsyncSession, tenant_id: str) -> dict:
+    """Loads the active trust configuration from the database, falling back to the default constant."""
+    from ..models import PolicyVersion
+    stmt = (
+        select(PolicyVersion)
+        .where(PolicyVersion.tenant_id == tenant_id, PolicyVersion.status == "active")
+        .order_by(PolicyVersion.version.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    policy = res.scalar_one_or_none()
+    if policy and policy.params and "trust_config" in policy.params:
+        logger.info(f"Loaded active trust config from database for tenant {tenant_id}")
+        return policy.params["trust_config"]
+    return TRUST_CONFIG
+
+
 def saturating_penalty(count: int, p_max: float, tau: float) -> float:
     """Bounded, monotone, distinguishes 5 from 50 (fixes the unbounded-subtraction
     defect in both the legacy prototype and the pasted enterprise doc)."""
@@ -83,8 +105,9 @@ def saturating_penalty(count: int, p_max: float, tau: float) -> float:
     return p_max * (1.0 - math.exp(-count / tau))
 
 
-def health_score(signals: dict) -> float:
-    w = TRUST_CONFIG["health_weights"]
+def health_score(signals: dict, config: Optional[dict] = None) -> float:
+    cfg = config or TRUST_CONFIG
+    w = cfg["health_weights"]
     score = 0.0
     score += w["gtm_present"] if signals.get("gtm_present") else 0.0
     score += w["pixel_present"] if signals.get("pixel_present") else 0.0
@@ -92,16 +115,18 @@ def health_score(signals: dict) -> float:
     return score
 
 
-def signal_penalties(signals: dict) -> float:
+def signal_penalties(signals: dict, config: Optional[dict] = None) -> float:
+    cfg_main = config or TRUST_CONFIG
     total = 0.0
-    for key, cfg in TRUST_CONFIG["penalties"].items():
+    for key, cfg in cfg_main["penalties"].items():
         total += saturating_penalty(int(signals.get(key, 0)), cfg["p_max"], cfg["tau"])
     return total
 
 
-def history_score(events: list[tuple[str, dt.datetime]], now: dt.datetime) -> float:
+def history_score(events: list[tuple[str, dt.datetime]], now: dt.datetime, config: Optional[dict] = None) -> float:
     """events: (kind, ts). Exponential decay; clamped to +/- clamp."""
-    cfg = TRUST_CONFIG["history"]
+    cfg_main = config or TRUST_CONFIG
+    cfg = cfg_main["history"]
     hl, clamp = cfg["half_life_days"], cfg["clamp"]
     total = 0.0
     for kind, ts in events:
@@ -120,14 +145,16 @@ def history_score(events: list[tuple[str, dt.datetime]], now: dt.datetime) -> fl
 
 
 def trust_score(signals: dict, events: list[tuple[str, dt.datetime]],
-                now: Optional[dt.datetime] = None) -> float:
+                now: Optional[dt.datetime] = None, config: Optional[dict] = None) -> float:
     now = now or dt.datetime.now(dt.timezone.utc)
-    s = health_score(signals) - signal_penalties(signals) + history_score(events, now)
+    cfg = config or TRUST_CONFIG
+    s = health_score(signals, cfg) - signal_penalties(signals, cfg) + history_score(events, now, cfg)
     return max(0.0, min(100.0, s))
 
 
-def tier_for(score: float) -> int:
-    t = TRUST_CONFIG["tiers"]
+def tier_for(score: float, config: Optional[dict] = None) -> int:
+    cfg = config or TRUST_CONFIG
+    t = cfg["tiers"]
     if score < t["lockout_below"]:
         return 0
     if score >= t["autonomy_at"]:
@@ -516,8 +543,10 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
                 "gmc_critical_mismatches": gmc_mismatches
             }
 
-            score = trust_score(signals, event_tuples, now)
-            tier = tier_for(score)
+            # Load dynamic trust config from DB
+            trust_cfg = await load_active_trust_config(s, brand.tenant_id)
+            score = trust_score(signals, event_tuples, now, config=trust_cfg)
+            tier = tier_for(score, config=trust_cfg)
 
             snapshot = TrustSnapshot(
                 tenant_id=brand.tenant_id,

@@ -13,13 +13,16 @@ APP_URL = os.getenv("APP_URL")
 
 async def _drain_local_task(session_maker):
     """Local fallback: run drain_once directly with a privileged session."""
+    print("\n[DEBUG] _drain_local_task STARTED")
     logger.info("Running local background outbox drain...")
     try:
         async with session_maker() as s:
             async with s.begin():
                 processed = await loop.drain_once(s)
+                print(f"[DEBUG] _drain_local_task processed {processed} items")
                 logger.info(f"Local outbox drain processed {processed} items.")
     except Exception as e:
+        print(f"[DEBUG] _drain_local_task FAILED: {e}")
         logger.error(f"Error in local background outbox drain: {e}", exc_info=True)
 
 def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
@@ -27,6 +30,7 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
 
     Uses Cloud Tasks in GCP, falls back to FastAPI BackgroundTasks locally.
     """
+    print(f"\n[DEBUG] enqueue_drain called, session_maker={session_maker}")
     if GCP_PROJECT and GCP_LOCATION and QUEUE_NAME and APP_URL:
         try:
             from google.cloud import tasks_v2
@@ -44,6 +48,7 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
             # In a highly optimized setup, we could run this in a thread pool.
             response = client.create_task(request={"parent": parent, "task": task})
             logger.info(f"Enqueued Cloud Task: {response.name}")
+            print(f"[DEBUG] Enqueued Cloud Task: {response.name}")
             return
         except ImportError:
             logger.warning("google-cloud-tasks is not installed but GCP configs are set. Falling back to local.")
@@ -54,4 +59,5 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
     if not session_maker:
         from app.database import WorkerAsyncSessionLocal
         session_maker = WorkerAsyncSessionLocal
+    print("[DEBUG] Adding _drain_local_task to background_tasks")
     background_tasks.add_task(_drain_local_task, session_maker)

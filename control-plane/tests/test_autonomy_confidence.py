@@ -215,10 +215,10 @@ async def test_shadow_failure_swallowed(client, session):
         tenant_id=tid,
         brand_id=bid,
         domain="grow",
-        action="grow.campaign.pause", # Use pause instead of alert to be safe, though manual insert bypasses planning
+        action="grow.alert.dispatch",
         state="AWAITING_APPROVAL",
         impact=1,
-        reversibility="COMPENSATABLE",
+        reversibility="REVERSIBLE",
         idem_key="idem_fail_123"
     )
     session.add(op)

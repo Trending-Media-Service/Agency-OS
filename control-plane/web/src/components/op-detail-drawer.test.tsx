@@ -111,6 +111,37 @@ describe("TraceTimeline Component", () => {
     expect(screen.getByText("kernel")).toBeTruthy();
     expect(screen.getByText(/Reason: "Initial previewing success"/)).toBeTruthy();
   });
+
+  it("renders flat traces with top-level reason and fallback action", () => {
+    const traces = [
+      {
+        ts: "2026-06-15T18:01:00Z",
+        kind: "transition",
+        detail: {
+          from: "PREVIEWED",
+          to: "APPROVED",
+          actor: "chandan",
+          reason: "Raising cost ceiling manually"
+        },
+      },
+      {
+        ts: "2026-06-15T18:02:00Z",
+        kind: "adapter_call",
+        detail: {
+          phase: "execute",
+        }
+      }
+    ];
+
+    render(<TraceTimeline traces={traces} opAction="grow.campaign.create" />);
+
+    expect(screen.getByText("State Transition")).toBeTruthy();
+    expect(screen.getByText(/Reason: "Raising cost ceiling manually"/)).toBeTruthy();
+    
+    expect(screen.getByText("Adapter Invocation")).toBeTruthy();
+    expect(screen.getByText(/Invoked adapter action:/)).toBeTruthy();
+    expect(screen.getByText("grow.campaign.create")).toBeTruthy();
+  });
 });
 
 describe("OpDetailDrawer Component", () => {
@@ -203,5 +234,41 @@ describe("OpDetailDrawer Component", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit Tweak" }));
 
     expect(onDecision).toHaveBeenCalledWith("op-123", "modify", "reduce budget to 400 INR");
+  });
+
+  it("extracts flat params_before from transition trace and renders VisualDiff", () => {
+    const opDataWithTransition = {
+      ...defaultOpData,
+      params: { name: "New Name", budget_minor: 20000 },
+      trace: [
+        {
+          ts: "2026-06-15T18:01:00Z",
+          kind: "transition",
+          detail: {
+            from: "PREVIEWED",
+            to: "AWAITING_APPROVAL",
+            actor: "kernel",
+            params_before: { name: "Old Name", budget_minor: 10000 }
+          }
+        }
+      ]
+    };
+
+    render(
+      <OpDetailDrawer
+        opId="op-123"
+        onClose={vi.fn()}
+        opData={opDataWithTransition}
+        loading={false}
+        onDecision={vi.fn()}
+        role="OPERATOR"
+      />
+    );
+
+    expect(screen.getByText("Payload Adjustments")).toBeTruthy();
+    expect(screen.getByText(/- name: "Old Name"/)).toBeTruthy();
+    expect(screen.getByText(/\+ name: "New Name"/)).toBeTruthy();
+    expect(screen.getByText(/- budget_minor: 10000/)).toBeTruthy();
+    expect(screen.getByText(/\+ budget_minor: 20000/)).toBeTruthy();
   });
 });

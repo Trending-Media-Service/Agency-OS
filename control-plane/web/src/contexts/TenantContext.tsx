@@ -64,6 +64,43 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
+  // Fetch tenants from backend on boot to sync with DB
+  useEffect(() => {
+    const fetchTenants = async () => {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      try {
+        const res = await fetch(`${baseUrl}/tenants`);
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        const data = await res.json();
+        const mapped = data.map((t: any) => ({
+          tenantId: t.tenant_id,
+          tenantName: t.tenant_name,
+          brandId: t.brand_id,
+          brandName: t.brand_name
+        }));
+        
+        if (mapped.length > 0) {
+          setKnownTenants(mapped);
+          localStorage.setItem("aos_known_tenants", JSON.stringify(mapped));
+          
+          // Auto-select the first real tenant if current is default/unset
+          const savedTenant = localStorage.getItem("aos_tenant_id");
+          if (!savedTenant || savedTenant === "t1") {
+            const firstReal = mapped[0];
+            setTenantIdState(firstReal.tenantId);
+            setActiveBrandIdState(firstReal.brandId);
+            localStorage.setItem("aos_tenant_id", firstReal.tenantId);
+            localStorage.setItem("aos_brand_id", firstReal.brandId);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch tenants from backend, falling back to local storage:", error);
+      }
+    };
+    
+    fetchTenants();
+  }, []);
+
   const setTenantId = (id: string) => {
     setTenantIdState(id);
     localStorage.setItem("aos_tenant_id", id);

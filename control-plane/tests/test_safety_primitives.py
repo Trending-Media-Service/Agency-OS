@@ -11,7 +11,7 @@ class FailingAdapter:
     domain = "failing_domain"
     async def execute(self, op, idem_key, session=None):
         raise RuntimeError("Adapter failure simulation!")
-    async def verify(self, op):
+    async def verify(self, op, session=None):
         from app.kernel.optypes import VerifyResult
         return VerifyResult(ok=False)
 
@@ -20,7 +20,7 @@ class SuccessAdapter:
     async def execute(self, op, idem_key, session=None):
         from app.kernel.optypes import ExecResult
         return ExecResult(ok=True)
-    async def verify(self, op):
+    async def verify(self, op, session=None):
         from app.kernel.optypes import VerifyResult
         return VerifyResult(ok=True, checks={"status": True})
 

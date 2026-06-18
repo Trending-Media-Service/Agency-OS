@@ -47,12 +47,17 @@ async def test_manage_adapter_execute_connect(adapter, connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert conn.secret_ref == "brand-name-shopify-token"
+    assert "secrets" in conn.secret_ref
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient()
+    val = await secrets_client.read_secret(conn.secret_ref)
+    assert val == "brand-name-shopify-token"
     assert conn.config["shop_url"] == "brand-name.myshopify.com"
 
 @pytest.mark.asyncio
-async def test_manage_adapter_verify(adapter, connect_op):
-    verdict = await adapter.verify(connect_op)
+async def test_manage_adapter_verify(adapter, connect_op, session):
+    await adapter.execute(connect_op, "idem_shopify_verify_setup_123", session=session)
+    verdict = await adapter.verify(connect_op, session=session)
     assert verdict.ok is True
     assert verdict.checks["credentials_valid"] is True
 

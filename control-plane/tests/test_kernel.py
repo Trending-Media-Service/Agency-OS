@@ -1486,6 +1486,28 @@ async def test_read_endpoints_connections_breakers_events(client, db_engine):
     assert events[0]["actor"] == "tester"
 
 
+@pytest.mark.asyncio
+async def test_list_tenants(client):
+    # 1. Onboard a tenant
+    r = await client.post("/tenants", json={"name": "List Tenant", "brand_name": "List Brand"})
+    assert r.status_code == 200
+    data = r.json()
+    tid = data["tenant_id"]
+    bid = data["brand_id"]
+
+    # 2. List tenants
+    r_list = await client.get("/tenants")
+    assert r_list.status_code == 200
+    tenants = r_list.json()
+
+    # 3. Assert our tenant is in the list
+    assert any(
+        t["tenant_id"] == tid and t["brand_id"] == bid and t["tenant_name"] == "List Tenant" and t["brand_name"] == "List Brand"
+        for t in tenants
+    )
+
+
+
 
 
 

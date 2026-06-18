@@ -38,6 +38,7 @@ These hold across all pillars, all tiers, all time:
 1. **Deterministic gates only.** Safety boundaries (policy rules, spend caps, lockouts) are deterministic and explainable. ML/LLMs may rank, draft, prioritize, and explain — they never gate. A model's confidence is never grounds to bypass a rule.
 2. **Statutory firewall.** Nothing touching GST, UAE VAT, or any statutory/tax/compliance obligation is auto-executed at any trust tier. These Ops always require explicit human approval, regardless of score.
 3. **No silent writes.** Every state-changing operation against client property (infra, code, campaigns, data) flows through the action loop and lands in the audit log. There is no side door, including for the operator.
+   *Bootstrap Exception:* The initial provisioning of the primary Tenant, Brand, and operator credentials during system installation, as well as database schema migrations, are exempt from the action loop. These are executed via privileged CLI scripts or Alembic, and are recorded in system application logs rather than the audit chain.
 4. **Vendor-neutral core.** The kernel's `Op` type carries no platform vocabulary (no "campaign", "bid", "Cloud Run"). Domain vocabulary lives in adapters. (This fixes the previously flagged defect where ad-platform terms leaked into the universal contract.)
 5. **Reversibility is declared, not assumed.** Every Op declares its compensation semantics up front: `REVERSIBLE` (exact undo exists), `COMPENSATABLE` (a defined compensating action restores intent, e.g. restore prior bid — spend already incurred is logged as irreversible delta), or `IRREVERSIBLE` (e.g. sent email, registered domain). Irreversible Ops face stricter gates.
 6. **Cost attribution from day one.** Every tool call, token, API request, and GCP resource is tagged with `tenant_id`/`brand_id`. This is nearly free now and impossible to retrofit; it is also the pricing model's raw data.
@@ -67,6 +68,7 @@ GCP Organization
   - The following tables are subject to RLS policy: `brands`, `ops`, `audit_events`, `trust_events`, `trust_snapshots`, `cost_ledger`, `connections`, `brand_properties`, `cadences`, `op_traces`, `approvals`, `orders`, `order_lines`, `refunds`, `fulfillment_costs`, `campaigns`, `spend_facts`, `touchpoints`, `circuit_breakers`, `op_dependencies`, `policy_versions`.
   - Every session transaction sets the session configuration `app.current_tenant_id` via middleware before executing queries. If no tenant context is set, the session is isolated and denied read/write access to all rows. App-level checks are defense-in-depth on top of project isolation, not a substitute for it.
 - **Service accounts:** per-brand, minimally scoped, short-lived tokens where the platform supports them. No standing org-wide credentials.
+- **Worker Role RLS Bypass:** The background outbox worker (`loop.py`) runs in a privileged system context and uses `get_worker_db()` to bypass Postgres RLS. This is necessary because the worker must poll the global `outbox` table and coordinate operations across multiple tenants. However, the worker is strictly a scheduling and routing kernel. When it executes a tenant-specific adapter operation, the session context dynamically sets the active `app.current_tenant_id` for that transaction. This ensures that any queries executed by the adapter (or by verification checks) are strictly bounded to that tenant's RLS workspace, maintaining deep isolation during execution.
 
 ---
 
@@ -249,7 +251,7 @@ recipes/<name>/<version>/
 
 ### 6.2 Build — governed delivery, not raw generation
 
-**Mechanism:** wrap an agentic coding harness (Claude Code class) in the action loop. We do not build an LLM coding product. Per brand: a repo, CI via Cloud Build, deploy targets from Provision. The agent works only inside **golden templates** — opinionated, pre-QA'd stacks where output quality is reliable and the review checklist is fixed.
+**Mechanism:** wrap an agentic coding harness (Gemini Code Assist / Vertex AI) in the action loop. We do not build an LLM coding product. Per brand: a repo, CI via Cloud Build, deploy targets from Provision. The agent works only inside **golden templates** — opinionated, pre-QA'd stacks where output quality is reliable and the review checklist is fixed.
 
 **Golden templates (v1):** Next.js storefront on headless Shopify; brand/marketing site; internal dashboard app. Add templates only after the second time the same custom build repeats.
 
@@ -336,7 +338,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | Observability | Sentry + structured logs to Cloud Logging + one dashboard | No ELK/Jaeger/Prometheus stack |
 | Backups | Nightly pg_dump → GCS (multi-region bucket) + Terraform state versioning | This IS the DR plan; monthly restore test |
 | Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
-| LLM | Claude API (agents, parsing, explanations) | Never gates (§2.1) |
+| LLM | Vertex AI Gemini API (agents, parsing, explanations) | Never gates (§2.1) |
 | WhatsApp | Meta Cloud API | Template messages for cards |
 | Database Migrations | alembic | Async schema migrations, preserving Postgres RLS policies |
 | Attribution Calibration | google-meridian | Offline Bayesian MMM causal calibration (α) scope only |

@@ -262,12 +262,16 @@ async def client(db_engine):
     async def override_get_worker_session_maker():
         return async_session
 
+    from app.services.secrets import SecretManagerClient
+    SecretManagerClient.clear()
     mainmod.app.dependency_overrides[get_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
+    mainmod.app.dependency_overrides[mainmod.verify_operator_auth] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
     mainmod.app.dependency_overrides.clear()
+    SecretManagerClient.clear()
 
 
 @pytest.fixture(autouse=True)

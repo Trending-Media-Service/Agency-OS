@@ -128,6 +128,8 @@ interface TraceDetail {
   from?: string;
   to?: string;
   actor?: string;
+  reason?: string;
+  params_before?: unknown;
   detail?: {
     reason?: string;
     params_before?: unknown;
@@ -145,7 +147,7 @@ interface TraceItem {
   detail: TraceDetail;
 }
 
-export function TraceTimeline({ traces }: { traces: TraceItem[] }) {
+export function TraceTimeline({ traces, opAction }: { traces: TraceItem[]; opAction?: string }) {
   const getKindLabel = (kind: string) => {
     switch (kind) {
       case "transition": return "State Transition";
@@ -190,8 +192,8 @@ export function TraceTimeline({ traces }: { traces: TraceItem[] }) {
               <p className="text-zinc-300 leading-normal">
                 Changed state from <span className="font-mono font-bold text-zinc-400">{t.detail.from || "NULL"}</span> to{" "}
                 <span className="font-mono font-bold text-zinc-100">{t.detail.to}</span> by <span className="text-zinc-400">{t.detail.actor}</span>
-                {t.detail.detail?.reason && (
-                  <span className="block text-[10px] text-zinc-500 italic mt-0.5">Reason: &quot;{t.detail.detail.reason}&quot;</span>
+                {(t.detail.reason || t.detail.detail?.reason) && (
+                  <span className="block text-[10px] text-zinc-500 italic mt-0.5">Reason: &quot;{t.detail.reason || t.detail.detail?.reason}&quot;</span>
                 )}
               </p>
             )}
@@ -221,7 +223,7 @@ export function TraceTimeline({ traces }: { traces: TraceItem[] }) {
 
             {t.kind === "adapter_call" && (
               <p className="text-zinc-300">
-                Invoked adapter action: <span className="font-mono text-zinc-100">{t.detail.action}</span>
+                Invoked adapter action: <span className="font-mono text-zinc-100">{t.detail.action || opAction || "unknown"}</span>
               </p>
             )}
 
@@ -277,8 +279,12 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
   let paramsBefore: unknown = null;
   if (opData.trace) {
     for (const t of opData.trace) {
-      if (t.kind === "transition" && t.detail?.detail?.params_before) {
-        paramsBefore = t.detail.detail.params_before;
+      if (t.kind === "transition") {
+        if (t.detail?.params_before) {
+          paramsBefore = t.detail.params_before;
+        } else if (t.detail?.detail?.params_before) {
+          paramsBefore = t.detail.detail.params_before;
+        }
       }
     }
   }
@@ -349,7 +355,7 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
         {/* Timeline */}
         <div className="space-y-2">
           <h4 className="font-semibold text-zinc-400 uppercase tracking-wider text-[9px]">Execution & Audit Log Timeline</h4>
-          <TraceTimeline traces={opData.trace || []} />
+          <TraceTimeline traces={opData.trace || []} opAction={opData.action} />
         </div>
 
         {/* Actions section */}

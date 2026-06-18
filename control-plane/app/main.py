@@ -110,6 +110,17 @@ app.add_middleware(
 )
 
 
+OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
+
+async def verify_operator_auth(authorization: str | None = Header(default=None)):
+    """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing or invalid Authorization header")
+    token = authorization[7:]
+    if token != OPERATOR_TOKEN:
+        raise HTTPException(403, "Forbidden: Invalid operator token")
+
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -184,7 +195,7 @@ class AuditVerifyOut(BaseModel):
     first_bad_id: int | None = None
 
 
-@app.post("/tenants")
+@app.post("/tenants", dependencies=[Depends(verify_operator_auth)])
 async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
     import uuid
     tenant_id = uuid.uuid4().hex
@@ -206,6 +217,30 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)
     await s.flush()
     
     return {"tenant_id": t.id, "brand_id": b.id}
+
+
+class TenantBrandOut(BaseModel):
+    tenant_id: str
+    tenant_name: str
+    brand_id: str
+    brand_name: str
+
+
+@app.get("/tenants", response_model=list[TenantBrandOut], dependencies=[Depends(verify_operator_auth)])
+async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
+    """Lists all tenants and their brands.
+
+    Bypasses RLS (uses get_worker_db) to allow the operator console to discover tenants.
+    """
+    stmt = select(
+        Tenant.id.label("tenant_id"),
+        Tenant.name.label("tenant_name"),
+        Brand.id.label("brand_id"),
+        Brand.name.label("brand_name")
+    ).join(Brand, Brand.tenant_id == Tenant.id).order_by(Tenant.name, Brand.name)
+
+    res = await s.execute(stmt)
+    return [dict(row) for row in res.mappings().all()]
 
 
 class ChatIn(BaseModel):
@@ -673,7 +708,7 @@ class PolicySimulateIn(BaseModel):
     created_by: str | None = None
 
 
-@app.post("/policy-simulate")
+@app.post("/policy-simulate", dependencies=[Depends(verify_operator_auth)])
 async def policy_simulate(
     body: PolicySimulateIn,
     s: AsyncSession = Depends(get_db),
@@ -732,7 +767,7 @@ class RecipePromoteIn(BaseModel):
     version: str = "0.1.0"
 
 
-@app.post("/recipes/promote")
+@app.post("/recipes/promote", dependencies=[Depends(verify_operator_auth)])
 async def promote_recipe(body: RecipePromoteIn):
     """Promotes an experimental recipe to the production catalog and commits it to version control."""
     import shutil
@@ -1371,7 +1406,7 @@ async def plugin_webhook(
     return {"status": "accepted", "proposed_ops": proposed_ops}
 
 
-@app.get("/debug/db")
+@app.get("/debug/db", dependencies=[Depends(verify_operator_auth)])
 async def debug_db(s: AsyncSession = Depends(get_worker_db)):
     from app.models import OpRow, Tenant, OutboxItem
     
@@ -1399,7 +1434,7 @@ async def debug_db(s: AsyncSession = Depends(get_worker_db)):
     return {"tenants": tenants, "ops": ops, "outbox": outbox, "policies": policies}
 
 
-@app.post("/debug/reset/{op_id}")
+@app.post("/debug/reset/{op_id}", dependencies=[Depends(verify_operator_auth)])
 async def debug_reset(op_id: str, request: Request, s: AsyncSession = Depends(get_worker_db)):
     from app.models import OutboxItem, OpRow
     import datetime as dt
@@ -1429,7 +1464,7 @@ async def debug_reset(op_id: str, request: Request, s: AsyncSession = Depends(ge
     return {"status": "ok", "message": f"Reset op {op_id} to PENDING/APPROVED"}
 
 
-@app.get("/debug/raw")
+@app.get("/debug/raw", dependencies=[Depends(verify_operator_auth)])
 async def debug_raw(s: AsyncSession = Depends(get_worker_db)):
     res_role = await s.execute(text("SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"))
     role = res_role.fetchone()
@@ -1456,7 +1491,7 @@ async def debug_raw(s: AsyncSession = Depends(get_worker_db)):
     }
 
 
-@app.get("/debug/ops")
+@app.get("/debug/ops", dependencies=[Depends(verify_operator_auth)])
 async def debug_ops(s: AsyncSession = Depends(get_worker_db)):
     res_owners = await s.execute(text("SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public'"))
     owners = {r[0]: r[1] for r in res_owners.fetchall()}
@@ -1476,7 +1511,7 @@ async def debug_ops(s: AsyncSession = Depends(get_worker_db)):
     }
 
 
-@app.post("/debug/migrate")
+@app.post("/debug/migrate", dependencies=[Depends(verify_operator_auth)])
 async def debug_migrate(s: AsyncSession = Depends(get_db)):
     try:
         await s.execute(text("ALTER TABLE outbox ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(32)"))

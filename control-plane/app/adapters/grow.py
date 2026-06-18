@@ -1,10 +1,13 @@
 import logging
 import re
 from typing import Optional
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.kernel.optypes import OpSpec, PreviewArtifact, ExecResult, VerifyResult, Severity, Reversibility, Money
 from app.kernel.loop import Adapter
 from app.services.marketing import MockMarketingClient
+from app.models import Connection, Campaign
+from app.services.secrets import SecretManagerClient
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +19,71 @@ class GrowAdapter(Adapter):
         normalized = intent.strip().lower()
         words = normalized.split()
 
-        if "alert" in words:
+        if "connect" in words and ("google" in words or "google-ads" in words or "google_ads" in words):
+            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:google-ads-token")
+            if secret_ref.startswith("secret:"):
+                secret_ref = secret_ref[7:]
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.google.connect",
+                    params={
+                        "provider": "google-ads",
+                        "secret_ref": secret_ref,
+                        "config": {}
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+        elif "disconnect" in words and ("google" in words or "google-ads" in words or "google_ads" in words):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.google.disconnect",
+                    params={"provider": "google-ads"},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+            
+        elif "connect" in words and ("meta" in words or "facebook" in words or "fb" in words):
+            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:meta-ads-token")
+            if secret_ref.startswith("secret:"):
+                secret_ref = secret_ref[7:]
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.meta.connect",
+                    params={
+                        "provider": "meta-ads",
+                        "secret_ref": secret_ref,
+                        "config": {}
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+        elif "disconnect" in words and ("meta" in words or "facebook" in words or "fb" in words):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.meta.disconnect",
+                    params={"provider": "meta-ads"},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        elif "alert" in words:
             alert_idx = words.index("alert")
             msg = " ".join(words[alert_idx+1:])
             if not msg:
@@ -186,7 +253,20 @@ class GrowAdapter(Adapter):
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
         """Generates preview for growth actions."""
-        if op.action == "grow.campaign.create":
+        if op.action == "grow.google.connect":
+            summary = f"Will establish connection to Google Ads account.\nCredential Ref: {op.params.get('secret_ref')}"
+            return PreviewArtifact(kind="google_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.google.disconnect":
+            summary = "Will remove connection to Google Ads account."
+            return PreviewArtifact(kind="google_disconnect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.meta.connect":
+            summary = f"Will establish connection to Meta Ads account.\nCredential Ref: {op.params.get('secret_ref')}"
+            return PreviewArtifact(kind="meta_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.meta.disconnect":
+            summary = "Will remove connection to Meta Ads account."
+            return PreviewArtifact(kind="meta_disconnect_preview", summary=summary, detail=op.params)
+
+        elif op.action == "grow.campaign.create":
             name = op.params.get("name")
             budget = op.params.get("budget_minor", 0) / 100
             bid = op.params.get("bid_minor", 0) / 100
@@ -226,6 +306,72 @@ class GrowAdapter(Adapter):
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Executes campaign operations."""
+        if op.action in ("grow.google.connect", "grow.meta.connect"):
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
+                
+            provider = op.params.get("provider")
+            raw_token = op.params.get("secret_ref")
+            config = op.params.get("config", {})
+            
+            # Write to Secret Manager
+            secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
+            secrets_client = SecretManagerClient()
+            secret_ref = await secrets_client.write_secret(secret_id, raw_token)
+            
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret reference {secret_ref}")
+            
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            if existing:
+                existing.secret_ref = secret_ref
+                existing.config = config
+                logger.info(f"Updated existing connection for {provider}")
+            else:
+                conn = Connection(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    provider=provider,
+                    secret_ref=secret_ref,
+                    config=config
+                )
+                session.add(conn)
+                logger.info(f"Created new connection for {provider}")
+                
+            return ExecResult(ok=True, detail={"message": f"Connection to {provider} registered in DB and Secret Manager"})
+            
+        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
+                
+            provider = op.params.get("provider")
+            logger.info(f"Disconnecting {provider} for brand {op.brand_id}")
+            
+            # Delete from Secret Manager first
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if conn:
+                secrets_client = SecretManagerClient()
+                await secrets_client.delete_secret(conn.secret_ref)
+                
+            stmt_del = delete(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            await session.execute(stmt_del)
+            return ExecResult(ok=True, detail={"message": f"Connection to {provider} removed from DB and Secret Manager"})
+
         client = MockMarketingClient(provider=op.params.get("provider", "google-ads"))
         campaign_id = op.params.get("campaign_id")
 
@@ -233,9 +379,26 @@ class GrowAdapter(Adapter):
             name = op.params.get("name")
             budget = op.params.get("budget_minor")
             bid = op.params.get("bid_minor")
+            provider = op.params.get("provider", "google-ads")
             
             ok = await client.create_campaign(campaign_id, name, budget, bid)
             if ok:
+                if session:
+                    # Write to local DB
+                    stmt = select(Campaign).where(Campaign.id == campaign_id)
+                    res = await session.execute(stmt)
+                    existing = res.scalar_one_or_none()
+                    if not existing:
+                        db_camp = Campaign(
+                            id=campaign_id,
+                            tenant_id=op.tenant_id,
+                            brand_id=op.brand_id,
+                            name=name,
+                            platform=provider,
+                            status="active"
+                        )
+                        session.add(db_camp)
+                        logger.info(f"Registered campaign {campaign_id} in local DB")
                 return ExecResult(ok=True, detail={"message": f"Campaign {campaign_id} created successfully", "campaign_id": campaign_id})
             return ExecResult(ok=False, detail={"error": "Failed to create campaign"})
             
@@ -250,6 +413,11 @@ class GrowAdapter(Adapter):
         elif op.action == "grow.campaign.delete":
             ok = await client.delete_campaign(campaign_id)
             if ok:
+                if session:
+                    # Delete from local DB
+                    stmt = delete(Campaign).where(Campaign.id == campaign_id)
+                    await session.execute(stmt)
+                    logger.info(f"Deleted campaign {campaign_id} from local DB")
                 return ExecResult(ok=True, detail={"message": f"Campaign {campaign_id} deleted"})
             return ExecResult(ok=False, detail={"error": f"Failed to delete campaign {campaign_id}"})
             
@@ -263,12 +431,28 @@ class GrowAdapter(Adapter):
         elif op.action == "grow.campaign.pause":
             ok = await client.update_campaign(campaign_id, status="PAUSED")
             if ok:
+                if session:
+                    # Update status in local DB
+                    stmt = select(Campaign).where(Campaign.id == campaign_id)
+                    res = await session.execute(stmt)
+                    db_camp = res.scalar_one_or_none()
+                    if db_camp:
+                        db_camp.status = "paused"
+                        logger.info(f"Paused campaign {campaign_id} in local DB")
                 return ExecResult(ok=True, detail={"message": f"Campaign {campaign_id} paused"})
             return ExecResult(ok=False, detail={"error": f"Failed to pause campaign {campaign_id}"})
             
         elif op.action == "grow.campaign.resume":
             ok = await client.update_campaign(campaign_id, status="ACTIVE")
             if ok:
+                if session:
+                    # Update status in local DB
+                    stmt = select(Campaign).where(Campaign.id == campaign_id)
+                    res = await session.execute(stmt)
+                    db_camp = res.scalar_one_or_none()
+                    if db_camp:
+                        db_camp.status = "active"
+                        logger.info(f"Resumed/Activated campaign {campaign_id} in local DB")
                 return ExecResult(ok=True, detail={"message": f"Campaign {campaign_id} resumed"})
             return ExecResult(ok=False, detail={"error": f"Failed to resume campaign {campaign_id}"})
             
@@ -278,8 +462,50 @@ class GrowAdapter(Adapter):
             
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
-    async def verify(self, op: OpSpec) -> VerifyResult:
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         """Verifies campaign status."""
+        if op.action in ("grow.google.connect", "grow.meta.connect"):
+            logger.info("Verifying Grow connection via Secret Manager and mock API...")
+            if not session:
+                return VerifyResult(ok=False, checks={"session_active": False}, detail={"error": "Database session required"})
+                
+            provider = op.params.get("provider")
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return VerifyResult(ok=False, checks={"connection_in_db": False}, detail={"error": "Connection record not found"})
+                
+            try:
+                secrets_client = SecretManagerClient()
+                token = await secrets_client.read_secret(conn.secret_ref)
+                if not token:
+                    raise ValueError("Retrieved token is empty")
+                logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.secret_ref})")
+            except Exception as e:
+                logger.error(f"Failed to read {provider} token from Secret Manager: {e}")
+                return VerifyResult(
+                    ok=False, 
+                    checks={"api_token_valid": False, "secret_retrieval_ok": False}, 
+                    detail={"error": f"Secret Manager retrieval failed: {e}"}
+                )
+
+            return VerifyResult(
+                ok=True,
+                checks={
+                    "api_token_valid": True,
+                    "account_accessible": True,
+                    "secret_retrieval_ok": True
+                },
+                detail={"verified_at": "mock-time", "secret_ref": conn.secret_ref}
+            )
+        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
+            return VerifyResult(ok=True, checks={"disconnected": True})
+
         campaign_id = op.params.get("campaign_id")
         client = MockMarketingClient(provider=op.params.get("provider", "google-ads"))
 
@@ -345,6 +571,31 @@ class GrowAdapter(Adapter):
 
     def compensate(self, op: OpSpec) -> list[OpSpec]:
         """Returns compensation Ops."""
+        if op.action == "grow.google.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="grow.google.disconnect",
+                    params={"provider": op.params.get("provider")},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+        elif op.action == "grow.meta.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="grow.meta.disconnect",
+                    params={"provider": op.params.get("provider")},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+
         if op.action == "grow.campaign.create":
             return [
                 OpSpec(

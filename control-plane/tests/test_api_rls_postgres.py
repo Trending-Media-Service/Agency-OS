@@ -87,10 +87,11 @@ async def setup_postgres_schema():
 
 
 @pytest.fixture()
-async def rls_api_client(setup_postgres_schema):
-    """Overrides app database dependencies to use the restricted RLS role for normal queries
+async def rls_api_client(setup_postgres_schema, monkeypatch):
+    """Overrides app database session makers to use the restricted RLS role for normal queries
 
     and the privileged admin role for worker/bootstrap queries.
+    Exercises the ACTUAL get_db and get_worker_db implementations.
     """
     # 1. Privileged engine (admin/worker bypasses RLS)
     admin_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
@@ -102,54 +103,25 @@ async def rls_api_client(setup_postgres_schema):
     app_engine = create_async_engine(app_url, poolclass=NullPool)
     app_session_maker = async_sessionmaker(app_engine, expire_on_commit=False)
 
-    # Override get_db (restricted RLS role)
-    async def override_get_db():
-        async with app_session_maker() as session:
-            await session.begin()
-            # Injects the active tenant ID context at the DB connection level
-            from app.database import tenant_context
-            tenant_id = tenant_context.get()
-            if tenant_id:
-                await session.execute(
-                    text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
-                    {"tenant_id": tenant_id},
-                )
-            try:
-                yield session
-                if session.in_transaction():
-                    await session.commit()
-            except Exception:
-                if session.in_transaction():
-                    await session.rollback()
-                raise
+    # Monkeypatch the session makers in app.database to use our test engines
+    import app.database as dbmod
+    monkeypatch.setattr(dbmod, "AsyncSessionLocal", app_session_maker)
+    monkeypatch.setattr(dbmod, "WorkerAsyncSessionLocal", admin_session_maker)
+    monkeypatch.setattr(dbmod, "engine", app_engine)
+    monkeypatch.setattr(dbmod, "worker_engine", admin_engine)
 
-    # Override get_worker_db (privileged worker/bootstrap role)
-    async def override_get_worker_db():
-        async with admin_session_maker() as session:
-            await session.begin()
-            try:
-                yield session
-                if session.in_transaction():
-                    await session.commit()
-            except Exception:
-                if session.in_transaction():
-                    await session.rollback()
-                raise
+    # SQL Spying on the RLS engine
+    from sqlalchemy import event
+    sql_statements = []
 
-    # Override session maker for background task workers
-    async def override_get_worker_session_maker():
-        return admin_session_maker
-
-    # Apply overrides
-    mainmod.app.dependency_overrides[get_db] = override_get_db
-    mainmod.app.dependency_overrides[get_worker_db] = override_get_worker_db
-    mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
+    @event.listens_for(app_engine.sync_engine, "before_cursor_execute")
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        sql_statements.append(statement)
 
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
+        ac.sql_statements = sql_statements  # Attach spy log to client
         yield ac
 
-    # Clear overrides and dispose engines
-    mainmod.app.dependency_overrides.clear()
     await app_engine.dispose()
     await admin_engine.dispose()
 
@@ -173,14 +145,29 @@ async def test_postgres_api_onboarding_and_rls_isolation(rls_api_client):
     assert tenant_id is not None
     assert brand_id is not None
 
+    # Clear recorded SQL statements before RLS call so we only check the GET /ops call
+    rls_api_client.sql_statements.clear()
+
     # Step 2: Query tenant-scoped operations using the new X-Tenant-ID header
-    # This exercises get_db's RLS set_config call.
+    # This exercises the actual get_db's RLS set_config call.
     ops_res = await rls_api_client.get(
         "/ops",
         headers={"X-Tenant-ID": tenant_id}
     )
     assert ops_res.status_code == 200
     assert ops_res.json() == []  # Successfully RLS-isolated and returns empty list!
+
+    # Assertions on executed SQL for Step 2
+    sql_logs = rls_api_client.sql_statements
+    
+    # We expect SELECT set_config to have been executed
+    set_config_calls = [s for s in sql_logs if "set_config" in s]
+    assert len(set_config_calls) > 0, "Expected set_config to be called for RLS context"
+    assert any("app.current_tenant_id" in s for s in set_config_calls), "Expected app.current_tenant_id to be set in set_config"
+
+    # We expect SET LOCAL to NEVER be used (as it was the source of the prod 500)
+    set_local_calls = [s for s in sql_logs if "SET LOCAL" in s.upper()]
+    assert len(set_local_calls) == 0, f"Detected forbidden 'SET LOCAL' call: {set_local_calls}"
 
     # Step 3: Query tenant-scoped connections using the new X-Tenant-ID header
     conns_res = await rls_api_client.get(
