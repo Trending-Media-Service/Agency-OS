@@ -31,7 +31,7 @@ jobs:
       - name: Security audit (pip-audit)
         run: pip-audit -r control-plane/requirements.txt
       - name: Kernel test suite
-        run: cd control-plane && python -m pytest -q
+        run: cd control-plane && python -m pytest
       - name: Invariant checks
         run: |
           set -e
