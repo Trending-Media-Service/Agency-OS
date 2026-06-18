@@ -140,7 +140,10 @@ async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str
                    detail={"tier": tier})
         s.add(Approval(op_id=row.id, tenant_id=row.tenant_id, actor="kernel", role="tier2-auto",
                        surface="auto", decision="approve"))
-        enqueue(s, row.id, row.tenant_id)
+        is_parent_saga = (row.action == "provision.brand_bootstrap.create")
+        has_dependencies = (row.parent_op_id is not None and row.sequence_order is not None and row.sequence_order > 1)
+        if not is_parent_saga and not has_dependencies:
+            enqueue(s, row.id, row.tenant_id)
     else:
         await transition(s, row, OpState.AWAITING_APPROVAL, actor=actor, detail={"tier": tier})
     return gate, requirement
@@ -156,7 +159,8 @@ async def check_cooldown(s: AsyncSession, row: OpRow, window_seconds: int = 8640
         elif "db_name" in row.params:
             target_id = row.params["db_name"]
         elif "recipe" in row.params:
-            target_id = row.params["recipe"]
+            domain_suffix = row.params.get("domain") or row.params.get("custom_domain") or ""
+            target_id = f"{row.params['recipe']}:{domain_suffix}" if domain_suffix else row.params["recipe"]
         else:
             target_id = json.dumps(row.params, sort_keys=True)
 
@@ -183,7 +187,8 @@ async def check_cooldown(s: AsyncSession, row: OpRow, window_seconds: int = 8640
             elif "db_name" in op.params:
                 op_target_id = op.params["db_name"]
             elif "recipe" in op.params:
-                op_target_id = op.params["recipe"]
+                domain_suffix = op.params.get("domain") or op.params.get("custom_domain") or ""
+                op_target_id = f"{op.params['recipe']}:{domain_suffix}" if domain_suffix else op.params["recipe"]
             else:
                 op_target_id = json.dumps(op.params, sort_keys=True)
 
