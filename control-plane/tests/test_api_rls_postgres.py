@@ -136,7 +136,8 @@ async def test_postgres_api_onboarding_and_rls_isolation(rls_api_client):
     # Step 1: Onboard a brand-new tenant and brand
     onboard_res = await rls_api_client.post(
         "/tenants",
-        json={"name": "Ableys Corp", "brand_name": "Ableys Retail"}
+        json={"name": "Ableys Corp", "brand_name": "Ableys Retail"},
+        headers={"Authorization": f"Bearer {os.getenv('OPERATOR_TOKEN', 'default-dev-token')}"},
     )
     assert onboard_res.status_code == 200
     data = onboard_res.json()

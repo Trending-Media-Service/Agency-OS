@@ -72,7 +72,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
         const res = await fetch(`${baseUrl}/tenants`);
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const data = await res.json();
-        const mapped = data.map((t: any) => ({
+        const mapped = data.map((t: { tenant_id: string; tenant_name: string; brand_id: string; brand_name: string }) => ({
           tenantId: t.tenant_id,
           tenantName: t.tenant_name,
           brandId: t.brand_id,
