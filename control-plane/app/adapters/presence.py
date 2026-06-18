@@ -273,25 +273,51 @@ class PresenceAdapter(Adapter):
             res = await session.execute(stmt)
             prop = res.scalar_one_or_none()
 
+            # Resolve Google connection and token
+            token = None
+            config = {}
+            if session:
+                stmt_conn = select(Connection).where(
+                    Connection.tenant_id == op.tenant_id,
+                    Connection.brand_id == op.brand_id,
+                    Connection.provider == "google"
+                )
+                res_conn = await session.execute(stmt_conn)
+                conn = res_conn.scalar_one_or_none()
+                if conn:
+                    config = conn.config or {}
+                    secret_ref = conn.secret_ref
+                    if secret_ref.startswith("secret:"):
+                        try:
+                            secrets_client = SecretManagerClient()
+                            token = await secrets_client.read_secret(secret_ref)
+                        except Exception as e:
+                            logger.error(f"Failed to resolve google token from Secret Manager: {e}")
+                            raise RuntimeError(f"Failed to resolve credentials: {e}") from e
+                    else:
+                        token = secret_ref
+
             if not prop:
                 prop = BrandProperty(
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     type="search_console",
                     provider="google",
-                    connection_ref="secret/gsc-oauth"
+                    connection_ref=conn.secret_ref if conn else "secret/gsc-oauth"
                 )
                 session.add(prop)
 
-            # 2. Mock audit run finding warnings
-            prop.status = "degraded"
-            prop.last_checked = now
-            prop.findings = {
-                "crawl_errors": 4,
-                "indexing_status": "partially_indexed",
-                "indexed_pages": 412,
-                "warnings": ["Missing schema.org markup on blog pages"]
-            }
+            # 2. Run GSC audit via GoogleAuditClient
+            from app.services.google_audit import GoogleAuditClient
+            audit_client = GoogleAuditClient(token=token, config=config)
+            try:
+                audit_res = await audit_client.run_search_console_audit()
+                prop.status = audit_res["status"]
+                prop.findings = audit_res["findings"]
+                prop.last_checked = now
+            except Exception as e:
+                logger.error(f"GSC Audit failed: {e}")
+                return ExecResult(ok=False, detail={"error": f"GSC Audit API failed: {str(e)}"})
 
             return ExecResult(ok=True, detail={"message": "GSC Audit completed", "status": prop.status, "findings": prop.findings})
 
@@ -304,27 +330,56 @@ class PresenceAdapter(Adapter):
             res = await session.execute(stmt)
             prop = res.scalar_one_or_none()
 
+            # Resolve Google connection and token
+            token = None
+            config = {}
+            if session:
+                stmt_conn = select(Connection).where(
+                    Connection.tenant_id == op.tenant_id,
+                    Connection.brand_id == op.brand_id,
+                    Connection.provider == "google"
+                )
+                res_conn = await session.execute(stmt_conn)
+                conn = res_conn.scalar_one_or_none()
+                if conn:
+                    config = conn.config or {}
+                    secret_ref = conn.secret_ref
+                    if secret_ref.startswith("secret:"):
+                        try:
+                            secrets_client = SecretManagerClient()
+                            token = await secrets_client.read_secret(secret_ref)
+                        except Exception as e:
+                            logger.error(f"Failed to resolve google token from Secret Manager: {e}")
+                            raise RuntimeError(f"Failed to resolve credentials: {e}") from e
+                    else:
+                        token = secret_ref
+
             if not prop:
                 prop = BrandProperty(
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     type="merchant_feed",
                     provider="google",
-                    connection_ref="secret/gmc-oauth"
+                    connection_ref=conn.secret_ref if conn else "secret/gmc-oauth"
                 )
                 session.add(prop)
 
-            # 2. Mock audit run
+            # 2. Run GMC audit via GoogleAuditClient
+            from app.services.google_audit import GoogleAuditClient
+            audit_client = GoogleAuditClient(token=token, config=config)
+            
             disapproved = op.params.get("simulate_disapproved_products", 0)
-            prop.status = "healthy" if disapproved == 0 else "degraded"
-            prop.last_checked = now
-            prop.findings = {
-                "disapproved_products": disapproved,
-                "feed_sync_status": "success" if disapproved == 0 else "failed_mismatches",
-                "active_items": 128
-            }
+            try:
+                audit_res = await audit_client.run_merchant_center_audit(simulate_disapproved_products=disapproved)
+                prop.status = audit_res["status"]
+                prop.findings = audit_res["findings"]
+                prop.last_checked = now
+            except Exception as e:
+                logger.error(f"GMC Audit failed: {e}")
+                return ExecResult(ok=False, detail={"error": f"GMC Audit API failed: {str(e)}"})
 
-            if disapproved > 0:
+            resolved_disapproved = prop.findings.get("disapproved_products", 0)
+            if resolved_disapproved > 0:
                 from app.kernel import loop
                 from app.kernel.optypes import Severity, Reversibility, Money, OpState
 
@@ -335,8 +390,8 @@ class PresenceAdapter(Adapter):
                     action="presence.alert_dispatch",
                     params={
                         "alert_type": "gmc_critical_mismatches",
-                        "severity": "CRITICAL" if disapproved >= 5 else "WARNING",
-                        "disapproved_products": disapproved
+                        "severity": "CRITICAL" if resolved_disapproved >= 5 else "WARNING",
+                        "disapproved_products": resolved_disapproved
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
                     cost_estimate=Money(0)
