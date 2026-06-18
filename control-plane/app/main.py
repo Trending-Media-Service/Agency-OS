@@ -180,13 +180,16 @@ class AuditVerifyOut(BaseModel):
 async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
     import uuid
     tenant_id = uuid.uuid4().hex
-    
-    # Set the tenant context in the session to satisfy RLS policies on tenants and brands tables
-    await s.execute(
-        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
-        {"tenant_id": tenant_id}
-    )
-    
+
+    # Set the tenant context so the INSERTs satisfy the RLS WITH CHECK policies on
+    # tenants/brands (the worker role is RLS-enforced, not BYPASSRLS). set_config is a
+    # Postgres function — guard on dialect so the SQLite test database isn't hit with it.
+    if s.bind.dialect.name == "postgresql":
+        await s.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant_id}
+        )
+
     t = Tenant(id=tenant_id, name=body.name)
     s.add(t)
     await s.flush()
