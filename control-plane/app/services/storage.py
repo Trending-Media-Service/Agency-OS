@@ -14,6 +14,7 @@ class GcsClient:
     def __init__(self, project_id: str = None):
         self.project_id = project_id or os.getenv("GCP_PROJECT", "aos-control-plane")
         self._client = None
+        self._gcs_init_failed = False
         
         # Try to initialize real GCP client if not in test environment and credentials exist
         if os.getenv("AOS_ENV") != "test" and "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
@@ -24,7 +25,8 @@ class GcsClient:
             except ImportError:
                 logger.warning("google-cloud-storage not installed. Falling back to local JSON mock.")
             except Exception as e:
-                logger.error(f"Failed to initialize real GCS client: {e}. Falling back to local JSON mock.")
+                logger.error(f"Failed to initialize real GCS client: {e}. GCS operations will be degraded.")
+                self._gcs_init_failed = True
 
     def _load_mock_storage(self) -> dict:
         if os.path.exists(MOCK_STORAGE_FILE):
@@ -66,7 +68,10 @@ class GcsClient:
                 logger.error(f"Real GCS upload failed: {e}")
                 raise e
 
-        # Local JSON Mock Write
+        if self._gcs_init_failed:
+            raise RuntimeError(f"GCS client failed to initialize — upload of gs://{bucket_name}/{blob_path} cannot proceed")
+
+        # Local JSON Mock Write (test / no-credentials dev mode only)
         storage_data = self._load_mock_storage()
         key = f"gs://{bucket_name}/{blob_path}"
         storage_data[key] = content
@@ -86,6 +91,9 @@ class GcsClient:
             except Exception as e:
                 logger.error(f"Real GCS download failed: {e}")
                 raise e
+
+        if self._gcs_init_failed:
+            raise RuntimeError(f"GCS client failed to initialize — download of gs://{bucket_name}/{blob_path} cannot proceed")
 
         # Local JSON Mock Read
         storage_data = self._load_mock_storage()
@@ -107,6 +115,9 @@ class GcsClient:
                 logger.error(f"Real GCS delete failed: {e}")
                 raise e
 
+        if self._gcs_init_failed:
+            raise RuntimeError(f"GCS client failed to initialize — delete of gs://{bucket_name}/{blob_path} cannot proceed")
+
         # Local JSON Mock Delete
         storage_data = self._load_mock_storage()
         key = f"gs://{bucket_name}/{blob_path}"
@@ -127,6 +138,9 @@ class GcsClient:
             except Exception as e:
                 logger.error(f"Real GCS blob check failed: {e}")
                 raise e
+
+        if self._gcs_init_failed:
+            raise RuntimeError(f"GCS client failed to initialize — exists check for gs://{bucket_name}/{blob_path} cannot proceed")
 
         # Local JSON Mock Check
         storage_data = self._load_mock_storage()

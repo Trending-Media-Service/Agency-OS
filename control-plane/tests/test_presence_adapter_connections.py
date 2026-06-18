@@ -233,6 +233,7 @@ async def test_presence_google_connect_execute(adapter, google_connect_op, sessi
     val = await secrets_client.read_secret(conn.secret_ref)
     assert val == "google-oauth-token-999"
     assert conn.scope == "search_console,merchant_center"
+    assert conn.config.get("scopes") == ["search_console", "merchant_center"]
 
 @pytest.mark.asyncio
 async def test_presence_google_connect_verify(adapter, google_connect_op, session):

@@ -28,14 +28,16 @@ class MetaAdsClient(MarketingClient):
         self._mock_client = MockMarketingClient(provider=self.provider)
         self._is_mock = not token or token == "mock-meta-ads-token" or token.startswith("secret:")
         
+        # Always initialize headers so tests can set _is_mock=False without AttributeError
+        self.headers = {
+            "Authorization": f"Bearer {token or ''}",
+            "Content-Type": "application/json"
+        }
+
         if self._is_mock:
             logger.info("Initializing MetaAdsClient in high-fidelity MOCK mode")
         else:
             logger.info(f"Initializing real MetaAdsClient targeting ad account {self.ad_account_id}")
-            self.headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
 
     async def _send_with_retry(
         self, 

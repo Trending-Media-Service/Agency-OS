@@ -25,7 +25,7 @@ class GoogleAuditClient:
         self.merchant_id = self.config.get("merchant_id", "mock-merchant-123")
         
         env = os.getenv("AOS_ENV", "development")
-        self._is_mock = env == "test" or not token or token == "mock-google-token" or token.startswith("secret:")
+        self._is_mock = env == "test" or not token or token == "mock-google-token"
         
         # Always initialize self.headers so that mock overrides or runtime changes don't cause AttributeError
         self.headers = {

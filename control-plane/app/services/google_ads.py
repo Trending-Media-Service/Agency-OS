@@ -27,20 +27,25 @@ class GoogleAdsClient(MarketingClient):
         self.customer_id = self.config.get("customer_id", "mock-customer-id")
         self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v17")
         
-        # Use delegation to MockMarketingClient for mock runs
+        # Use delegation to MockMarketingClient for mock runs.
+        # Gate on AOS_ENV=test or no/mock token — do NOT treat a bare secret_ref path
+        # as a ******; grow.py raises if SecretManager fails, so a raw ref
+        # should never reach here in production.
         self._mock_client = MockMarketingClient(provider=self.provider)
         self._is_mock = not token or token == "mock-google-ads-token" or token.startswith("secret:")
         
+        # Always initialize headers so tests can set _is_mock=False without AttributeError
+        self.headers = {
+            "Authorization": f"Bearer {token or ''}",
+            "developer-token": self.developer_token,
+            "login-customer-id": self.customer_id,
+            "Content-Type": "application/json"
+        }
+
         if self._is_mock:
             logger.info("Initializing GoogleAdsClient in high-fidelity MOCK mode")
         else:
             logger.info(f"Initializing real GoogleAdsClient targeting customer {self.customer_id}")
-            self.headers = {
-                "Authorization": f"Bearer {token}",
-                "developer-token": self.developer_token,
-                "login-customer-id": self.customer_id,
-                "Content-Type": "application/json"
-            }
 
     async def _send_with_retry(
         self, 

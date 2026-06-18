@@ -206,6 +206,8 @@ class PresenceAdapter(Adapter):
             scope = "read"
             if provider == "google":
                 scope = "search_console,merchant_center"
+                config = dict(config)
+                config["scopes"] = ["search_console", "merchant_center"]
 
             # Write to Secret Manager
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
@@ -276,26 +278,21 @@ class PresenceAdapter(Adapter):
             # Resolve Google connection and token
             token = None
             config = {}
-            if session:
-                stmt_conn = select(Connection).where(
-                    Connection.tenant_id == op.tenant_id,
-                    Connection.brand_id == op.brand_id,
-                    Connection.provider == "google"
-                )
-                res_conn = await session.execute(stmt_conn)
-                conn = res_conn.scalar_one_or_none()
-                if conn:
-                    config = conn.config or {}
-                    secret_ref = conn.secret_ref
-                    if secret_ref.startswith("secret:"):
-                        try:
-                            secrets_client = SecretManagerClient()
-                            token = await secrets_client.read_secret(secret_ref)
-                        except Exception as e:
-                            logger.error(f"Failed to resolve google token from Secret Manager: {e}")
-                            raise RuntimeError(f"Failed to resolve credentials: {e}") from e
-                    else:
-                        token = secret_ref
+            stmt_conn = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == "google"
+            )
+            res_conn = await session.execute(stmt_conn)
+            conn = res_conn.scalar_one_or_none()
+            if conn:
+                config = conn.config or {}
+                try:
+                    secrets_client = SecretManagerClient()
+                    token = await secrets_client.read_secret(conn.secret_ref)
+                except Exception as e:
+                    logger.error(f"Failed to resolve google token from Secret Manager: {e}")
+                    raise RuntimeError(f"Failed to resolve credentials: {e}") from e
 
             if not prop:
                 prop = BrandProperty(
@@ -333,26 +330,21 @@ class PresenceAdapter(Adapter):
             # Resolve Google connection and token
             token = None
             config = {}
-            if session:
-                stmt_conn = select(Connection).where(
-                    Connection.tenant_id == op.tenant_id,
-                    Connection.brand_id == op.brand_id,
-                    Connection.provider == "google"
-                )
-                res_conn = await session.execute(stmt_conn)
-                conn = res_conn.scalar_one_or_none()
-                if conn:
-                    config = conn.config or {}
-                    secret_ref = conn.secret_ref
-                    if secret_ref.startswith("secret:"):
-                        try:
-                            secrets_client = SecretManagerClient()
-                            token = await secrets_client.read_secret(secret_ref)
-                        except Exception as e:
-                            logger.error(f"Failed to resolve google token from Secret Manager: {e}")
-                            raise RuntimeError(f"Failed to resolve credentials: {e}") from e
-                    else:
-                        token = secret_ref
+            stmt_conn = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == "google"
+            )
+            res_conn = await session.execute(stmt_conn)
+            conn = res_conn.scalar_one_or_none()
+            if conn:
+                config = conn.config or {}
+                try:
+                    secrets_client = SecretManagerClient()
+                    token = await secrets_client.read_secret(conn.secret_ref)
+                except Exception as e:
+                    logger.error(f"Failed to resolve google token from Secret Manager: {e}")
+                    raise RuntimeError(f"Failed to resolve credentials: {e}") from e
 
             if not prop:
                 prop = BrandProperty(
