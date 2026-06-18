@@ -31,7 +31,7 @@ class MarketingClient(Protocol):
         ...
 
 
-def get_marketing_client(provider: str, token: Optional[str] = None) -> MarketingClient:
+def get_marketing_client(provider: str, token: Optional[str] = None, config: Optional[dict] = None) -> MarketingClient:
     """Factory to resolve the active marketing client for a provider."""
     # 1. Check for test environment or explicit mock provider
     env = os.getenv("AOS_ENV", "development")
@@ -43,8 +43,12 @@ def get_marketing_client(provider: str, token: Optional[str] = None) -> Marketin
         if not token:
             raise ValueError(f"Credentials (token) are required for provider: {provider}")
         
-        # In this phase (P2-2), real integrations are not implemented yet.
-        # Raise NotImplementedError as a placeholder until P3.
+        if provider == "google-ads":
+            from app.services.google_ads import GoogleAdsClient
+            return GoogleAdsClient(token=token, config=config)
+            
+        # Meta Ads is not implemented yet in this step (P3-1).
+        # Raise NotImplementedError until P3-2.
         raise NotImplementedError(f"Real integration for provider {provider} is not implemented in this phase")
 
     # 3. For any unknown providers, raise ValueError
