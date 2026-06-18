@@ -83,7 +83,6 @@ class DRAdapter:
                                 hash=ev.hash
                             )
                             scratch_session.add(scratch_ev)
-                        await scratch_session.commit()
             
             await scratch_engine.dispose()
             
@@ -127,6 +126,11 @@ class DRAdapter:
         scratch_url = f"sqlite+aiosqlite:///{scratch_db_path}"
 
         if op.params.get("simulate_verify_failure"):
+             if os.path.exists(scratch_db_path):
+                 try:
+                     os.unlink(scratch_db_path)
+                 except OSError:
+                     pass
              return VerifyResult(ok=False, checks={"database_restored": True, "audit_chain_verified": False}, detail={"error": "Simulated verification failure"})
 
         if not os.path.exists(scratch_db_path):
@@ -137,21 +141,23 @@ class DRAdapter:
             )
 
         try:
-            # Open session to the scratch database
-            scratch_engine = create_async_engine(scratch_url)
-            scratch_session_maker = async_sessionmaker(scratch_engine, expire_on_commit=False)
-            
-            async with scratch_session_maker() as scratch_session:
-                # Run audit_verify on the scratch database!
-                ok, first_bad_id = await audit_verify(scratch_session)
-                
-            await scratch_engine.dispose()
-            
-            # Clean up the file after successful verification
             try:
-                os.unlink(scratch_db_path)
-            except OSError:
-                pass
+                # Open session to the scratch database
+                scratch_engine = create_async_engine(scratch_url)
+                scratch_session_maker = async_sessionmaker(scratch_engine, expire_on_commit=False)
+                
+                async with scratch_session_maker() as scratch_session:
+                    # Run audit_verify on the scratch database!
+                    ok, first_bad_id = await audit_verify(scratch_session)
+                    
+                await scratch_engine.dispose()
+            finally:
+                # Unconditionally delete the temporary database file to prevent PII leaks
+                if os.path.exists(scratch_db_path):
+                    try:
+                        os.unlink(scratch_db_path)
+                    except OSError:
+                        pass
 
             if ok:
                 return VerifyResult(

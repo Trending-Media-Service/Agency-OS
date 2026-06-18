@@ -49,3 +49,19 @@ async def test_disallowed_origin_gets_no_acao():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         res = await ac.get("/healthz", headers={"Origin": DISALLOWED})
     assert "access-control-allow-origin" not in res.headers
+
+
+@pytest.mark.asyncio
+async def test_cors_disallows_trace_method():
+    # TRACE method is not in the allowed CORS methods.
+    # The preflight OPTIONS request for TRACE should not return CORS headers or should not include TRACE.
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.options(
+            "/ops",
+            headers={
+                "Origin": ALLOWED,
+                "Access-Control-Request-Method": "TRACE",
+            },
+        )
+    # If CORS preflight is rejected for method, CORSMiddleware will not return Access-Control-Allow-Origin
+    assert "access-control-allow-origin" not in res.headers or "access-control-allow-methods" not in res.headers or "TRACE" not in res.headers.get("access-control-allow-methods", "")

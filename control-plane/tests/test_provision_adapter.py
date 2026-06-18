@@ -342,3 +342,35 @@ def test_provision_adapter_plan_bootstrap_dedicated(adapter):
     assert child1.params["folder_id"] == "338402544084"
 
 
+@pytest.mark.asyncio
+async def test_provision_adapter_shopify_storefront_lifecycle(adapter):
+    op_spec = OpSpec(
+        id="op_shopify_dep_99",
+        tenant_id="tenant-webhook-test",
+        brand_id="brand-shopify-test",
+        domain="provision",
+        action="provision.shopify_storefront.create",
+        params={
+            "shop_url": "test-store.myshopify.com",
+            "secret_ref": "shopify-secret-key-123",
+            "gcp_project": "aos-brand-shopify-test",
+            "recipe": "shopify-storefront",
+            "version": "0.1.0"
+        },
+        severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=2900, currency="INR")
+    )
+
+    # 1. Execute the creation
+    res = await adapter.execute(op_spec, "idem_shopify_dep_1")
+    assert res.ok is True
+    assert res.detail["outputs"]["service_url"] == "https://test-store.myshopify.com"
+    assert "mcp-shopify" in res.detail["outputs"]["mcp_server_url"]
+
+    # 2. Verify the deployment
+    verdict = await adapter.verify(op_spec)
+    assert verdict.ok is True
+    assert verdict.checks["mcp_server_reachable"] is True
+    assert verdict.checks["storefront_active"] is True
+
+

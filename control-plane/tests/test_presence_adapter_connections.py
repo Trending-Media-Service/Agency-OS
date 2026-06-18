@@ -51,6 +51,7 @@ async def test_presence_wp_connect_execute(adapter, wp_connect_op, session):
     secrets_client = SecretManagerClient()
     val = await secrets_client.read_secret(conn.secret_ref)
     assert val == "wp-secret-key"
+    assert conn.scope == "read"
     assert conn.config["url"] == "blog.mybrand.com"
 
 @pytest.mark.asyncio
@@ -141,6 +142,7 @@ async def test_presence_web_connect_execute(adapter, web_connect_op, session):
     secrets_client = SecretManagerClient()
     val = await secrets_client.read_secret(conn.secret_ref)
     assert val == "vercel-token-123"
+    assert conn.scope == "read"
     assert conn.config["url"] == "www.mybrand.com"
  
 @pytest.mark.asyncio
@@ -182,6 +184,95 @@ async def test_presence_web_execute_disconnect(adapter, web_connect_op, session)
         Connection.tenant_id == "t1",
         Connection.brand_id == "b1",
         Connection.provider == "web"
+    )
+    db_res = await session.execute(stmt)
+    assert db_res.scalar_one_or_none() is None
+
+
+# Google Services Tests
+@pytest.fixture
+def google_connect_intent():
+    return "connect google gsc merchant center with secret:google-oauth-token-999"
+
+@pytest.fixture
+def google_connect_op(adapter, google_connect_intent):
+    ops = adapter.plan(google_connect_intent, "t1", "b1")
+    assert len(ops) == 1
+    return ops[0]
+
+def test_presence_google_connect_plan(adapter, google_connect_intent):
+    ops = adapter.plan(google_connect_intent, "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.action == "presence.google.connect"
+    assert op.params["provider"] == "google"
+    assert op.params["secret_ref"] == "google-oauth-token-999"
+    assert op.params["config"] == {}
+
+def test_presence_google_connect_preview(adapter, google_connect_op):
+    preview_art = adapter.preview(google_connect_op)
+    assert preview_art.kind == "google_connect_preview"
+    assert "Google Services" in preview_art.summary
+    assert "google-oauth-token-999" in preview_art.summary
+
+async def test_presence_google_connect_execute(adapter, google_connect_op, session):
+    res = await adapter.execute(google_connect_op, "idem_google_connect_123", session=session)
+    assert res.ok is True
+    
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t1",
+        Connection.brand_id == "b1",
+        Connection.provider == "google"
+    )
+    db_res = await session.execute(stmt)
+    conn = db_res.scalar_one_or_none()
+    assert conn is not None
+    assert "secrets" in conn.secret_ref
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient()
+    val = await secrets_client.read_secret(conn.secret_ref)
+    assert val == "google-oauth-token-999"
+    assert conn.scope == "search_console,merchant_center"
+
+@pytest.mark.asyncio
+async def test_presence_google_connect_verify(adapter, google_connect_op, session):
+    await adapter.execute(google_connect_op, "idem_google_verify_setup_123", session=session)
+    verdict = await adapter.verify(google_connect_op, session=session)
+    assert verdict.ok is True
+    assert verdict.checks["connection_valid"] is True
+
+def test_presence_google_compensate(adapter, google_connect_op):
+    compensations = adapter.compensate(google_connect_op)
+    assert len(compensations) == 1
+    comp = compensations[0]
+    assert comp.action == "presence.google.disconnect"
+    assert comp.params["provider"] == "google"
+
+async def test_presence_google_execute_disconnect(adapter, google_connect_op, session):
+    # 1. Seed connection
+    conn = Connection(
+        tenant_id="t1",
+        brand_id="b1",
+        provider="google",
+        secret_ref="google-oauth-token-999",
+        config={}
+    )
+    session.add(conn)
+    await session.commit()
+    
+    # 2. Compensate
+    compensations = adapter.compensate(google_connect_op)
+    disconnect_op = compensations[0]
+    
+    # 3. Execute disconnect
+    res = await adapter.execute(disconnect_op, "idem_google_disconnect_123", session=session)
+    assert res.ok is True
+    
+    # 4. Verify gone
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t1",
+        Connection.brand_id == "b1",
+        Connection.provider == "google"
     )
     db_res = await session.execute(stmt)
     assert db_res.scalar_one_or_none() is None

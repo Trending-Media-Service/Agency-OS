@@ -207,7 +207,7 @@ class Connection(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     provider: Mapped[str] = mapped_column(String(40))
-    scope: Mapped[str] = mapped_column(String(16), default="read")  # read|write
+    scope: Mapped[str] = mapped_column(String(128), default="read")  # e.g. read|write or comma-separated scopes
     secret_ref: Mapped[str] = mapped_column(String(255))
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)

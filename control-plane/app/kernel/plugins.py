@@ -66,7 +66,22 @@ class ShopifyPlugin:
         """Translates Shopify webhooks (e.g. orders/create) into proposed Ops."""
         if event_type == "orders/create":
             order_id = str(payload.get("id"))
-            total_price = payload.get("total_price", "0.00")
+            
+            # Call Shopify MCP server to retrieve verified order details
+            from app.services.mcp import McpClient
+            import json
+            
+            mcp = McpClient()
+            try:
+                mcp_res = await mcp.call_tool("shopify_get_order", {"order_id": order_id})
+                content_text = mcp_res.get("content", [{}])[0].get("text", "{}")
+                order_data = json.loads(content_text)
+            except Exception as e:
+                logger.error(f"Failed to fetch order {order_id} via Shopify MCP server: {e}")
+                # Fallback to webhook payload if MCP call fails to ensure resilience
+                order_data = payload
+
+            total_price = order_data.get("total_price", "0.00")
             try:
                 amount_minor = int(float(total_price) * 100)
             except (ValueError, TypeError):
@@ -81,7 +96,7 @@ class ShopifyPlugin:
                     params={
                         "order_id": order_id,
                         "amount_minor": amount_minor,
-                        "placed_at": payload.get("created_at"),
+                        "placed_at": order_data.get("created_at"),
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
                 )

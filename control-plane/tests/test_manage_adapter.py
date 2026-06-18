@@ -192,3 +192,105 @@ async def test_manage_adapter_backup_execute_delete(adapter, backup_op):
     res = await adapter.execute(delete_op, "idem_delete_123")
     assert res.ok is True
     assert "deleted" in res.detail["message"]
+
+
+async def test_manage_adapter_backup_degraded_flow(adapter, backup_op, monkeypatch):
+    from app.services.storage import GcsClient
+    import os
+    import shutil
+    
+    # Simulate production mode with GCS outage
+    gcs_instance = GcsClient()
+    gcs_instance._client = object() # Mock active GCP client
+    
+    async def mock_upload(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+        
+    async def mock_exists(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+        
+    monkeypatch.setattr(gcs_instance, "upload_from_string", mock_upload)
+    monkeypatch.setattr(gcs_instance, "blob_exists", mock_exists)
+    monkeypatch.setattr("app.adapters.manage.GcsClient", lambda *a, **kw: gcs_instance)
+    
+    # Clear fallback directory
+    fallback_dir = os.path.join(os.path.dirname(__file__), "../scratch/fallback_backups")
+    if os.path.exists(fallback_dir):
+        shutil.rmtree(fallback_dir)
+        
+    # 1. Execute backup (should fallback to local disk and return degraded success)
+    res = await adapter.execute(backup_op, "idem_backup_degraded_123")
+    assert res.ok is True
+    assert res.detail["storage_status"] == "degraded"
+    assert "fallback_file" in res.detail
+    fallback_file = res.detail["fallback_file"]
+    assert os.path.exists(fallback_file)
+    
+    # 2. Verify backup (should check fallback storage and return degraded success)
+    verdict = await adapter.verify(backup_op)
+    assert verdict.ok is True
+    assert verdict.checks["file_exists_in_fallback"] is True
+    assert verdict.checks["storage_status"] == "degraded"
+    
+    # 3. Compensate (delete)
+    compensations = adapter.compensate(backup_op)
+    delete_op = compensations[0]
+    
+    async def mock_delete(*args, **kwargs):
+        raise Exception("GCS Outage Sim")
+    monkeypatch.setattr(gcs_instance, "delete_blob", mock_delete)
+    
+    # Delete should clean up fallback file and return degraded success
+    res_del = await adapter.execute(delete_op, "idem_delete_degraded_123")
+    assert res_del.ok is True
+    assert res_del.detail["storage_status"] == "degraded"
+    assert not os.path.exists(fallback_file)
+
+
+@pytest.mark.asyncio
+async def test_manage_adapter_real_shopify_mcp_verification(adapter, session):
+    # 1. Plan with custom mcp_url
+    intent = "connect shopify store luxury-tea.myshopify.com with secret:luxury-secret-token mcp_url:https://mcp-shopify.tms.internal/rpc"
+    ops = adapter.plan(intent, "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.params["config"]["mcp_server_url"] == "https://mcp-shopify.tms.internal/rpc"
+    assert op.params["config"]["shop_url"] == "luxury-tea.myshopify.com"
+
+    # 2. Execute connection (registers in DB)
+    res = await adapter.execute(op, "idem_luxury_conn", session=session)
+    assert res.ok is True
+
+    # 3. Verify (should make a real HTTP call to the custom MCP server URL)
+    from unittest.mock import patch, MagicMock
+    with patch("httpx.AsyncClient.post") as mock_post:
+        # Mock successful JSON-RPC tool call response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"shop_name": "Luxury Tea Boutique", "domain": "luxury-tea.myshopify.com", "currency": "USD", "status": "active"}'
+                    }
+                ]
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        verdict = await adapter.verify(op, session=session)
+        assert verdict.ok is True
+        assert verdict.checks["mcp_tool_call_ok"] is True
+        assert verdict.detail["shop_name"] == "Luxury Tea Boutique"
+        assert verdict.detail["domain"] == "luxury-tea.myshopify.com"
+
+        # Assert correct HTTP post details
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        url = args[0]
+        payload = kwargs["json"]
+
+        assert url == "https://mcp-shopify.tms.internal/rpc"
+        assert payload["method"] == "tools/call"
+        assert payload["params"]["name"] == "shopify_get_shop_info"
