@@ -368,9 +368,26 @@ async def test_provision_adapter_shopify_storefront_lifecycle(adapter):
     assert "mcp-shopify" in res.detail["outputs"]["mcp_server_url"]
 
     # 2. Verify the deployment
-    verdict = await adapter.verify(op_spec)
-    assert verdict.ok is True
-    assert verdict.checks["mcp_server_reachable"] is True
-    assert verdict.checks["storefront_active"] is True
+    with patch("httpx.AsyncClient.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "jsonrpc": "2.0",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"shop_name": "Mock Shop"}'
+                    }
+                ]
+            },
+            "id": "call-shopify_get_shop_info-1"
+        }
+        mock_post.return_value = mock_resp
+
+        verdict = await adapter.verify(op_spec)
+        assert verdict.ok is True
+        assert verdict.checks["mcp_server_reachable"] is True
+        assert verdict.checks["storefront_active"] is True
 
 
