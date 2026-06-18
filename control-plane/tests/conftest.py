@@ -12,8 +12,6 @@ from unittest.mock import patch, MagicMock
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from app.models import Base
 from httpx import ASGITransport, AsyncClient
-import app.main as mainmod
-from app.database import get_db, get_worker_db, get_worker_session_maker
 
 original_run = subprocess.run
 
@@ -254,6 +252,9 @@ async def session(db_engine):
 
 @pytest.fixture()
 async def client(db_engine):
+    import app.main as mainmod
+    from app.database import get_db, get_worker_db, get_worker_session_maker
+
     async_session = async_sessionmaker(db_engine, expire_on_commit=False)
 
     async def override_get_db():
@@ -273,6 +274,7 @@ async def client(db_engine):
 
     from app.services.secrets import SecretManagerClient
     SecretManagerClient.clear()
+    print("DEBUG APP ID IN CONFTEST:", id(mainmod.app))
     mainmod.app.dependency_overrides[get_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
