@@ -16,12 +16,12 @@ def test_marketing_factory_missing_credentials(monkeypatch):
         get_marketing_client("google-ads", token=None)
     assert "Credentials (token) are required" in str(exc.value)
 
-def test_marketing_factory_real_client_not_implemented(monkeypatch):
-    # Case 3: In production/development, requesting a real channel with credentials raises NotImplementedError in this phase
+def test_marketing_factory_real_client_returned(monkeypatch):
+    # Case 3: In production with credentials, the factory returns the real client for the provider
     monkeypatch.setenv("AOS_ENV", "production")
-    with pytest.raises(NotImplementedError) as exc:
-        get_marketing_client("google-ads", token="google-oauth-token-123")
-    assert "Real integration for provider google-ads is not implemented" in str(exc.value)
+    from app.services.google_ads import GoogleAdsClient
+    client = get_marketing_client("google-ads", token="google-oauth-token-123")
+    assert isinstance(client, GoogleAdsClient)
 
 def test_marketing_factory_unsupported_provider(monkeypatch):
     monkeypatch.setenv("AOS_ENV", "production")
