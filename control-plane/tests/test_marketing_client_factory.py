@@ -1,6 +1,7 @@
 import pytest
 import os
 from app.services.marketing import get_marketing_client, MockMarketingClient
+from app.services.google_ads import GoogleAdsClient
 
 def test_marketing_factory_mock_mode(monkeypatch):
     # Case 1: In test environment, the factory always returns the Mock client
@@ -16,12 +17,12 @@ def test_marketing_factory_missing_credentials(monkeypatch):
         get_marketing_client("google-ads", token=None)
     assert "Credentials (token) are required" in str(exc.value)
 
-def test_marketing_factory_real_client_not_implemented(monkeypatch):
-    # Case 3: In production/development, requesting a real channel with credentials raises NotImplementedError in this phase
+def test_marketing_factory_real_client_supported(monkeypatch):
+    # Case 3: In production/development, requesting a real channel with credentials resolves the real client
     monkeypatch.setenv("AOS_ENV", "production")
-    with pytest.raises(NotImplementedError) as exc:
-        get_marketing_client("google-ads", token="google-oauth-token-123")
-    assert "Real integration for provider google-ads is not implemented" in str(exc.value)
+    client = get_marketing_client("google-ads", token="google-oauth-token-123")
+    assert isinstance(client, GoogleAdsClient)
+    assert client.provider == "google-ads"
 
 def test_marketing_factory_unsupported_provider(monkeypatch):
     monkeypatch.setenv("AOS_ENV", "production")
