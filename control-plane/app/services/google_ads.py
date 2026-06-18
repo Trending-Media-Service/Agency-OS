@@ -32,7 +32,7 @@ class GoogleAdsClient(MarketingClient):
         # as a ******; grow.py raises if SecretManager fails, so a raw ref
         # should never reach here in production.
         self._mock_client = MockMarketingClient(provider=self.provider)
-        self._is_mock = not token or token == "mock-google-ads-token" or token.startswith("secret:")
+        self._is_mock = not token or token == "mock-google-ads-token"
         
         # Always initialize headers so tests can set _is_mock=False without AttributeError
         self.headers = {

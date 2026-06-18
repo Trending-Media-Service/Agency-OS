@@ -26,7 +26,7 @@ class MetaAdsClient(MarketingClient):
         self.api_url = self.config.get("api_url", "https://graph.facebook.com/v19.0")
         
         self._mock_client = MockMarketingClient(provider=self.provider)
-        self._is_mock = not token or token == "mock-meta-ads-token" or token.startswith("secret:")
+        self._is_mock = not token or token == "mock-meta-ads-token"
         
         # Always initialize headers so tests can set _is_mock=False without AttributeError
         self.headers = {
