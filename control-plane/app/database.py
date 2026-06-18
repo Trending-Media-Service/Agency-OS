@@ -12,6 +12,8 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/agency_os",
 )
+if os.getenv("ENV") == "production" and "localhost" in DATABASE_URL:
+    raise RuntimeError("PRODUCTION BOOT ERROR: DATABASE_URL still points at localhost")
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_async_engine(DATABASE_URL, echo=False)

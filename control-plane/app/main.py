@@ -3,7 +3,7 @@ import os
 import datetime as dt
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -82,6 +82,18 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    from app.observability import trace_context
+    trace_id = trace_context.get("unknown")
+    logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "trace_id": trace_id},
+    )
+
+
 # The operator/brand console (control-plane/web) is served from a separate
 # Cloud Run origin, so browser calls to this API are cross-origin. Origins come
 # from ALLOWED_ORIGINS (comma-separated); localhost + the deployed console URL
@@ -104,20 +116,21 @@ app.add_middleware(RateLimitMiddleware, rate=0.2, capacity=5.0)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
 )
-
-
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
+if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
+    raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
 
 async def verify_operator_auth(authorization: str | None = Header(default=None)):
     """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
+    import hmac
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
     token = authorization[7:]
-    if token != OPERATOR_TOKEN:
+    if not hmac.compare_digest(token, OPERATOR_TOKEN):
         raise HTTPException(403, "Forbidden: Invalid operator token")
 
 
@@ -147,8 +160,8 @@ def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
 
 
 class TenantIn(BaseModel):
-    name: str
-    brand_name: str
+    name: str = Field(max_length=200)
+    brand_name: str = Field(max_length=200)
 
 
 class OpOut(BaseModel):
@@ -244,8 +257,8 @@ async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
 
 
 class ChatIn(BaseModel):
-    brand_id: str
-    text: str
+    brand_id: str = Field(max_length=100)
+    text: str = Field(max_length=5000)
 
 
 @app.post("/chat")
@@ -414,9 +427,9 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
 
 
 class IntentIn(BaseModel):
-    brand_id: str
-    text: str
-    domain: str = "provision"
+    brand_id: str = Field(max_length=100)
+    text: str = Field(max_length=5000)
+    domain: str = Field(default="provision", max_length=50)
 
 
 @app.post("/intents")
@@ -1156,9 +1169,25 @@ async def evaluate_trust(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok", "events_added": events_added}
 
 
-def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
-    """Verifies SHA256 signature using HMAC and Meta app secret."""
+async def resolve_whatsapp_secret() -> str | None:
+    """Resolves the WhatsApp App Secret from Secret Manager if configured as a ref, or env var."""
     if not WHATSAPP_APP_SECRET:
+        return None
+    if WHATSAPP_APP_SECRET.startswith("projects/"):
+        from app.services.secrets import SecretManagerClient
+        try:
+            secrets_client = SecretManagerClient()
+            return await secrets_client.read_secret(WHATSAPP_APP_SECRET)
+        except Exception as e:
+            logger.error(f"Failed to resolve WHATSAPP_APP_SECRET from Secret Manager reference {WHATSAPP_APP_SECRET}: {e}")
+            raise RuntimeError(f"Failed to resolve WhatsApp secret from Secret Manager: {e}")
+    return WHATSAPP_APP_SECRET
+
+
+async def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
+    """Verifies SHA256 signature using HMAC and Meta app secret."""
+    secret_value = await resolve_whatsapp_secret()
+    if not secret_value:
         logger.warning("WHATSAPP_APP_SECRET not configured. Signature check bypassed.")
         return True
     import hmac
@@ -1166,7 +1195,7 @@ def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
     if signature.startswith("sha256="):
         signature = signature[7:]
     expected = hmac.new(
-        WHATSAPP_APP_SECRET.encode("utf-8"),
+        secret_value.encode("utf-8"),
         payload,
         hashlib.sha256
     ).hexdigest()
@@ -1203,7 +1232,7 @@ async def whatsapp_webhook(
             logger.warning("Rejecting WhatsApp webhook: Missing X-Hub-Signature-256 header")
             raise HTTPException(401, "Signature missing")
 
-        if not verify_whatsapp_signature(raw_body, x_hub_signature_256):
+        if not await verify_whatsapp_signature(raw_body, x_hub_signature_256):
             logger.warning("Rejecting WhatsApp webhook: Signature mismatch")
             raise HTTPException(401, "Invalid signature")
 
@@ -1318,92 +1347,122 @@ async def plugin_webhook(
     x_shopify_topic: str | None = Header(default=None, alias="X-Shopify-Topic"),
     s: AsyncSession = Depends(get_worker_db)
 ):
-    plugin = get_plugin(provider)
-    if not plugin:
-        raise HTTPException(404, f"No plugin registered for provider: {provider}")
-
-    headers = dict(request.headers)
-    raw_body = await request.body()
     try:
-        import json
-        payload = json.loads(raw_body)
-    except json.JSONDecodeError:
-        payload = {}
+        plugin = get_plugin(provider)
+        if not plugin:
+            raise HTTPException(404, f"No plugin registered for provider: {provider}")
 
-    # 1. Resolve identifier
-    identifier = await plugin.resolve_connection_identifier(headers, payload)
-    if not identifier:
-        raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
+        headers = dict(request.headers)
+        raw_body = await request.body()
+        try:
+            import json
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            payload = {}
 
-    # 2. Find Connection (RLS is bypassed in get_worker_db session)
-    conn = await _find_connection(s, provider, identifier)
-    if not conn:
-        raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
+        # Deduplicate webhook using ProcessedWebhookMessage
+        from app.models import ProcessedWebhookMessage
+        from sqlalchemy.exc import IntegrityError
+        webhook_id = headers.get("x-shopify-webhook-id") or headers.get("x-webhook-id") or headers.get("x-request-id")
+        if webhook_id:
+            try:
+                async with s.begin_nested():
+                    s.add(ProcessedWebhookMessage(message_id=webhook_id))
+            except IntegrityError:
+                logger.info(f"Duplicate plugin webhook message ID ignored: {webhook_id}")
+                return {"status": "ignored", "detail": "duplicate webhook"}
 
-    # 3. Retrieve signature and secret key
-    signature = None
-    if provider == "shopify":
-        signature = x_shopify_hmac_sha256
-    if not signature:
-        signature = headers.get("x-signature")
+        # 1. Resolve identifier
+        identifier = await plugin.resolve_connection_identifier(headers, payload)
+        if not identifier:
+            raise HTTPException(400, "Unable to resolve connection identifier from webhook headers/payload")
 
-    if not signature:
-        raise HTTPException(401, "Webhook signature header missing")
+        # 2. Find Connection (RLS is bypassed in get_worker_db session)
+        conn = await _find_connection(s, provider, identifier)
+        if not conn:
+            raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
 
-    # In production, secret would be retrieved from Secret Manager using conn.secret_ref.
-    # For local/testing, we use secret_ref directly as the secret key.
-    secret_key = conn.secret_ref
+        # Retrieve tenant to determine dedicated GCP project ID for secret isolation
+        stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+        res_tenant = await s.execute(stmt_tenant)
+        tenant = res_tenant.scalar_one_or_none()
+        gcp_project = tenant.gcp_project if tenant else None
 
-    # 4. Verify signature
-    if not await plugin.verify_signature(raw_body, signature, secret_key):
-        raise HTTPException(401, "Webhook signature mismatch")
+        # 3. Retrieve signature and secret key
+        signature = None
+        if provider == "shopify":
+            signature = x_shopify_hmac_sha256
+        if not signature:
+            signature = headers.get("x-signature")
 
-    # 5. Translate webhook payload to OpSpecs
-    event_type = x_shopify_topic or headers.get("x-event-type", "")
-    specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+        if not signature:
+            raise HTTPException(401, "Webhook signature header missing")
 
-    proposed_ops = []
-    # 6. Propose and gate each Op under the connection's tenant_id context
-    token = tenant_context.set(conn.tenant_id)
-    try:
-        # Set app.current_tenant_id at the DB connection level for local RLS checks
-        if s.bind.dialect.name == "postgresql":
-            await s.execute(
-                text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
-                {"tenant_id": conn.tenant_id},
-            )
+        # Resolve actual secret key from Secret Manager (Falling back to secret_ref if not in Secret Manager)
+        from app.services.secrets import SecretManagerClient
+        try:
+            secrets_client = SecretManagerClient(project_id=gcp_project)
+            secret_key = await secrets_client.read_secret(conn.secret_ref)
+        except ValueError as e:
+            logger.warning(f"Secret not found in registry: {e}. Falling back to literal ref.")
+            secret_key = conn.secret_ref
+        except Exception as e:
+            logger.error(f"Failed to read webhook secret from Secret Manager: {e}")
+            raise HTTPException(500, "Internal secret resolution error")
 
-        for spec in specs:
-            row = await loop.propose(s, spec, actor=f"webhook.{provider}")
-            
-            # Resolve trust snapshot to find tier
-            from app.models import TrustSnapshot
-            stmt_tier = (
-                select(TrustSnapshot.tier)
-                .where(
-                    TrustSnapshot.tenant_id == conn.tenant_id,
-                    TrustSnapshot.brand_id == conn.brand_id,
-                    TrustSnapshot.domain == spec.domain
+        # 4. Verify signature
+        if not await plugin.verify_signature(raw_body, signature, secret_key):
+            raise HTTPException(401, "Webhook signature mismatch")
+
+        # 5. Translate webhook payload to OpSpecs
+        event_type = x_shopify_topic or headers.get("x-event-type", "")
+        specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
+
+        proposed_ops = []
+        # 6. Propose and gate each Op under the connection's tenant_id context
+        token = tenant_context.set(conn.tenant_id)
+        try:
+            # Set app.current_tenant_id at the DB connection level for local RLS checks
+            if s.bind.dialect.name == "postgresql":
+                await s.execute(
+                    text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+                    {"tenant_id": conn.tenant_id},
                 )
-                .order_by(TrustSnapshot.ts.desc())
-                .limit(1)
-            )
-            res_tier = await s.execute(stmt_tier)
-            tier = res_tier.scalar_one_or_none()
-            if tier is None:
-                tier = 1  # fallback to supervised
 
-            await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
-            proposed_ops.append(row.id)
-            
-        await s.commit()
-    except Exception:
-        await s.rollback()
+            for spec in specs:
+                row = await loop.propose(s, spec, actor=f"webhook.{provider}")
+                
+                # Resolve trust snapshot to find tier
+                from app.models import TrustSnapshot
+                stmt_tier = (
+                    select(TrustSnapshot.tier)
+                    .where(
+                        TrustSnapshot.tenant_id == conn.tenant_id,
+                        TrustSnapshot.brand_id == conn.brand_id,
+                        TrustSnapshot.domain == spec.domain
+                    )
+                    .order_by(TrustSnapshot.ts.desc())
+                    .limit(1)
+                )
+                res_tier = await s.execute(stmt_tier)
+                tier = res_tier.scalar_one_or_none()
+                if tier is None:
+                    tier = 1  # fallback to supervised
+
+                await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
+                proposed_ops.append(row.id)
+                
+            await s.commit()
+        except Exception:
+            await s.rollback()
+            raise
+        finally:
+            tenant_context.reset(token)
+
+        return {"status": "accepted", "proposed_ops": proposed_ops}
+    except Exception as e:
+        logger.exception("WEBHOOK EXCEPTION ENCOUNTERED:")
         raise
-    finally:
-        tenant_context.reset(token)
-
-    return {"status": "accepted", "proposed_ops": proposed_ops}
 
 
 @app.get("/debug/db", dependencies=[Depends(verify_operator_auth)])

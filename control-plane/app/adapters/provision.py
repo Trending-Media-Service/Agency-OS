@@ -327,6 +327,10 @@ class ProvisionAdapter(Adapter):
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Runs terraform apply or destroy based on the action, using saved plan if available."""
+        if op.action in ("provision.brand_bootstrap.create", "provision.brand_bootstrap.destroy"):
+            logger.info(f"Saga parent operation {op.action} executed successfully (no-op).")
+            return ExecResult(ok=True, detail={"message": "Saga parent logical operation completed."})
+
         action_parts = op.action.split(".")
         verb = action_parts[-1] # create | destroy
         

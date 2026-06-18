@@ -456,7 +456,10 @@ async def load_active_ruleset_params(s: AsyncSession, tenant_id: str) -> Ruleset
     res = await s.execute(stmt)
     policy = res.scalar_one_or_none()
     if policy:
-        rj = policy.params.copy() if policy.params else {}
+        import dataclasses
+        fields = {f.name for f in dataclasses.fields(RulesetParams)}
+        raw_params = policy.params if policy.params else {}
+        rj = {k: v for k, v in raw_params.items() if k in fields}
         for key in ("allowed_regions", "approved_dependencies", "protected_paths"):
             if key in rj and isinstance(rj[key], list):
                 rj[key] = tuple(rj[key])

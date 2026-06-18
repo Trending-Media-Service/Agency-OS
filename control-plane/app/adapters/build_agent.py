@@ -27,11 +27,20 @@ class BuildAgentHarness:
         if not self.temp_dir:
             raise RuntimeError("Harness must be used as a context manager")
             
-        logger.info(f"Cloning {self.repo_url} to {self.temp_dir}")
+        # Inject access token for secure HTTPS authentication if provided
+        repo_url = self.repo_url
+        if self.access_token and repo_url.startswith("https://"):
+            # Mask token in logs
+            masked_url = repo_url.replace("https://", f"https://***@")
+            logger.info(f"Cloning authenticated repo {masked_url} to {self.temp_dir}")
+            repo_url = repo_url.replace("https://", f"https://{self.access_token}@")
+        else:
+            logger.info(f"Cloning {self.repo_url} to {self.temp_dir}")
+
         try:
             # Clone repo
             subprocess.run(
-                ["git", "clone", self.repo_url, "repo"],
+                ["git", "clone", repo_url, "repo"],
                 cwd=self.temp_dir, check=True, capture_output=True, text=True
             )
             self.repo_path = os.path.join(self.temp_dir, "repo")

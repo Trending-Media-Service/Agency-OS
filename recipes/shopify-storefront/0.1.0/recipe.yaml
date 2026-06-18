@@ -1,0 +1,23 @@
+name: shopify-storefront
+version: 0.1.0
+description: Deploys the dedicated brand Shopify storefront, configuring connection tokens, webhook subscriptions, and MCP server endpoints.
+inputs:
+  shop_url:
+    type: string
+    description: The URL of the Shopify store (e.g., brandname.myshopify.com)
+  secret_ref:
+    type: string
+    description: The GCP Secret Manager reference containing the Shopify admin access token.
+  gcp_project:
+    type: string
+    description: Dedicated GCP project ID for the storefront resources.
+outputs:
+  service_url:
+    type: string
+    description: The storefront URL.
+  mcp_server_url:
+    type: string
+    description: The Shopify MCP server endpoint.
+cost_estimate:
+  fixed_monthly_minor: 2900  # $29/mo basic shopify
+  variable_unit_minor: 0
