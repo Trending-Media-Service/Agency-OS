@@ -93,9 +93,9 @@ async def rls_db():
             "('order-a', 'tenant-a', 'brand-wok', 100, 'INR', now(), now()), "
             "('order-b', 'tenant-b', 'brand-abl', 100, 'INR', now(), now())"))
         await conn.execute(text(
-            "INSERT INTO outbox (id, tenant_id, payload, status, created_at) VALUES "
-            "('msg-a', 'tenant-a', '{}', 'pending', now()), "
-            "('msg-b', 'tenant-b', '{}', 'pending', now())"))
+            "INSERT INTO outbox (op_id, tenant_id, status, attempts, next_attempt_at, created_at) VALUES "
+            "('msg-a', 'tenant-a', 'PENDING', 0, now(), now()), "
+            "('msg-b', 'tenant-b', 'PENDING', 0, now(), now())"))
 
     p = urlparse(ADMIN_URL)
     app_url = f"postgresql+asyncpg://{APP_ROLE}:{APP_PW}@{p.hostname}:{p.port or 5432}{p.path}"
@@ -195,4 +195,3 @@ async def test_rls_blocks_cross_tenant_read(rls_db):
 async def test_rls_isolates_outbox(rls_db):
     assert await _get_ids(rls_db, "outbox", "tenant-a") == ["msg-a"]
     assert await _get_ids(rls_db, "outbox", "tenant-b") == ["msg-b"]
-
