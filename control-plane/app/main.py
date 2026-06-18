@@ -111,6 +111,8 @@ app.add_middleware(
 
 
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
+if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
+    raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
 
 async def verify_operator_auth(authorization: str | None = Header(default=None)):
     """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
