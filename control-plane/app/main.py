@@ -116,7 +116,7 @@ app.add_middleware(RateLimitMiddleware, rate=0.2, capacity=5.0)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
 )
