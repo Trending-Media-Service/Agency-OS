@@ -17,6 +17,7 @@ vi.mock("@/contexts/TenantContext", () => ({
     setRole: mockSetRole,
     knownTenants: [
       { tenantId: "t1", tenantName: "Bootstrap Developer", brandId: "brand-bootstrap", brandName: "Bootstrap Brand" },
+      { tenantId: "tenant-acme", tenantName: "Acme", brandId: "brand-acme", brandName: "Acme Retail" },
     ],
     addKnownTenant: vi.fn(),
   }),
