@@ -1137,6 +1137,36 @@ async def test_chat_intent_parsing_and_planning(client):
 
 
 @pytest.mark.asyncio
+async def test_chat_readonly_and_guidance_intents(client):
+    """The chat answers budget/diagnostics read-only (no Op) and guides on unrecognized
+    text instead of silently proposing a provision Op; explicit provision intents still plan."""
+    H = {"X-Tenant-Id": "t1"}
+
+    # Budget check — read-only, proposes nothing.
+    r_budget = await client.post("/chat", headers=H, json={"brand_id": "b1", "text": "what's my spend so far?"})
+    assert r_budget.status_code == 200
+    assert r_budget.json()["cards"] == []
+    assert "cost" in r_budget.json()["reply"].lower()
+
+    # Diagnostics — read-only, proposes nothing.
+    r_diag = await client.post("/chat", headers=H, json={"brand_id": "b1", "text": "show system status"})
+    assert r_diag.status_code == 200
+    assert r_diag.json()["cards"] == []
+    assert "diagnostics" in r_diag.json()["reply"].lower()
+
+    # Unrecognized — guidance, NOT a spurious provision proposal.
+    r_hi = await client.post("/chat", headers=H, json={"brand_id": "b1", "text": "hi"})
+    assert r_hi.status_code == 200
+    assert r_hi.json()["cards"] == []
+    assert "recognize" in r_hi.json()["reply"].lower()
+
+    # Explicit provision intent (domain present) — still produces a governed proposal.
+    r_host = await client.post("/chat", headers=H, json={"brand_id": "b1", "text": "host ableys.in"})
+    assert r_host.status_code == 200
+    assert len(r_host.json()["cards"]) >= 1
+
+
+@pytest.mark.asyncio
 async def test_dag_saga_execution_diamond(db_engine):
     """Verifies diamond DAG execution concurrency and topological order."""
     from app.models import OpDependency

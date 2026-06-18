@@ -263,6 +263,32 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
             }
 
     normalized = body.text.lower()
+    has_domain = any("." in w and not w.startswith(".") for w in body.text.replace(",", " ").split())
+
+    # --- Read-only conversational intents: answer directly, propose nothing. ---
+    # "check budgets" — cost-to-date for the tenant (read-only; no Op, no gate).
+    if any(w in normalized for w in ["budget", "cost", "spend", "how much", "profit", "margin"]):
+        from app.kernel.services import get_tenant_cost_rollup
+        rollup = await get_tenant_cost_rollup(s, tid)
+        if rollup:
+            parts = ", ".join(f"{k}: {v / 100:.2f} INR" for k, v in rollup.items())
+            total = sum(rollup.values()) / 100
+            reply = f"Cost-to-date for this tenant — {parts}. Total: {total:.2f} INR."
+        else:
+            reply = "No costs have been recorded for this tenant yet."
+        return {"reply": reply, "cards": []}
+
+    # "trigger diagnostics" — audit-chain integrity + circuit-breaker status (read-only).
+    if any(w in normalized for w in ["diagnostic", "status", "health", "audit", "integrity", "breaker"]):
+        ok, first_bad = await audit_verify(s)
+        br = (await s.execute(select(CircuitBreakerRow).where(CircuitBreakerRow.tenant_id == tid))).scalars().all()
+        tripped = [b.domain for b in br if (b.state or "").upper() == "OPEN"]
+        audit_line = "audit chain intact" if ok else f"AUDIT CHAIN BROKEN at block {first_bad}"
+        br_line = (f"{len(tripped)} circuit breaker(s) tripped ({', '.join(tripped)})"
+                   if tripped else "all circuit breakers healthy")
+        return {"reply": f"Diagnostics — {audit_line}; {br_line}.", "cards": []}
+
+    # --- Provisioning intents: route to the governed loop (propose -> gate). ---
     if "static" in normalized:
         words = body.text.replace(",", " ").split()
         domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
@@ -273,12 +299,20 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
         domain = next((w for w in words if "." in w and not w.startswith(".")), "example.in")
         intent_text = f"configure email dns routing for domain {domain}"
         domain_name = "provision"
-    elif any(w in normalized for w in ["bootstrap", "onboard"]):
+    elif any(w in normalized for w in ["bootstrap", "onboard", "host", "provision", "deploy", "website", "launch"]) or has_domain:
         intent_text = body.text
         domain_name = "provision"
     else:
-        intent_text = body.text
-        domain_name = "provision"
+        # Unrecognized — guide the operator instead of silently proposing a deploy.
+        return {
+            "reply": (
+                "I didn't recognize that as an action. I can: host a site "
+                "(e.g. \"host ableys.in\"), pause a campaign (\"pause campaign camp-1\"), "
+                "adjust a bid (\"adjust bid for campaign camp-1 to 50 inr\"), "
+                "check budgets (\"what's my spend?\"), or run diagnostics (\"show system status\")."
+            ),
+            "cards": [],
+        }
 
     adapter = loop.REGISTRY.get(domain_name)
     if not adapter:
