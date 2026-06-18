@@ -3,7 +3,7 @@ import os
 import datetime as dt
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -150,8 +150,8 @@ def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
 
 
 class TenantIn(BaseModel):
-    name: str
-    brand_name: str
+    name: str = Field(max_length=200)
+    brand_name: str = Field(max_length=200)
 
 
 class OpOut(BaseModel):
@@ -247,8 +247,8 @@ async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
 
 
 class ChatIn(BaseModel):
-    brand_id: str
-    text: str
+    brand_id: str = Field(max_length=100)
+    text: str = Field(max_length=5000)
 
 
 @app.post("/chat")
@@ -417,9 +417,9 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
 
 
 class IntentIn(BaseModel):
-    brand_id: str
-    text: str
-    domain: str = "provision"
+    brand_id: str = Field(max_length=100)
+    text: str = Field(max_length=5000)
+    domain: str = Field(default="provision", max_length=50)
 
 
 @app.post("/intents")
