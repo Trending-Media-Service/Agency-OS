@@ -41,6 +41,15 @@ class ManageAdapter(Adapter):
             if secret_ref.startswith("secret:"):
                 secret_ref = secret_ref[7:]
 
+            # Parse custom mcp_url if present, else fall back to environment default
+            mcp_url = next((w.split("mcp_url:")[1] for w in words if w.startswith("mcp_url:")), None)
+            if not mcp_url:
+                mcp_url = os.getenv("AOS_SHOPIFY_MCP_SERVER_URL")
+
+            config = {"shop_url": shop_url}
+            if mcp_url:
+                config["mcp_server_url"] = mcp_url
+
             return [
                 OpSpec(
                     tenant_id=tenant_id,
@@ -50,7 +59,7 @@ class ManageAdapter(Adapter):
                     params={
                         "provider": "shopify",
                         "secret_ref": secret_ref,
-                        "config": {"shop_url": shop_url}
+                        "config": config
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
                     cost_estimate=Money(amount_minor=0, currency="INR"),

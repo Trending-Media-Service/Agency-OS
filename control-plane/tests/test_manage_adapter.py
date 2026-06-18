@@ -245,3 +245,52 @@ async def test_manage_adapter_backup_degraded_flow(adapter, backup_op, monkeypat
     assert res_del.ok is True
     assert res_del.detail["storage_status"] == "degraded"
     assert not os.path.exists(fallback_file)
+
+
+@pytest.mark.asyncio
+async def test_manage_adapter_real_shopify_mcp_verification(adapter, session):
+    # 1. Plan with custom mcp_url
+    intent = "connect shopify store luxury-tea.myshopify.com with secret:luxury-secret-token mcp_url:https://mcp-shopify.tms.internal/rpc"
+    ops = adapter.plan(intent, "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.params["config"]["mcp_server_url"] == "https://mcp-shopify.tms.internal/rpc"
+    assert op.params["config"]["shop_url"] == "luxury-tea.myshopify.com"
+
+    # 2. Execute connection (registers in DB)
+    res = await adapter.execute(op, "idem_luxury_conn", session=session)
+    assert res.ok is True
+
+    # 3. Verify (should make a real HTTP call to the custom MCP server URL)
+    from unittest.mock import patch, MagicMock
+    with patch("httpx.AsyncClient.post") as mock_post:
+        # Mock successful JSON-RPC tool call response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"shop_name": "Luxury Tea Boutique", "domain": "luxury-tea.myshopify.com", "currency": "USD", "status": "active"}'
+                    }
+                ]
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        verdict = await adapter.verify(op, session=session)
+        assert verdict.ok is True
+        assert verdict.checks["mcp_tool_call_ok"] is True
+        assert verdict.detail["shop_name"] == "Luxury Tea Boutique"
+        assert verdict.detail["domain"] == "luxury-tea.myshopify.com"
+
+        # Assert correct HTTP post details
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        url = args[0]
+        payload = kwargs["json"]
+
+        assert url == "https://mcp-shopify.tms.internal/rpc"
+        assert payload["method"] == "tools/call"
+        assert payload["params"]["name"] == "shopify_get_shop_info"
