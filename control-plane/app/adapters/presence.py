@@ -84,6 +84,34 @@ class PresenceAdapter(Adapter):
                 severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
                 cost_estimate=Money(0)
             ))
+            
+        elif "connect" in words and ("google" in words or "gsc" in words or "gmc" in words):
+            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:google-token")
+            if secret_ref.startswith("secret:"):
+                secret_ref = secret_ref[7:]
+            ops.append(OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="presence.google.connect",
+                params={
+                    "provider": "google",
+                    "secret_ref": secret_ref,
+                    "config": {}
+                },
+                severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                cost_estimate=Money(0)
+            ))
+        elif "disconnect" in words and ("google" in words or "gsc" in words or "gmc" in words):
+            ops.append(OpSpec(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                domain=self.domain,
+                action="presence.google.disconnect",
+                params={"provider": "google"},
+                severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                cost_estimate=Money(0)
+            ))
 
         elif any(w in normalized for w in ["search console", "gsc"]):
             ops.append(OpSpec(
@@ -142,6 +170,12 @@ class PresenceAdapter(Adapter):
         elif op.action == "presence.web.disconnect":
             summary = "Will remove connection to static/headless website."
             return PreviewArtifact(kind="web_disconnect_preview", summary=summary, detail=op.params)
+        elif op.action == "presence.google.connect":
+            summary = f"Will establish connection to Google Services (Search Console & Merchant Center).\nCredential Ref: {op.params.get('secret_ref')}"
+            return PreviewArtifact(kind="google_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "presence.google.disconnect":
+            summary = "Will remove connection to Google Services."
+            return PreviewArtifact(kind="google_disconnect_preview", summary=summary, detail=op.params)
 
         elif op.action == "presence.search_console.audit":
             summary = "Will run Google Search Console audit checking page indexing rates, crawling status warnings, and search queries."
@@ -164,11 +198,15 @@ class PresenceAdapter(Adapter):
 
         now = dt.datetime.now(dt.timezone.utc)
 
-        if op.action in ("presence.wordpress.connect", "presence.web.connect"):
+        if op.action in ("presence.wordpress.connect", "presence.web.connect", "presence.google.connect"):
             provider = op.params.get("provider")
             raw_token = op.params.get("secret_ref")
             config = op.params.get("config", {})
             
+            scope = "read"
+            if provider == "google":
+                scope = "search_console,merchant_center"
+
             # Write to Secret Manager
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
             secrets_client = SecretManagerClient()
@@ -186,6 +224,7 @@ class PresenceAdapter(Adapter):
             if existing:
                 existing.secret_ref = secret_ref
                 existing.config = config
+                existing.scope = scope
                 logger.info(f"Updated existing connection for {provider}")
             else:
                 conn = Connection(
@@ -193,6 +232,7 @@ class PresenceAdapter(Adapter):
                     brand_id=op.brand_id,
                     provider=provider,
                     secret_ref=secret_ref,
+                    scope=scope,
                     config=config
                 )
                 session.add(conn)
@@ -200,7 +240,7 @@ class PresenceAdapter(Adapter):
                 
             return ExecResult(ok=True, detail={"message": f"Connection to {provider} registered in DB and Secret Manager"})
             
-        elif op.action in ("presence.wordpress.disconnect", "presence.web.disconnect"):
+        elif op.action in ("presence.wordpress.disconnect", "presence.web.disconnect", "presence.google.disconnect"):
             provider = op.params.get("provider")
             logger.info(f"Disconnecting {provider} for brand {op.brand_id}")
             
@@ -395,7 +435,7 @@ class PresenceAdapter(Adapter):
         return ExecResult(ok=False, detail={"error": f"Unknown presence action: {op.action}"})
 
     async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
-        if op.action in ("presence.wordpress.connect", "presence.web.connect"):
+        if op.action in ("presence.wordpress.connect", "presence.web.connect", "presence.google.connect"):
             logger.info("Verifying Presence connection via Secret Manager and mock reachable check...")
             if not session:
                 return VerifyResult(ok=False, checks={"session_active": False}, detail={"error": "Database session required"})
@@ -434,7 +474,7 @@ class PresenceAdapter(Adapter):
                 },
                 detail={"verified_at": dt.datetime.now(dt.timezone.utc).isoformat(), "secret_ref": conn.secret_ref}
             )
-        elif op.action in ("presence.wordpress.disconnect", "presence.web.disconnect"):
+        elif op.action in ("presence.wordpress.disconnect", "presence.web.disconnect", "presence.google.disconnect"):
             return VerifyResult(ok=True, checks={"disconnected": True})
 
         elif op.action == "presence.alert_dispatch":
@@ -461,6 +501,18 @@ class PresenceAdapter(Adapter):
                     brand_id=op.brand_id,
                     domain=self.domain,
                     action="presence.web.disconnect",
+                    params={"provider": op.params.get("provider")},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+        elif op.action == "presence.google.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="presence.google.disconnect",
                     params={"provider": op.params.get("provider")},
                     severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
                     parent_op_id=op.id
