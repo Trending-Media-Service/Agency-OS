@@ -8,7 +8,7 @@ on:
 env:
   PROJECT_ID: aos-control-plane-tmg
   REGION: asia-south1
-  SERVICE_NAME: agency-os-control-plane
+  SERVICE_NAME: agency-os-backend
   ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane
   # NOTE: 730671240713 must be the project NUMBER of aos-control-plane-tmg.
   # Verify with: gcloud projects describe aos-control-plane-tmg --format='value(projectNumber)'
