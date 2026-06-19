@@ -215,6 +215,24 @@ async def test_connection_lifecycle_scheduled_rotation_and_audit(client, session
         assert resp.status_code == 200
         print(f"DEBUG: /tasks/refresh-tokens response: {resp.json()}", flush=True)
 
+        # The task proposed the rotation Op. Query and execute it!
+        from app.models import OpRow
+        from app.kernel import loop
+        
+        stmt_op = select(OpRow).where(
+            OpRow.tenant_id == tenant_id,
+            OpRow.action == "manage.connection.rotate"
+        )
+        res_op = await session.execute(stmt_op)
+        op_row = res_op.scalar_one()
+        assert op_row.state == "AWAITING_APPROVAL"
+        
+        # Approve and execute
+        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await session.commit()
+        await loop._execute_and_verify(session, op_row)
+        await session.commit()
+
         session.expire_all()
         # Query connection fresh from database to avoid caching/transaction visibility issues in sqlite
         stmt_conn = select(Connection).where(

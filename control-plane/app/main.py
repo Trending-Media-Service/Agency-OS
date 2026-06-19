@@ -778,12 +778,18 @@ async def oauth_callback(
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
-    s: AsyncSession = Depends(get_db),
+    s: AsyncSession = Depends(get_worker_db),
+    background_tasks: BackgroundTasks = None,
+    worker_session_maker = Depends(get_worker_session_maker),
     x_tenant_id: str | None = Header(default=None)
 ):
     from app.services.oauth import verify_oauth_state
     from app.services.secrets import SecretManagerClient
+    from app.kernel.optypes import OpSpec, Severity, Reversibility
+    from app.kernel.loop import propose, preview_and_gate
+    from fastapi.responses import RedirectResponse
     import httpx
+    import uuid
 
     if not state:
         raise HTTPException(status_code=400, detail="Missing state")
@@ -805,6 +811,7 @@ async def oauth_callback(
     tenant_id = payload["tenant_id"]
     brand_id = payload["brand_id"]
     provider = payload.get("provider", "shopify")
+    redirect_uri = payload.get("redirect_uri")
 
     if provider == "shopify":
         token_url = f"https://{brand_id}.myshopify.com/admin/oauth/access_token"
@@ -843,49 +850,98 @@ async def oauth_callback(
         if not required_scopes.issubset(returned_scopes):
             raise HTTPException(status_code=400, detail="Scope mismatch: missing required permissions")
 
+    # Set up DB RLS tenant context explicitly for this session
+    if s.bind.dialect.name == "postgresql":
+        await s.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant_id},
+        )
+
     secrets_client = SecretManagerClient()
-    credential_val = refresh_token or access_token
-    credential_ref = await secrets_client.write_secret(
-        f"{tenant_id}_{brand_id}_{provider}_refresh_token", 
-        credential_val
-    )
-    await secrets_client.write_secret(
-        f"{tenant_id}_{brand_id}_{provider}_access_token", 
+    
+    # Write refresh token to Secret Manager (if present)
+    refresh_token_ref = None
+    if refresh_token:
+        refresh_token_ref = await secrets_client.write_secret(
+            f"{tenant_id}-{brand_id}-{provider}-refresh",
+            refresh_token
+        )
+        
+    # Write access token to Secret Manager
+    access_token_ref = await secrets_client.write_secret(
+        f"{tenant_id}-{brand_id}-{provider}-access",
         access_token
     )
 
-    stmt = select(Connection).where(
-        Connection.tenant_id == tenant_id,
-        Connection.brand_id == brand_id,
-        Connection.provider == provider
-    )
-    res = await s.execute(stmt)
-    conn = res.scalar_one_or_none()
-
-    now_dt = dt.datetime.utcnow()
-    expires_at_dt = now_dt + dt.timedelta(seconds=expires_in) if expires_in else None
-
-    if conn:
-        conn.credential = credential_ref
-        conn.status = "active"
-        conn.expires_at = expires_at_dt
-        conn.last_verified_at = now_dt
-        conn.last_error = None
-    else:
-        conn = Connection(
-            tenant_id=tenant_id,
-            brand_id=brand_id,
-            provider=provider,
-            scope=scope_str,
-            credential=credential_ref,
-            status="active",
-            expires_at=expires_at_dt,
-            last_verified_at=now_dt
+    action_map = {
+        "shopify": "manage.shopify.connect",
+        "google-ads": "grow.google.connect",
+        "meta-ads": "grow.meta.connect",
+        "google": "presence.google.connect",
+        "google-search-console": "presence.google.connect",
+        "google-analytics": "presence.google.connect",
+    }
+    action = action_map.get(provider)
+    if not action:
+        raise HTTPException(status_code=400, detail=f"Unsupported OAuth provider: {provider}")
+        
+    domain = action.split(".")[0]
+    
+    # Derive tier from the latest TrustSnapshot for this brand+domain (default 1).
+    stmt = (
+        select(TrustSnapshot.tier)
+        .where(
+            TrustSnapshot.tenant_id == tenant_id,
+            TrustSnapshot.brand_id == brand_id,
+            TrustSnapshot.domain == domain,
         )
-        s.add(conn)
+        .order_by(TrustSnapshot.ts.desc())
+        .limit(1)
+    )
+    t = (await s.execute(stmt)).scalar_one_or_none()
+    tier = 1 if t is None else t
 
+    op_id = f"op_{uuid.uuid4().hex[:12]}"
+    
+    config = {
+        "scopes": scope_str,
+        "client_id": "mock-client-id",
+    }
+    if refresh_token_ref:
+        config["refresh_token_ref"] = refresh_token_ref
+    if expires_in:
+        now_dt = dt.datetime.utcnow()
+        expires_at_dt = now_dt + dt.timedelta(seconds=expires_in)
+        config["expires_at"] = expires_at_dt.isoformat()
+
+    spec = OpSpec(
+        id=op_id,
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        domain=domain,
+        action=action,
+        params={
+            "provider": provider,
+            "credential": access_token_ref,
+            "config": config,
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+    )
+
+    row = await propose(s, spec, actor="oauth:callback")
+    gate, requirement = await preview_and_gate(s, row, tier=tier, actor="oauth:callback")
+    
+    # Commit the transaction so that the proposed Op is persisted and outbox items are created!
     await s.commit()
-    return {"status": "success", "message": "Connection successfully established"}
+    
+    # Drain the outbox to execute any auto-approved Ops
+    if background_tasks and worker_session_maker:
+        enqueue_drain(background_tasks, worker_session_maker)
+
+    if redirect_uri:
+        return RedirectResponse(url=redirect_uri, status_code=302)
+        
+    return {"status": "success", "message": "Connection proposed and queued", "op_id": op_id}
 
 
 

@@ -17,8 +17,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table('connections') as batch_op:
-        # Rename secret_ref to credential
-        batch_op.alter_column('secret_ref', new_column_name='credential', existing_type=sa.String(255), nullable=True)
+        # Make secret_ref nullable to support revocation (no rename!)
+        batch_op.alter_column('secret_ref', nullable=True, existing_type=sa.String(255))
         # Add new columns
         batch_op.add_column(sa.Column('status', sa.String(16), nullable=False, server_default='unverified'))
         batch_op.add_column(sa.Column('last_verified_at', sa.DateTime(), nullable=True))
@@ -28,7 +28,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table('connections') as batch_op:
-        batch_op.alter_column('credential', new_column_name='secret_ref', existing_type=sa.String(255), nullable=False)
+        batch_op.alter_column('secret_ref', nullable=False, existing_type=sa.String(255))
         batch_op.drop_column('status')
         batch_op.drop_column('last_verified_at')
         batch_op.drop_column('last_error')

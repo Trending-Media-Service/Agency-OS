@@ -263,6 +263,23 @@ async def test_periodic_token_rotation_flow(session, mock_secrets_client):
         from app.tasks.rotation import rotate_expiring_tokens
         await rotate_expiring_tokens(session)
         
+        # The background task only PROPOSES the Op. Query it!
+        from app.models import OpRow
+        from app.kernel import loop
+        
+        stmt_op = select(OpRow).where(OpRow.action == "manage.connection.rotate")
+        res_op = await session.execute(stmt_op)
+        op_row = res_op.scalar_one()
+        assert op_row.state == "AWAITING_APPROVAL"
+        
+        # Approve the Op
+        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await session.commit()
+        
+        # Execute the Op
+        await loop._execute_and_verify(session, op_row)
+        await session.commit()
+        
         mock_refresh.assert_called_once()
         await session.refresh(conn)
         assert conn.status == "active"
@@ -292,6 +309,26 @@ async def test_scheduler_batch_resiliency(session, mock_secrets_client):
     with patch("app.services.oauth.OauthService.refresh_token", side_effect=mock_rotate):
         await rotate_expiring_tokens(session)
         
+        # Both Ops must have been proposed!
+        from app.models import OpRow
+        from app.kernel import loop
+        
+        stmt_ops = select(OpRow).where(OpRow.action == "manage.connection.rotate").order_by(OpRow.id)
+        res_ops = await session.execute(stmt_ops)
+        op_rows = res_ops.scalars().all()
+        assert len(op_rows) == 2
+        
+        # Approve and execute both!
+        for op_row in op_rows:
+            assert op_row.state == "AWAITING_APPROVAL"
+            await loop.decide(session, op_row, decision="approve", actor="operator")
+            await session.commit()
+            try:
+                await loop._execute_and_verify(session, op_row)
+            except Exception:
+                pass
+            await session.commit()
+            
         await session.refresh(conn1)
         await session.refresh(conn2)
         # conn1 should be in error status, but conn2 should remain active/successfully rotated
@@ -436,7 +473,25 @@ async def test_complete_oauth_flow(client, session, mock_secrets_client):
         callback_resp = await client.get(
             f"/connections/oauth/callback?code=mock_auth_code&state={state}"
         )
-        assert callback_resp.status_code == 200
+        assert callback_resp.status_code == 302
+        assert callback_resp.headers.get("location") == "https://app.agencyos.com/callback"
+        
+        # The callback proposes the Op. Query it!
+        from app.models import OpRow
+        from app.kernel import loop
+        
+        stmt_op = select(OpRow).where(OpRow.action == "manage.shopify.connect")
+        res_op = await session.execute(stmt_op)
+        op_row = res_op.scalar_one()
+        assert op_row.state == "AWAITING_APPROVAL"
+        
+        # Approve the Op
+        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await session.commit()
+        
+        # Execute the Op
+        await loop._execute_and_verify(session, op_row)
+        await session.commit()
         
         # Check Connection record created and is active
         stmt = select(Connection).where(Connection.tenant_id == "t1", Connection.provider == "shopify")

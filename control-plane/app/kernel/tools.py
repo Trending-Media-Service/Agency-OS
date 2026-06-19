@@ -222,6 +222,56 @@ registry.register_tool(
     handler=_manage_diagnostics_handler,
 )
 
+
+def _connection_rotate_secret_handler(
+    tenant_id: str,
+    brand_id: str,
+    provider: str,
+    credential: str,
+    config: dict = None,
+    old_credential: str = None,
+    old_config: dict = None
+) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="manage",
+            action="manage.connection.rotate",
+            params={
+                "provider": provider,
+                "credential": credential,
+                "config": config or {},
+                "old_credential": old_credential,
+                "old_config": old_config or {},
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+        )
+    ]
+
+
+registry.register_tool(
+    name="connection_rotate_secret",
+    schema={
+        "name": "connection_rotate_secret",
+        "description": "Rotate the credentials and configuration of an existing Connection.",
+        "domain": "manage",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "provider": {"type": "STRING"},
+                "credential": {"type": "STRING", "description": "New access token Secret Manager reference"},
+                "config": {"type": "OBJECT", "description": "New connection configuration dictionary"},
+                "old_credential": {"type": "STRING", "description": "Previous credential reference for rollback"},
+                "old_config": {"type": "OBJECT", "description": "Previous configuration dictionary for rollback"}
+            },
+            "required": ["brand_id", "provider", "credential"]
+        }
+    },
+    handler=_connection_rotate_secret_handler
+)
+
 registry.register_tool(
     name="presence_citation_audit",
     schema={

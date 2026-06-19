@@ -135,6 +135,10 @@ class ManageAdapter(Adapter):
         elif op.action == "manage.diagnostics.check":
             summary = f"Will scan environment runtime logs from source: {op.params.get('log_source')}"
             return PreviewArtifact(kind="diagnostics_check_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.connection.rotate":
+            provider = op.params.get("provider")
+            summary = f"Will rotate credentials for connection: {provider}"
+            return PreviewArtifact(kind="connection_rotate_preview", summary=summary, detail=op.params)
         return PreviewArtifact(kind="unknown_preview", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
@@ -208,6 +212,31 @@ class ManageAdapter(Adapter):
             )
             await session.execute(stmt_del)
             return ExecResult(ok=True, detail={"message": "Connection removed from DB and Secret Manager"})
+
+        elif op.action == "manage.connection.rotate":
+            provider = op.params.get("provider")
+            new_credential = op.params.get("credential")
+            new_config = op.params.get("config", {})
+            
+            logger.info(f"Rotating connection credentials for provider {provider}")
+            
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return ExecResult(ok=False, detail={"error": "Connection record not found for rotation"})
+                
+            conn.credential = new_credential
+            conn.config = new_config
+            conn.status = "active"
+            conn.last_verified_at = datetime.datetime.now(datetime.timezone.utc)
+            conn.last_error = None
+            
+            return ExecResult(ok=True, detail={"message": f"Connection credentials for {provider} rotated successfully"})
 
         elif op.action == "manage.connection.verify":
             provider = op.params.get("provider")
@@ -629,7 +658,7 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                     "credential": conn.credential
                 }
             )
-        elif op.action in ("manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke"):
+        elif op.action in ("manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke", "manage.connection.rotate"):
             return VerifyResult(ok=True, checks={"completed": True})
             
         elif op.action == "manage.backup.create":
@@ -732,4 +761,23 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                     parent_op_id=op.id
                 )
             ]
+        elif op.action == "manage.connection.rotate":
+            old_credential = op.params.get("old_credential")
+            old_config = op.params.get("old_config", {})
+            if old_credential:
+                return [
+                    OpSpec(
+                        tenant_id=op.tenant_id,
+                        brand_id=op.brand_id,
+                        domain=self.domain,
+                        action="manage.connection.rotate",
+                        params={
+                            "provider": op.params.get("provider"),
+                            "credential": old_credential,
+                            "config": old_config,
+                        },
+                        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                        parent_op_id=op.id
+                    )
+                ]
         return []

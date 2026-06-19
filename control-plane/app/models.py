@@ -208,7 +208,7 @@ class Connection(Base):
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     provider: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(128), default="read")  # e.g. read|write or comma-separated scopes
-    credential: Mapped[str] = mapped_column(String(255), nullable=True)  # Renamed from secret_ref, nullable to support revocation
+    credential: Mapped[str] = mapped_column("secret_ref", String(255), nullable=True)  # Mapped to physical column 'secret_ref' in DB, nullable to support revocation
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="unverified")  # unverified|active|error|revoked|degraded
     last_verified_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)

@@ -61,6 +61,9 @@ class SecretManagerClient:
             raise ValueError("Secret value cannot be None")
         if not isinstance(value, str):
             raise TypeError("Secret value must be a string")
+        if value.startswith("projects/") and "/secrets/" in value:
+            logger.info(f"Value is already a Secret Manager reference: {value}. Returning as-is.")
+            return value
         if self._client:
             try:
                 # Real GCP Secret Manager call
