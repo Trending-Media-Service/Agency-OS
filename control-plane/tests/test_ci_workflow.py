@@ -31,7 +31,15 @@ def test_github_actions_workflow_syntax_and_security():
     uses_clauses = [step.get("uses") for step in steps if "uses" in step]
     assert any(u.startswith("actions/checkout") for u in uses_clauses)
     assert any(u.startswith("google-github-actions/auth") for u in uses_clauses), "google-github-actions/auth is required for WIF!"
-    assert any(u.startswith("google-github-actions/deploy-cloudrun") for u in uses_clauses), "google-github-actions/deploy-cloudrun is required!"
+
+    # Deploy is performed via the gcloud CLI (mirrors the proven deploy.sh): setup-gcloud
+    # provides the CLI and a run step issues `gcloud run services update` with the full
+    # production env vars, Secret Manager bindings, and Cloud SQL instance.
+    assert any(u.startswith("google-github-actions/setup-gcloud") for u in uses_clauses), \
+        "google-github-actions/setup-gcloud is required to provide the gcloud CLI!"
+    run_blocks = "\n".join(step.get("run", "") for step in steps if "run" in step)
+    assert "gcloud run services update" in run_blocks or "gcloud run deploy" in run_blocks, \
+        "A step must deploy to Cloud Run via `gcloud run services update` (or `gcloud run deploy`)!"
 
 
 def test_github_actions_ci_workflow():
