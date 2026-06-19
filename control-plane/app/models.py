@@ -52,6 +52,11 @@ class Brand(Base):
         lazy="selectin"
     )
 
+    objective_association: Mapped[BrandObjective | None] = relationship(
+        "BrandObjective", back_populates="brand", cascade="all, delete-orphan",
+        lazy="selectin", uselist=False
+    )
+
 
 class BrandProperty(Base):
     __tablename__ = "brand_properties"
@@ -358,6 +363,18 @@ class ShadowDecision(Base):
     agreed: Mapped[bool] = mapped_column(default=True)
     violations: Mapped[dict] = mapped_column(JSON, default=dict)
     ts: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
+class BrandObjective(Base):
+    __tablename__ = "brand_objectives"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
+    objective: Mapped[str] = mapped_column(String(32), nullable=False) # footprint | growth | retention
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(default=_now, onupdate=_now)
+
+    brand: Mapped[Brand] = relationship("Brand", back_populates="objective_association")
 
 
 def make_engine(url: str = "sqlite:///./agencyos.db"):

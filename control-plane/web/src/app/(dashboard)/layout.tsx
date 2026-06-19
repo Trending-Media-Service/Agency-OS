@@ -14,7 +14,8 @@ import {
   History, 
   Sliders,
   RefreshCw,
-  ShieldAlert
+  ShieldAlert,
+  Compass
 } from "lucide-react";
 
 export default function DashboardLayout({
@@ -260,6 +261,13 @@ export default function DashboardLayout({
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Tabs Selector Navigation */}
           <div className="border-b border-zinc-900 px-8 flex space-x-6 text-[11px] bg-zinc-900/5">
+            <button
+              onClick={() => router.push("/twin")}
+              className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center ${pathname === "/twin" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
+            >
+              <Compass className="h-3.5 w-3.5" />
+              Brand Twin
+            </button>
             <button
               onClick={() => router.push("/ops")}
               className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center ${pathname === "/ops" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}

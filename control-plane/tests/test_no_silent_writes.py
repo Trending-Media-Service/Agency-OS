@@ -121,7 +121,7 @@ class SilentWriteVisitor(ast.NodeVisitor):
         allowed_non_state_models = {
             'Tenant', 'Brand', 'PolicyVersion', 'ProcessedWebhookMessage', 
             'OpTrace', 'TrustEvent', 'TrustSnapshot', 'CostEntry', 'ConsentBasis',
-            'ShadowDecision'
+            'ShadowDecision', 'BrandObjective'
         }.union(self.allowed_models)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return node.func.id in allowed_non_state_models

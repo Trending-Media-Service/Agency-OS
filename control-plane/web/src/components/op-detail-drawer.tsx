@@ -267,7 +267,7 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
   const [showTweakForm, setShowTweakForm] = useState(false);
 
   // Extract policy violations from trace history
-  const policyViolations = opData.trace
+  const policyViolations = opData?.trace
     ?.filter(t => t.kind === "gate" && t.detail?.violations)
     .flatMap(t => t.detail.violations as TraceViolation[]) || [];
 
@@ -282,7 +282,7 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
         return;
       }
 
-      if (opData.state !== "AWAITING_APPROVAL" || role === "BRAND_VIEWER") {
+      if (opData?.state !== "AWAITING_APPROVAL" || role === "BRAND_VIEWER") {
         if (e.key === "Escape") {
           onClose();
         }
@@ -324,7 +324,7 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [opId, opData.state, role, onClose, onDecision]);
+  }, [opId, opData?.state, role, onClose, onDecision]);
 
   if (loading) {
     return (

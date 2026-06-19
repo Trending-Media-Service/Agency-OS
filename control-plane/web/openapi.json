@@ -1525,6 +1525,179 @@
         }
       }
     },
+    "/brands/{brand_id}/objective": {
+      "get": {
+        "summary": "Get Brand Objective",
+        "operationId": "get_brand_objective_brands__brand_id__objective_get",
+        "parameters": [
+          {
+            "name": "brand_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Brand Id"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Tenant-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Set Brand Objective",
+        "operationId": "set_brand_objective_brands__brand_id__objective_post",
+        "parameters": [
+          {
+            "name": "brand_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Brand Id"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Tenant-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandObjectiveIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{brand_id}/recommendations": {
+      "get": {
+        "summary": "Get Brand Recommendations",
+        "operationId": "get_brand_recommendations_brands__brand_id__recommendations_get",
+        "parameters": [
+          {
+            "name": "brand_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Brand Id"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Tenant-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecommendationOut"
+                  },
+                  "title": "Response Get Brand Recommendations Brands  Brand Id  Recommendations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/webhooks/whatsapp": {
       "get": {
         "summary": "Verify Whatsapp",
@@ -2311,6 +2484,19 @@
         ],
         "title": "AuditVerifyOut"
       },
+      "BrandObjectiveIn": {
+        "properties": {
+          "objective": {
+            "type": "string",
+            "title": "Objective"
+          }
+        },
+        "type": "object",
+        "required": [
+          "objective"
+        ],
+        "title": "BrandObjectiveIn"
+      },
       "ChatIn": {
         "properties": {
           "brand_id": {
@@ -2695,6 +2881,50 @@
           "recipe_name"
         ],
         "title": "RecipePromoteIn"
+      },
+      "RecommendationOut": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          },
+          "preview_summary": {
+            "type": "string",
+            "title": "Preview Summary"
+          },
+          "impact": {
+            "type": "integer",
+            "title": "Impact"
+          },
+          "reversibility": {
+            "type": "string",
+            "title": "Reversibility"
+          },
+          "cost_minor": {
+            "type": "integer",
+            "title": "Cost Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "domain",
+          "params",
+          "preview_summary",
+          "impact",
+          "reversibility",
+          "cost_minor"
+        ],
+        "title": "RecommendationOut"
       },
       "TenantBrandOut": {
         "properties": {
