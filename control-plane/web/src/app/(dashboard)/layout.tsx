@@ -6,16 +6,15 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useApi } from "@/lib/api-client";
 import { useTenant } from "@/contexts/TenantContext";
 import { Button } from "@/components/ui/button";
-import { ChatPanel } from "@/components/ChatPanel";
+import { ActionPanel } from "@/components/ActionPanel";
 import { OpDetailDrawer, OpDetailData } from "@/components/op-detail-drawer";
 import { 
   Database, 
   Network, 
   History, 
-  Sliders, 
+  Sliders,
   RefreshCw,
-  ShieldAlert,
-  MessageSquare
+  ShieldAlert
 } from "lucide-react";
 
 export default function DashboardLayout({
@@ -138,7 +137,6 @@ export default function DashboardLayout({
   };
 
   const trippedBreakers = breakers?.filter((b) => b.state.toUpperCase() === "OPEN") || [];
-  const isChatRoute = pathname === "/chat";
 
   return (
     <div className="flex-1 flex flex-col bg-zinc-950 text-zinc-50 font-sans">
@@ -231,12 +229,10 @@ export default function DashboardLayout({
       {/* Split Layout Container */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Left Column: Conversational Chat Panel (hidden if we are on dedicated full-screen /chat page) */}
-        {!isChatRoute && (
-          <div className="w-[380px] border-r border-zinc-900 flex flex-col bg-zinc-900/10 hidden lg:flex shrink-0">
-            <ChatPanel />
-          </div>
-        )}
+        {/* Left Column: explicit Operator Actions panel (replaces the conversational chat) */}
+        <div className="w-[380px] border-r border-zinc-900 flex flex-col bg-zinc-900/10 hidden lg:flex shrink-0">
+          <ActionPanel />
+        </div>
 
         {/* Right Column: Tabbed Dashboard Main content */}
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -274,13 +270,6 @@ export default function DashboardLayout({
             >
               <Sliders className="h-3.5 w-3.5" />
               Circuit Breakers
-            </button>
-            <button
-              onClick={() => router.push("/chat")}
-              className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center lg:hidden ${pathname === "/chat" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              Partner Chat
             </button>
           </div>
 

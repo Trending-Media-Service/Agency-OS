@@ -16,9 +16,10 @@ vi.mock("@/contexts/TenantContext", () => ({
     setActiveBrandId: vi.fn(),
     role: mockRole,
     setRole: mockSetRole,
+    operatorToken: "",
+    setOperatorToken: vi.fn(),
     knownTenants: [
       { tenantId: "t1", tenantName: "Bootstrap Developer", brandId: "brand-bootstrap", brandName: "Bootstrap Brand" },
-      { tenantId: "tenant-acme", tenantName: "Acme", brandId: "brand-acme", brandName: "Acme Retail" },
     ],
     addKnownTenant: vi.fn(),
   }),
@@ -27,67 +28,56 @@ vi.mock("@/contexts/TenantContext", () => ({
 // Mock Next.js Navigation
 vi.mock("next/navigation", () => ({
   usePathname: () => "/ops",
-  useRouter: () => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-  }),
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
 // Mock API client
 const mockRequest = vi.fn();
 vi.mock("@/lib/api-client", () => ({
-  useApi: () => ({
-    request: mockRequest,
-  }),
+  useApi: () => ({ request: mockRequest }),
 }));
 
-describe("Conversational Chat UI and Dashboard under Route-Based Layout", () => {
+const CATALOG = {
+  actions: [
+    {
+      name: "provision_web_host",
+      description: "domain to host",
+      domain: "provision",
+      parameters: { properties: { domain: { type: "STRING", description: "domain to host" } }, required: ["domain"] },
+    },
+  ],
+};
+
+describe("Operator Actions panel (explicit controls, no chat)", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
     mockRole = "AGENCY_OWNER";
-    queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.clearAllMocks();
   });
 
-  const renderWithProviders = () => {
-    return render(
+  const renderWithProviders = () =>
+    render(
       <QueryClientProvider client={queryClient}>
         <DashboardLayout>
           <OpsPage />
         </DashboardLayout>
       </QueryClientProvider>
     );
-  };
 
-  it("renders partner chat panel and submits user prompts", async () => {
+  it("renders the actions panel and submits a structured action to /actions", async () => {
     mockRequest.mockImplementation((path: string, method?: string) => {
       if (path === "/ops") return Promise.resolve([]);
       if (path === "/connections") return Promise.resolve([]);
       if (path === "/circuit-breakers") return Promise.resolve([]);
       if (path === "/audit/events") return Promise.resolve([]);
       if (path === "/audit/verify") return Promise.resolve({ ok: true });
-      
-      if (path === "/chat" && method === "post") {
+      if (path === "/actions/catalog" && method === "get") return Promise.resolve(CATALOG);
+      if (path === "/actions" && method === "post") {
         return Promise.resolve({
-          reply: "I have planned your request. Please approve the proposal.",
-          cards: [
-            {
-              op_id: "op-grow-bid",
-              action: "grow.bid.adjust",
-              state: "AWAITING_APPROVAL",
-              preview: "Adjust bid for campaign camp-123 to 50 INR",
-              cost_estimate: "Free",
-              violations: [],
-            }
-          ]
+          cards: [{ op_id: "op-1", action: "provision.web_host.create", state: "AWAITING_APPROVAL", preview: "plan", cost_estimate: "2500.00 INR/mo", violations: [] }],
         });
       }
       return Promise.resolve(null);
@@ -95,111 +85,49 @@ describe("Conversational Chat UI and Dashboard under Route-Based Layout", () => 
 
     renderWithProviders();
 
-    expect(screen.getByRole("heading", { name: /Partner Chat/i })).toBeTruthy();
-    expect(screen.getByText(/Hello! I am your Agency OS partner agent/i)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Operator Actions/i })).toBeTruthy();
 
-    const input = screen.getByPlaceholderText(/e.g. configure email dns routing/i);
-    fireEvent.change(input, { target: { value: "adjust bid for campaign camp-123" } });
-    fireEvent.submit(input.closest("form")!);
+    // The catalog action button renders, then opens a modal on click.
+    const actionBtn = await screen.findByRole("button", { name: /Provision Web Host/i });
+    fireEvent.click(actionBtn);
+
+    const input = await screen.findByPlaceholderText(/domain to host/i);
+    fireEvent.change(input, { target: { value: "ableys.in" } });
+    fireEvent.click(screen.getByRole("button", { name: /Propose Action/i }));
 
     await waitFor(() => {
-      expect(mockRequest).toHaveBeenCalledWith("/chat", "post", {
+      expect(mockRequest).toHaveBeenCalledWith("/actions", "post", {
+        tool: "provision_web_host",
         brand_id: "brand-bootstrap",
-        text: "adjust bid for campaign camp-123"
-      });
-      expect(screen.getByText("I have planned your request. Please approve the proposal.")).toBeTruthy();
-      expect(screen.getByText("grow.bid.adjust")).toBeTruthy();
-      expect(screen.getByText("Adjust bid for campaign camp-123 to 50 INR")).toBeTruthy();
-      
-      const approveBtn = screen.getAllByRole("button", { name: "Approve" })[0];
-      expect(approveBtn).toBeTruthy();
-    });
-  });
-
-  it("triggers decision mutation when clicking approve on a proposal card", async () => {
-    mockRequest.mockImplementation((path: string, method?: string) => {
-      if (path === "/ops") return Promise.resolve([]);
-      if (path === "/connections") return Promise.resolve([]);
-      if (path === "/circuit-breakers") return Promise.resolve([]);
-      if (path === "/audit/events") return Promise.resolve([]);
-      if (path === "/audit/verify") return Promise.resolve({ ok: true });
-      
-      if (path === "/chat" && method === "post") {
-        return Promise.resolve({
-          reply: "Planned.",
-          cards: [
-            {
-              op_id: "op-approve-test",
-              action: "grow.bid.adjust",
-              state: "AWAITING_APPROVAL",
-              preview: "Test Approve",
-              cost_estimate: "Free",
-            }
-          ]
-        });
-      }
-      
-      if (path === "/ops/op-approve-test/decision" && method === "post") {
-        return Promise.resolve({ op_id: "op-approve-test", state: "APPROVED" });
-      }
-      
-      return Promise.resolve(null);
-    });
-
-    renderWithProviders();
-
-    const input = screen.getByPlaceholderText(/e.g. configure email dns routing/i);
-    fireEvent.change(input, { target: { value: "test approve" } });
-    fireEvent.submit(input.closest("form")!);
-
-    await waitFor(async () => {
-      const approveBtn = screen.getAllByRole("button", { name: "Approve" })[0];
-      fireEvent.click(approveBtn);
-    });
-
-    await waitFor(() => {
-      expect(mockRequest).toHaveBeenCalledWith("/ops/op-approve-test/decision", "post", {
-        decision: "approve",
-        actor: "chandan",
-        role: "AGENCY_OWNER",
-        surface: "web"
+        params: { domain: "ableys.in" },
       });
     });
   });
 
-  it("hides and disables all control mutations when role is BRAND_VIEWER", async () => {
+  it("disables actions and hides approve/reject for BRAND_VIEWER", async () => {
     mockRole = "BRAND_VIEWER";
-    
-    mockRequest.mockImplementation((path: string) => {
+    mockRequest.mockImplementation((path: string, method?: string) => {
       if (path === "/ops") return Promise.resolve([
-        {
-          op_id: "op-viewer-test",
-          action: "grow.bid.adjust",
-          state: "AWAITING_APPROVAL",
-          domain: "search",
-          brand_id: "brand-1",
-          preview: "Test operations visibility under viewer",
-          cost_estimate: "100 INR"
-        }
+        { op_id: "op-v", action: "grow.bid.adjust", state: "AWAITING_APPROVAL", domain: "grow", brand_id: "b1", preview: "x", cost_estimate: "100 INR" },
       ]);
       if (path === "/connections") return Promise.resolve([]);
       if (path === "/circuit-breakers") return Promise.resolve([]);
       if (path === "/audit/events") return Promise.resolve([]);
       if (path === "/audit/verify") return Promise.resolve({ ok: true });
+      if (path === "/actions/catalog" && method === "get") return Promise.resolve(CATALOG);
       return Promise.resolve(null);
     });
 
     renderWithProviders();
 
-    // 1. Check operations queue table does NOT render approve/reject buttons
+    // Action button renders but is disabled for the read-only role.
+    const actionBtn = await screen.findByRole("button", { name: /Provision Web Host/i });
+    expect((actionBtn as HTMLButtonElement).disabled).toBe(true);
+
+    // Operations queue shows no approve/reject for the viewer.
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
     });
-
-    // 2. Check chat input is disabled and read-only text is displayed
-    const input = screen.getByPlaceholderText(/Transparency Portal/i);
-    expect(input).toBeTruthy();
-    expect((input as HTMLInputElement).disabled).toBe(true);
   });
 });

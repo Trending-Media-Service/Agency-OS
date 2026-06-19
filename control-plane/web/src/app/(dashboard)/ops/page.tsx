@@ -77,14 +77,9 @@ export default function OpsPage() {
       <div className="text-center py-16 border border-dashed border-zinc-800 rounded-lg max-w-md mx-auto space-y-3 bg-zinc-900/5 my-8">
         <p className="text-xs font-semibold text-zinc-300">No active or proposed operations</p>
         <p className="text-[10px] text-zinc-500 leading-relaxed">
-          This governance console is ready! To bootstrap your first brand and spin up its GCP resources, type an onboarding intent in the partner chat on the left.
+          This governance console is ready! Pick an action from the <span className="text-zinc-300 font-semibold">Operator Actions</span> panel on the left
+          (e.g. <span className="text-zinc-300">Provision Web Host</span>) to propose a governed operation — it will appear here for review and approval.
         </p>
-        <div className="pt-2">
-          <span className="text-[9px] uppercase tracking-wider text-zinc-600 font-bold block mb-1.5">Example Intent to Copy:</span>
-          <code className="inline-block p-2 bg-zinc-950 text-emerald-400 rounded text-[9px] font-mono border border-zinc-900 select-all">
-            onboard brand ableys ableys.in
-          </code>
-        </div>
       </div>
     );
   }
