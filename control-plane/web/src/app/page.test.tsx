@@ -2,7 +2,8 @@ import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import Home from "./page";
+import DashboardLayout from "./(dashboard)/layout";
+import OpsPage from "./(dashboard)/ops/page";
 
 // Mock Tenant Context
 let mockRole = "AGENCY_OWNER";
@@ -23,6 +24,16 @@ vi.mock("@/contexts/TenantContext", () => ({
   }),
 }));
 
+// Mock Next.js Navigation
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/ops",
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+  }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 // Mock API client
 const mockRequest = vi.fn();
 vi.mock("@/lib/api-client", () => ({
@@ -31,7 +42,7 @@ vi.mock("@/lib/api-client", () => ({
   }),
 }));
 
-describe("Conversational Chat UI and Dashboard", () => {
+describe("Conversational Chat UI and Dashboard under Route-Based Layout", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
@@ -49,7 +60,9 @@ describe("Conversational Chat UI and Dashboard", () => {
   const renderWithProviders = () => {
     return render(
       <QueryClientProvider client={queryClient}>
-        <Home />
+        <DashboardLayout>
+          <OpsPage />
+        </DashboardLayout>
       </QueryClientProvider>
     );
   };
@@ -82,7 +95,7 @@ describe("Conversational Chat UI and Dashboard", () => {
 
     renderWithProviders();
 
-    expect(screen.getByText(/Partner Chat/i)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Partner Chat/i })).toBeTruthy();
     expect(screen.getByText(/Hello! I am your Agency OS partner agent/i)).toBeTruthy();
 
     const input = screen.getByPlaceholderText(/e.g. configure email dns routing/i);

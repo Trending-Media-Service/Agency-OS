@@ -46,7 +46,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     tenant_id = request.headers.get("X-Tenant-ID")
 
     # Bypass validation strictly on public API paths
-    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard"]:
+    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics"]:
       return await call_next(request)
 
     if not tenant_id:
@@ -110,4 +110,52 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
     return await call_next(request)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+  """Sets standard security headers on all outgoing HTTP responses to protect against common web vulnerabilities."""
+
+  async def dispatch(self, request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Referrer-Policy"] = "no-referrer-when-downgrade"
+    return response
+
+
+from prometheus_client import Counter, Histogram
+import time
+
+# Module-level globals, initialized once
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests processed",
+    ["method", "path", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "path"]
+)
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+  """Collects Prometheus metrics for API requests (latencies, counts, status codes)."""
+
+  async def dispatch(self, request: Request, call_next):
+    start_time = time.time()
+    try:
+      response = await call_next(request)
+      status_code = response.status_code
+      return response
+    except Exception:
+      status_code = 500
+      raise
+    finally:
+      duration = time.time() - start_time
+      path = request.url.path
+      REQUEST_COUNT.labels(method=request.method, path=path, status=status_code).inc()
+      REQUEST_LATENCY.labels(method=request.method, path=path).observe(duration)
 

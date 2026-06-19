@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
 from app.tasks import enqueue_drain
-from app.middleware import TenantIsolationMiddleware, TraceMiddleware, RateLimitMiddleware
+from app.middleware import TenantIsolationMiddleware, TraceMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware, MetricsMiddleware
 from app.observability import setup_logging
 from app.whatsapp import send_whatsapp_card_task, process_whatsapp_webhook_payload
 from app.adapters.provision import ProvisionAdapter
@@ -110,6 +110,8 @@ ALLOWED_ORIGINS = [
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
 app.add_middleware(RateLimitMiddleware, rate=0.2, capacity=5.0)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(MetricsMiddleware)
 # Added LAST so it is the OUTERMOST middleware: CORSMiddleware answers the
 # preflight OPTIONS itself, before TenantIsolationMiddleware (which would 400 a
 # preflight that carries no X-Tenant-ID header).
@@ -150,6 +152,12 @@ async def readyz(s: AsyncSession = Depends(get_db)):
             status_code=503,
             content={"status": "unready", "error": str(e)}
         )
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 

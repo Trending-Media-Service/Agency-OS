@@ -12,6 +12,8 @@ pyyaml==6.0.3
 sentry-sdk==2.22.0
 alembic==1.14.1
 smart-open==7.1.0
-google-meridian
+google-meridian==1.6.2
 playwright==1.49.0
 google-cloud-storage==3.11.0
+pytest-cov==6.2.1
+prometheus-client==0.25.0

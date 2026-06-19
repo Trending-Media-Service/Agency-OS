@@ -38,7 +38,8 @@ class McpClient:
                     raise ValueError(f"MCP server error: {res['error']}")
                 return res.get("result", {}).get("tools", [])
             except Exception as e:
-                logger.error(f"Failed to list tools from real MCP server: {e}. Falling back to mock.")
+                logger.error(f"Failed to list tools from real MCP server: {e}.")
+                raise RuntimeError(f"Real MCP server failure during list_tools: {e}") from e
 
         # High-fidelity local mock tools listing
         return [
@@ -102,7 +103,8 @@ class McpClient:
                     raise ValueError(f"MCP server error: {res['error']}")
                 return res.get("result", {})
             except Exception as e:
-                logger.error(f"Failed to call tool {tool_name} on real MCP server: {e}. Falling back to mock.")
+                logger.error(f"Failed to call tool {tool_name} on real MCP server: {e}.")
+                raise RuntimeError(f"Real MCP server failure during call_tool: {e}") from e
 
         # High-fidelity local mock tool execution
         logger.info(f"[Mock MCP Server] Executing tool {tool_name} with args {arguments}")

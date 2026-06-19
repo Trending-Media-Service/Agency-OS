@@ -63,7 +63,7 @@ async def test_circuit_breaker_tripping_and_blocking(db_engine):
             )
             s.add(op)
             # Add to outbox
-            s.add(OutboxItem(op_id=op_id, status="PENDING"))
+            s.add(OutboxItem(op_id=op_id, tenant_id=tid, status="PENDING"))
         await s.commit()
 
     # Run outbox drain:
@@ -142,7 +142,7 @@ async def test_circuit_breaker_auto_reset(db_engine):
             idem_key="idem_success_1"
         )
         s.add(op)
-        s.add(OutboxItem(op_id="op_success_1", status="PENDING"))
+        s.add(OutboxItem(op_id="op_success_1", tenant_id=tid, status="PENDING"))
         await s.commit()
 
     # 2. Run drain_once. Since breaker tripped_at is > 15 minutes ago, it should auto-reset (testing HALF_OPEN)
@@ -205,7 +205,7 @@ async def test_cooldown_blocking(db_engine):
             idem_key="idem_dup_1", created_at=dt.datetime.now(dt.timezone.utc)
         )
         s.add(op_dup)
-        s.add(OutboxItem(op_id="op_dup_1", status="PENDING"))
+        s.add(OutboxItem(op_id="op_dup_1", tenant_id=tid, status="PENDING"))
         await s.commit()
 
     # 2. Run drain_once. The duplicate Op should get blocked by cooldown and transition to BLOCKED
@@ -251,7 +251,7 @@ async def test_cooldown_fail_open_failsafe(db_engine, monkeypatch):
             idem_key="idem_failsafe_1"
         )
         s.add(op)
-        s.add(OutboxItem(op_id="op_failsafe_1", status="PENDING"))
+        s.add(OutboxItem(op_id="op_failsafe_1", tenant_id=tid, status="PENDING"))
         await s.commit()
 
     # 2. Run drain_once. Mock session.execute to fail on cooldown check queries.
