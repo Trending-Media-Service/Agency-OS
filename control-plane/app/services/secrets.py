@@ -57,6 +57,10 @@ class SecretManagerClient:
         
         Returns the resource path reference (secret_ref).
         """
+        if value is None:
+            raise ValueError("Secret value cannot be None")
+        if not isinstance(value, str):
+            raise TypeError("Secret value must be a string")
         if self._client:
             try:
                 # Real GCP Secret Manager call

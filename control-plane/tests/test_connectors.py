@@ -5,7 +5,7 @@ from app.services.secrets import SecretManagerClient
 @pytest.mark.asyncio
 async def test_universal_connector_resolution_and_secrets():
     # 1. Write a secret credential in Secret Manager mock registry
-    secret_ref = "projects/aos-control-plane/secrets/stripe-test-api-key/versions/latest"
+    credential = "projects/aos-control-plane/secrets/stripe-test-api-key/versions/latest"
     secrets_client = SecretManagerClient()
     await secrets_client.write_secret("stripe-test-api-key", "sk_live_stripe_secret_999")
 
@@ -13,7 +13,7 @@ async def test_universal_connector_resolution_and_secrets():
     config = {"api_url": "https://api.stripe.com/v1"}
     connector = await get_connector(
         provider="stripe",
-        secret_ref=secret_ref,
+        credential=credential,
         config=config
     )
 
@@ -29,7 +29,7 @@ async def test_stripe_connector_operations():
     config = {}
     connector = await get_connector(
         provider="stripe",
-        secret_ref="mock-stripe-secret",
+        credential="mock-stripe-secret",
         config=config
     )
     assert connector is not None
@@ -47,7 +47,7 @@ async def test_razorpay_connector_operations():
     config = {}
     connector = await get_connector(
         provider="razorpay",
-        secret_ref="mock-razorpay-secret",
+        credential="mock-razorpay-secret",
         config=config
     )
     assert connector is not None
@@ -64,7 +64,7 @@ async def test_jira_connector_operations():
     config = {"domain": "trending-media"}
     connector = await get_connector(
         provider="jira",
-        secret_ref="mock-jira-secret",
+        credential="mock-jira-secret",
         config=config
     )
     assert connector is not None
@@ -80,7 +80,7 @@ async def test_aws_connector_operations():
     config = {"region": "ap-south-1"}
     connector = await get_connector(
         provider="aws",
-        secret_ref="mock-aws-secret",
+        credential="mock-aws-secret",
         config=config
     )
     assert connector is not None
@@ -93,7 +93,7 @@ async def test_directus_connector_operations():
     config = {"url": "http://localhost:8055"}
     connector = await get_connector(
         provider="directus",
-        secret_ref="mock-directus-secret",
+        credential="mock-directus-secret",
         config=config
     )
     assert connector is not None

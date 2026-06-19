@@ -35,11 +35,11 @@ class ManageAdapter(Adapter):
         if "connect" in words and "shopify" in words:
             # Find shop URL (looks like *.myshopify.com)
             shop_url = next((w for w in words if "myshopify.com" in w), "default.myshopify.com")
-            # Find secret ref (looks like secret:*)
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:shopify-token")
+            # Find credential (looks like secret:*)
+            credential = next((w for w in words if w.startswith("secret:")), "secret:shopify-token")
             # Remove "secret:" prefix for storage
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            if credential.startswith("secret:"):
+                credential = credential[7:]
 
             # Parse custom mcp_url if present, else fall back to environment default
             mcp_url = next((w.split("mcp_url:")[1] for w in words if w.startswith("mcp_url:")), None)
@@ -58,7 +58,7 @@ class ManageAdapter(Adapter):
                     action="manage.shopify.connect",
                     params={
                         "provider": "shopify",
-                        "secret_ref": secret_ref,
+                        "credential": credential,
                         "config": config
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -118,7 +118,7 @@ class ManageAdapter(Adapter):
         """Generates preview for manage actions."""
         if op.action == "manage.shopify.connect":
             shop_url = op.params.get("config", {}).get("shop_url")
-            summary = f"Will establish connection to Shopify store: {shop_url}\nScope: read-only\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to Shopify store: {shop_url}\nScope: read-only\nCredential: ****"
             return PreviewArtifact(kind="shopify_connect_preview", summary=summary, detail=op.params)
         elif op.action == "manage.shopify.disconnect":
             summary = f"Will remove connection to Shopify store."
@@ -139,21 +139,23 @@ class ManageAdapter(Adapter):
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Executes connection, disconnection, backup, or backup deletion."""
-        if op.action in ("manage.shopify.connect", "manage.shopify.disconnect"):
+        if op.action in ("manage.shopify.connect", "manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke"):
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
 
         if op.action == "manage.shopify.connect":
             provider = op.params.get("provider")
-            raw_token = op.params.get("secret_ref")
+            raw_token = op.params.get("credential") or op.params.get("secret_ref")
+            if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+                return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
             # Write token to Secret Manager and get reference
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
             secrets_client = SecretManagerClient()
-            secret_ref = await secrets_client.write_secret(secret_id, raw_token)
+            credential = await secrets_client.write_secret(secret_id, raw_token)
             
-            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret reference {secret_ref}")
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential}")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -163,16 +165,20 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             existing = res.scalar_one_or_none()
             if existing:
-                existing.secret_ref = secret_ref
+                existing.credential = credential
                 existing.config = config
+                existing.status = "unverified"
+                existing.revoked_at = None
+                existing.last_error = None
                 logger.info("Updated existing connection")
             else:
                 conn = Connection(
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     provider=provider,
-                    secret_ref=secret_ref,
-                    config=config
+                    credential=credential,
+                    config=config,
+                    status="unverified"
                 )
                 session.add(conn)
                 logger.info("Created new connection")
@@ -191,9 +197,9 @@ class ManageAdapter(Adapter):
             )
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
-            if conn:
+            if conn and conn.credential:
                 secrets_client = SecretManagerClient()
-                await secrets_client.delete_secret(conn.secret_ref)
+                await secrets_client.delete_secret(conn.credential)
             
             stmt_del = delete(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -202,6 +208,115 @@ class ManageAdapter(Adapter):
             )
             await session.execute(stmt_del)
             return ExecResult(ok=True, detail={"message": "Connection removed from DB and Secret Manager"})
+
+        elif op.action == "manage.connection.verify":
+            provider = op.params.get("provider")
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return ExecResult(ok=False, detail={"error": "Connection record not found"})
+            
+            if conn.status == "revoked":
+                return ExecResult(ok=False, detail={"error": "Cannot verify a revoked connection"})
+                
+            try:
+                secrets_client = SecretManagerClient()
+                token = await secrets_client.read_secret(conn.credential)
+                if not token:
+                    raise ValueError("Retrieved token is empty")
+            except Exception as e:
+                conn.status = "error"
+                conn.last_error = f"Secret Manager retrieval failed: {str(e)}"
+                # Emit verify_failure trust event
+                from app.models import TrustEvent
+                event = TrustEvent(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain="manage",
+                    kind="verify_failure",
+                    base_delta=-10.0,
+                    reason=f"Secret Manager retrieval failed: {e}"
+                )
+                session.add(event)
+                return ExecResult(ok=False, detail={"error": f"Secret Manager retrieval failed: {e}"})
+
+            try:
+                if provider == "shopify":
+                    mcp_url = conn.config.get("mcp_server_url")
+                    mcp = McpClient(server_url=mcp_url)
+                    tool_res = await mcp.call_tool("shopify_get_shop_info", {})
+                    await mcp.close()
+                    
+                    import json
+                    content_text = tool_res["content"][0]["text"]
+                    shop_info = json.loads(content_text)
+                
+                conn.status = "active"
+                conn.last_verified_at = datetime.datetime.now(datetime.timezone.utc)
+                conn.last_error = None
+                
+                # Emit verified_success trust event
+                from app.models import TrustEvent
+                event = TrustEvent(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain="manage",
+                    kind="verified_success",
+                    base_delta=5.0,
+                    reason="On-demand verification succeeded"
+                )
+                session.add(event)
+            except Exception as e:
+                conn.status = "error"
+                conn.last_error = f"Verification failed: {str(e)}"
+                
+                # Emit verify_failure trust event
+                from app.models import TrustEvent
+                event = TrustEvent(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain="manage",
+                    kind="verify_failure",
+                    base_delta=-10.0,
+                    reason=f"Verification failed: {e}"
+                )
+                session.add(event)
+                return ExecResult(ok=False, detail={"error": f"Verification failed: {e}"})
+                
+            return ExecResult(ok=True, detail={"message": "Verification completed successfully"})
+
+        elif op.action == "manage.connection.revoke":
+            provider = op.params.get("provider")
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return ExecResult(ok=True, detail={"message": "Connection record not found"})
+                
+            if conn.status == "revoked":
+                return ExecResult(ok=True, detail={"message": "Connection already revoked"})
+                
+            if conn.credential:
+                try:
+                    secrets_client = SecretManagerClient()
+                    await secrets_client.delete_secret(conn.credential)
+                except Exception as e:
+                    logger.error(f"Failed to delete secret: {e}")
+                    
+            conn.status = "revoked"
+            conn.credential = None
+            conn.revoked_at = datetime.datetime.now(datetime.timezone.utc)
+            
+            return ExecResult(ok=True, detail={"message": "Connection revoked successfully"})
             
         elif op.action == "manage.backup.create":
             backup_file = op.params.get("backup_file")
@@ -459,10 +574,10 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                 
             try:
                 secrets_client = SecretManagerClient()
-                token = await secrets_client.read_secret(conn.secret_ref)
+                token = await secrets_client.read_secret(conn.credential)
                 if not token:
                     raise ValueError("Retrieved token is empty")
-                logger.info(f"Successfully retrieved Shopify token from Secret Manager (ref: {conn.secret_ref})")
+                logger.info(f"Successfully retrieved Shopify token from Secret Manager (ref: {conn.credential})")
             except Exception as e:
                 logger.error(f"Failed to read Shopify token from Secret Manager: {e}")
                 return VerifyResult(
@@ -494,6 +609,11 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                     detail={"error": f"Shopify MCP tool call failed: {e}"}
                 )
 
+            # Mark active on success
+            conn.status = "active"
+            conn.last_verified_at = datetime.datetime.now(datetime.timezone.utc)
+            conn.last_error = None
+
             return VerifyResult(
                 ok=True,
                 checks={
@@ -506,11 +626,11 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                 detail={
                     "shop_name": shop_info.get("shop_name", "Unknown Shop"),
                     "domain": shop_info.get("domain", "unknown.myshopify.com"),
-                    "secret_ref": conn.secret_ref
+                    "credential": conn.credential
                 }
             )
-        elif op.action == "manage.shopify.disconnect":
-            return VerifyResult(ok=True, checks={"disconnected": True})
+        elif op.action in ("manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke"):
+            return VerifyResult(ok=True, checks={"completed": True})
             
         elif op.action == "manage.backup.create":
             backup_file = op.params.get("backup_file")

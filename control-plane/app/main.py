@@ -168,8 +168,45 @@ async def readyz(s: AsyncSession = Depends(get_db)):
         )
 
 
+from prometheus_client import Gauge, REGISTRY
+
+if "aos_connections_active" in REGISTRY._names_to_collectors:
+    connections_active_gauge = REGISTRY._names_to_collectors["aos_connections_active"]
+else:
+    connections_active_gauge = Gauge(
+        "aos_connections_active",
+        "Total number of active connections"
+    )
+
+if "aos_outbox_lag" in REGISTRY._names_to_collectors:
+    outbox_lag_gauge = REGISTRY._names_to_collectors["aos_outbox_lag"]
+else:
+    outbox_lag_gauge = Gauge(
+        "aos_outbox_lag",
+        "Total number of pending items in the outbox"
+    )
+
+
 @app.get("/metrics")
-async def metrics_endpoint():
+async def metrics_endpoint(s: AsyncSession = Depends(get_worker_db)):
+    from app.models import Connection, OutboxItem
+    from sqlalchemy import select, func
+    
+    try:
+        # Count active connections
+        stmt_conn = select(func.count()).select_from(Connection).where(Connection.status == "active")
+        res_conn = await s.execute(stmt_conn)
+        active_count = res_conn.scalar() or 0
+        connections_active_gauge.set(active_count)
+
+        # Count pending outbox items
+        stmt_outbox = select(func.count()).select_from(OutboxItem).where(OutboxItem.status == "pending")
+        res_outbox = await s.execute(stmt_outbox)
+        pending_count = res_outbox.scalar() or 0
+        outbox_lag_gauge.set(pending_count)
+    except Exception as e:
+        logger.error(f"Failed to update prometheus gauges: {e}")
+
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
@@ -201,9 +238,15 @@ class ConnectionOut(BaseModel):
     id: str
     provider: str
     scope: str
-    secret_ref: str
+    credential: str | None
+    status: str
+    last_verified_at: dt.datetime | None = None
+    last_error: str | None = None
+    revoked_at: dt.datetime | None = None
+    expires_at: dt.datetime | None = None
     config: dict
     created_at: dt.datetime
+
 
 
 class CircuitBreakerOut(BaseModel):
@@ -688,11 +731,162 @@ async def list_connections(s: AsyncSession = Depends(get_db), tid: str = Depends
             "id": c.id,
             "provider": c.provider,
             "scope": c.scope,
-            "secret_ref": c.secret_ref,
+            "credential": c.credential,
+            "status": c.status,
+            "last_verified_at": c.last_verified_at,
+            "last_error": c.last_error,
+            "revoked_at": c.revoked_at,
+            "expires_at": c.expires_at,
             "config": c.config,
             "created_at": c.created_at
         } for c in conns
     ]
+
+
+@app.get("/connections/oauth/authorize")
+async def oauth_authorize(
+    request: Request,
+    provider: str,
+    brand_id: str,
+    redirect_uri: str,
+    tid: str = Depends(tenant_id)
+):
+    from app.services.oauth import generate_oauth_state, validate_redirect_uri
+    from fastapi.responses import RedirectResponse
+    import urllib.parse as urlparse
+
+    if not validate_redirect_uri(redirect_uri):
+        raise HTTPException(status_code=400, detail="Invalid redirect_uri")
+
+    state = generate_oauth_state(tid, brand_id, redirect_uri, provider=provider)
+
+    shop = brand_id
+    if provider == "shopify":
+        auth_url = f"https://{shop}.myshopify.com/admin/oauth/authorize?client_id=mock-client-id&scope=read_products,write_products&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}"
+    elif provider.startswith("google"):
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&response_type=code&scope=https://www.googleapis.com/auth/adwords&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}&access_type=offline&prompt=consent"
+    else:
+        auth_url = f"https://oauth.example.com/authorize?client_id=mock-client-id&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}"
+
+    return RedirectResponse(url=auth_url, status_code=302)
+
+
+@app.get("/connections/oauth/callback", name="oauth_callback")
+async def oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    s: AsyncSession = Depends(get_db),
+    x_tenant_id: str | None = Header(default=None)
+):
+    from app.services.oauth import verify_oauth_state
+    from app.services.secrets import SecretManagerClient
+    import httpx
+
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing state")
+
+    if error:
+        raise HTTPException(status_code=400, detail=f"OAuth error: {error} - {error_description}")
+
+    try:
+        payload = verify_oauth_state(state)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if x_tenant_id and x_tenant_id != payload.get("tenant_id"):
+        raise HTTPException(status_code=400, detail="Tenant mismatch")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
+    tenant_id = payload["tenant_id"]
+    brand_id = payload["brand_id"]
+    provider = payload.get("provider", "shopify")
+
+    if provider == "shopify":
+        token_url = f"https://{brand_id}.myshopify.com/admin/oauth/access_token"
+    else:
+        token_url = "https://oauth2.googleapis.com/token"
+
+    token_payload = {
+        "client_id": "mock-client-id",
+        "client_secret": "mock-client-secret",
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": str(request.url_for("oauth_callback"))
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(token_url, data=token_payload)
+            if resp.status_code != 200:
+                err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                err_msg = err_data.get("error_description") or err_data.get("error") or resp.text
+                raise HTTPException(status_code=400, detail=f"Token exchange failed: {err_msg}")
+            token_data = resp.json()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Token exchange failed: {e}")
+
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    scope_str = token_data.get("scope") or "read_products,write_products"
+    expires_in = token_data.get("expires_in", 3600)
+
+    if provider == "shopify":
+        required_scopes = {"read_products", "write_products"}
+        returned_scopes = {s.strip() for s in scope_str.split(",")}
+        if not required_scopes.issubset(returned_scopes):
+            raise HTTPException(status_code=400, detail="Scope mismatch: missing required permissions")
+
+    secrets_client = SecretManagerClient()
+    credential_val = refresh_token or access_token
+    credential_ref = await secrets_client.write_secret(
+        f"{tenant_id}_{brand_id}_{provider}_refresh_token", 
+        credential_val
+    )
+    await secrets_client.write_secret(
+        f"{tenant_id}_{brand_id}_{provider}_access_token", 
+        access_token
+    )
+
+    stmt = select(Connection).where(
+        Connection.tenant_id == tenant_id,
+        Connection.brand_id == brand_id,
+        Connection.provider == provider
+    )
+    res = await s.execute(stmt)
+    conn = res.scalar_one_or_none()
+
+    now_dt = dt.datetime.utcnow()
+    expires_at_dt = now_dt + dt.timedelta(seconds=expires_in) if expires_in else None
+
+    if conn:
+        conn.credential = credential_ref
+        conn.status = "active"
+        conn.expires_at = expires_at_dt
+        conn.last_verified_at = now_dt
+        conn.last_error = None
+    else:
+        conn = Connection(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            provider=provider,
+            scope=scope_str,
+            credential=credential_ref,
+            status="active",
+            expires_at=expires_at_dt,
+            last_verified_at=now_dt
+        )
+        s.add(conn)
+
+    await s.commit()
+    return {"status": "success", "message": "Connection successfully established"}
+
 
 
 @app.get("/circuit-breakers", response_model=list[CircuitBreakerOut])
@@ -964,6 +1158,18 @@ async def drain_outbox_task(s: AsyncSession = Depends(get_worker_db)):
     """
     processed = await loop.drain_once(s)
     return {"status": "ok", "processed_items": processed}
+
+
+@app.post("/tasks/refresh-tokens", dependencies=[Depends(verify_worker_auth)])
+async def refresh_tokens_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to rotate all expiring OAuth tokens across all tenants.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.rotation import rotate_expiring_tokens
+    await rotate_expiring_tokens(s)
+    return {"status": "ok", "message": "Token rotation completed"}
+
 
 
 @app.post("/tasks/process-cadences", dependencies=[Depends(verify_worker_auth)])
@@ -1370,7 +1576,7 @@ async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid
         }
 
     # Mock token retrieval from Secret Manager
-    mock_token = f"mocked-token-for-{conn.secret_ref}"
+    mock_token = f"mocked-token-for-{conn.credential}"
 
     from app.services.shopify import MockShopifyClient
     client = MockShopifyClient(shop_url=conn.config.get("shop_url"), token=mock_token)
@@ -1482,6 +1688,8 @@ async def plugin_webhook(
         conn = await _find_connection(s, provider, identifier)
         if not conn:
             raise HTTPException(404, f"Unknown brand connection for identifier: {identifier}")
+        if conn.status == "revoked":
+            raise HTTPException(401, f"Revoked brand connection for identifier: {identifier}")
 
         # Retrieve tenant to determine dedicated GCP project ID for secret isolation
         stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
@@ -1499,14 +1707,14 @@ async def plugin_webhook(
         if not signature:
             raise HTTPException(401, "Webhook signature header missing")
 
-        # Resolve actual secret key from Secret Manager (Falling back to secret_ref if not in Secret Manager)
+        # Resolve actual secret key from Secret Manager (Falling back to credential if not in Secret Manager)
         from app.services.secrets import SecretManagerClient
         try:
             secrets_client = SecretManagerClient(project_id=gcp_project)
-            secret_key = await secrets_client.read_secret(conn.secret_ref)
+            secret_key = await secrets_client.read_secret(conn.credential)
         except ValueError as e:
             logger.warning(f"Secret not found in registry: {e}. Falling back to literal ref.")
-            secret_key = conn.secret_ref
+            secret_key = conn.credential
         except Exception as e:
             logger.error(f"Failed to read webhook secret from Secret Manager: {e}")
             raise HTTPException(500, "Internal secret resolution error")

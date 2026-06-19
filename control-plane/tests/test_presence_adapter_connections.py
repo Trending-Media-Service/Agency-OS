@@ -25,16 +25,16 @@ def test_presence_wp_connect_plan(adapter, wp_connect_intent):
     op = ops[0]
     assert op.action == "presence.wordpress.connect"
     assert op.params["provider"] == "wordpress"
-    assert op.params["secret_ref"] == "wp-secret-key"
+    assert op.params["credential"] == "wp-secret-key"
     assert op.params["config"]["url"] == "blog.mybrand.com"
 
 def test_presence_wp_connect_preview(adapter, wp_connect_op):
     preview_art = adapter.preview(wp_connect_op)
     assert preview_art.kind == "wordpress_connect_preview"
     assert "blog.mybrand.com" in preview_art.summary
-    assert "wp-secret-key" in preview_art.summary
+    assert "****" in preview_art.summary
 
-async def test_presence_wp_connect_execute(adapter, wp_connect_op, session):
+async def test_presence_wp_connect_execute(adapter, wp_connect_op, session, mock_secrets_client):
     res = await adapter.execute(wp_connect_op, "idem_wp_connect_123", session=session)
     assert res.ok is True
     
@@ -46,10 +46,10 @@ async def test_presence_wp_connect_execute(adapter, wp_connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "wp-secret-key"
     assert conn.scope == "read"
     assert conn.config["url"] == "blog.mybrand.com"
@@ -75,7 +75,7 @@ async def test_presence_wp_execute_disconnect(adapter, wp_connect_op, session):
         tenant_id="t1",
         brand_id="b1",
         provider="wordpress",
-        secret_ref="wp-secret-key",
+        credential="wp-secret-key",
         config={"url": "blog.mybrand.com"}
     )
     session.add(conn)
@@ -116,16 +116,16 @@ def test_presence_web_connect_plan(adapter, web_connect_intent):
     op = ops[0]
     assert op.action == "presence.web.connect"
     assert op.params["provider"] == "web"
-    assert op.params["secret_ref"] == "vercel-token-123"
+    assert op.params["credential"] == "vercel-token-123"
     assert op.params["config"]["url"] == "www.mybrand.com"
 
 def test_presence_web_connect_preview(adapter, web_connect_op):
     preview_art = adapter.preview(web_connect_op)
     assert preview_art.kind == "web_connect_preview"
     assert "www.mybrand.com" in preview_art.summary
-    assert "vercel-token-123" in preview_art.summary
+    assert "****" in preview_art.summary
 
-async def test_presence_web_connect_execute(adapter, web_connect_op, session):
+async def test_presence_web_connect_execute(adapter, web_connect_op, session, mock_secrets_client):
     res = await adapter.execute(web_connect_op, "idem_web_connect_123", session=session)
     assert res.ok is True
     
@@ -137,10 +137,10 @@ async def test_presence_web_connect_execute(adapter, web_connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "vercel-token-123"
     assert conn.scope == "read"
     assert conn.config["url"] == "www.mybrand.com"
@@ -165,7 +165,7 @@ async def test_presence_web_execute_disconnect(adapter, web_connect_op, session)
         tenant_id="t1",
         brand_id="b1",
         provider="web",
-        secret_ref="vercel-token-123",
+        credential="vercel-token-123",
         config={"url": "www.mybrand.com"}
     )
     session.add(conn)
@@ -206,16 +206,16 @@ def test_presence_google_connect_plan(adapter, google_connect_intent):
     op = ops[0]
     assert op.action == "presence.google.connect"
     assert op.params["provider"] == "google"
-    assert op.params["secret_ref"] == "google-oauth-token-999"
+    assert op.params["credential"] == "google-oauth-token-999"
     assert op.params["config"] == {}
 
 def test_presence_google_connect_preview(adapter, google_connect_op):
     preview_art = adapter.preview(google_connect_op)
     assert preview_art.kind == "google_connect_preview"
     assert "Google Services" in preview_art.summary
-    assert "google-oauth-token-999" in preview_art.summary
+    assert "****" in preview_art.summary
 
-async def test_presence_google_connect_execute(adapter, google_connect_op, session):
+async def test_presence_google_connect_execute(adapter, google_connect_op, session, mock_secrets_client):
     res = await adapter.execute(google_connect_op, "idem_google_connect_123", session=session)
     assert res.ok is True
     
@@ -227,10 +227,10 @@ async def test_presence_google_connect_execute(adapter, google_connect_op, sessi
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "google-oauth-token-999"
     assert conn.scope == "search_console,merchant_center"
     assert conn.config.get("scopes") == ["search_console", "merchant_center"]
@@ -255,7 +255,7 @@ async def test_presence_google_execute_disconnect(adapter, google_connect_op, se
         tenant_id="t1",
         brand_id="b1",
         provider="google",
-        secret_ref="google-oauth-token-999",
+        credential="google-oauth-token-999",
         config={}
     )
     session.add(conn)
@@ -277,3 +277,36 @@ async def test_presence_google_execute_disconnect(adapter, google_connect_op, se
     )
     db_res = await session.execute(stmt)
     assert db_res.scalar_one_or_none() is None
+
+# Backward Compatibility Tests
+@pytest.mark.asyncio
+async def test_presence_wp_connect_execute_backward_compatibility(adapter, session, mock_secrets_client):
+    op = OpSpec(
+        tenant_id="t1",
+        brand_id="b1",
+        domain="presence",
+        action="presence.wordpress.connect",
+        params={
+            "provider": "wordpress",
+            "secret_ref": "legacy-wp-secret-key",
+            "config": {"url": "blog.mybrand.com"}
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(0)
+    )
+    res = await adapter.execute(op, "idem_wp_legacy_123", session=session)
+    assert res.ok is True
+    
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t1",
+        Connection.brand_id == "b1",
+        Connection.provider == "wordpress"
+    )
+    db_res = await session.execute(stmt)
+    conn = db_res.scalar_one_or_none()
+    assert conn is not None
+    
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient()
+    val = await secrets_client.read_secret(conn.credential)
+    assert val == "legacy-wp-secret-key"

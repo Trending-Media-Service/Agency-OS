@@ -150,11 +150,11 @@ def _provision_web_host_handler(tenant_id: str, brand_id: str, domain: str) -> l
     )]
 
 
-def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, secret_ref: str) -> list[OpSpec]:
+def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, credential: str) -> list[OpSpec]:
     return [OpSpec(
         tenant_id=tenant_id, brand_id=brand_id, domain="manage",
         action="manage.shopify.connect",
-        params={"provider": "shopify", "secret_ref": secret_ref, "config": {"shop_url": shop_url}},
+        params={"provider": "shopify", "credential": credential, "config": {"shop_url": shop_url}},
         severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
     )]
 
@@ -203,9 +203,9 @@ registry.register_tool(
             "type": "OBJECT",
             "properties": {
                 "shop_url": {"type": "STRING", "description": "myshop.myshopify.com"},
-                "secret_ref": {"type": "STRING", "description": "Secret Manager reference for the API token"},
+                "credential": {"type": "STRING", "description": "Secret Manager reference for the API token"},
             },
-            "required": ["shop_url", "secret_ref"],
+            "required": ["shop_url", "credential"],
         },
     },
     handler=_manage_shopify_connect_handler,
