@@ -342,22 +342,8 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
             # Call the handler with tenant_id injected
             specs = handler(tenant_id=tid, **args)
             
-            # Resolve trust tier for this domain (defaults to 1 supervised)
-            domain_name = specs[0].domain
-            stmt = (
-                select(TrustSnapshot.tier)
-                .where(
-                    TrustSnapshot.tenant_id == tid,
-                    TrustSnapshot.brand_id == body.brand_id,
-                    TrustSnapshot.domain == domain_name
-                )
-                .order_by(TrustSnapshot.ts.desc())
-                .limit(1)
-            )
-            res = await s.execute(stmt)
-            tier = res.scalar_one_or_none()
-            if tier is None:
-                tier = 1
+            from app.kernel.services import resolve_brand_tier
+            tier = await resolve_brand_tier(s, tenant_id=tid, brand_id=body.brand_id, domain=specs[0].domain)
 
             cards = []
             for spec in specs:
@@ -445,20 +431,8 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
         raise HTTPException(400, f"no adapter for domain {domain_name!r}")
 
     # Derive tier from the latest TrustSnapshot for this brand and domain
-    stmt = (
-        select(TrustSnapshot.tier)
-        .where(
-            TrustSnapshot.tenant_id == tid,
-            TrustSnapshot.brand_id == body.brand_id,
-            TrustSnapshot.domain == domain_name
-        )
-        .order_by(TrustSnapshot.ts.desc())
-        .limit(1)
-    )
-    res = await s.execute(stmt)
-    tier = res.scalar_one_or_none()
-    if tier is None:
-        tier = 1
+    from app.kernel.services import resolve_brand_tier
+    tier = await resolve_brand_tier(s, tenant_id=tid, brand_id=body.brand_id, domain=domain_name)
 
     cards = []
     for spec in adapter.plan(intent_text, tid, body.brand_id):
@@ -519,20 +493,8 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
         raise HTTPException(400, f"no adapter for domain {body.domain!r}")
     
     # Derive tier from the latest TrustSnapshot for this brand and domain
-    stmt = (
-        select(TrustSnapshot.tier)
-        .where(
-            TrustSnapshot.tenant_id == tid,
-            TrustSnapshot.brand_id == body.brand_id,
-            TrustSnapshot.domain == body.domain
-        )
-        .order_by(TrustSnapshot.ts.desc())
-        .limit(1)
-    )
-    res = await s.execute(stmt)
-    tier = res.scalar_one_or_none()
-    if tier is None:
-        tier = 1  # Default to Supervised (Tier 1)
+    from app.kernel.services import resolve_brand_tier
+    tier = await resolve_brand_tier(s, tenant_id=tid, brand_id=body.brand_id, domain=body.domain)
 
     cards = []
     for spec in adapter.plan(body.text, tid, body.brand_id):
@@ -609,18 +571,8 @@ async def submit_action(body: ActionIn, background_tasks: BackgroundTasks,
     cards = []
     for spec in specs:
         # Derive tier from the latest TrustSnapshot for this brand+domain (default 1).
-        stmt = (
-            select(TrustSnapshot.tier)
-            .where(
-                TrustSnapshot.tenant_id == tid,
-                TrustSnapshot.brand_id == body.brand_id,
-                TrustSnapshot.domain == spec.domain,
-            )
-            .order_by(TrustSnapshot.ts.desc())
-            .limit(1)
-        )
-        t = (await s.execute(stmt)).scalar_one_or_none()
-        tier = 1 if t is None else t
+        from app.kernel.services import resolve_brand_tier
+        tier = await resolve_brand_tier(s, tenant_id=tid, brand_id=body.brand_id, domain=spec.domain)
 
         row = await loop.propose(s, spec, actor="forms:operator")
         gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
@@ -894,18 +846,8 @@ async def oauth_callback(
     domain = action.split(".")[0]
     
     # Derive tier from the latest TrustSnapshot for this brand+domain (default 1).
-    stmt = (
-        select(TrustSnapshot.tier)
-        .where(
-            TrustSnapshot.tenant_id == tenant_id,
-            TrustSnapshot.brand_id == brand_id,
-            TrustSnapshot.domain == domain,
-        )
-        .order_by(TrustSnapshot.ts.desc())
-        .limit(1)
-    )
-    t = (await s.execute(stmt)).scalar_one_or_none()
-    tier = 1 if t is None else t
+    from app.kernel.services import resolve_brand_tier
+    tier = await resolve_brand_tier(s, tenant_id=tenant_id, brand_id=brand_id, domain=domain)
 
     op_id = f"op_{uuid.uuid4().hex[:12]}"
     
@@ -1279,20 +1221,8 @@ async def process_cadences(s: AsyncSession = Depends(get_worker_db)):
         row = await loop.propose(s, op_spec, actor="scheduler")
 
         # Fetch brand trust score to determine current tier
-        stmt_tier = (
-            select(TrustSnapshot.tier)
-            .where(
-                TrustSnapshot.tenant_id == cadence.tenant_id,
-                TrustSnapshot.brand_id == cadence.brand_id,
-                TrustSnapshot.domain == cadence.domain
-            )
-            .order_by(TrustSnapshot.ts.desc())
-            .limit(1)
-        )
-        q_tier = await s.execute(stmt_tier)
-        tier = q_tier.scalar()
-        if tier is None:
-            tier = 1
+        from app.kernel.services import resolve_brand_tier
+        tier = await resolve_brand_tier(s, tenant_id=cadence.tenant_id, brand_id=cadence.brand_id, domain=cadence.domain)
 
         await loop.preview_and_gate(s, row, tier=tier)
         # Update Cadence scheduling fields
@@ -1804,21 +1734,8 @@ async def plugin_webhook(
                 row = await loop.propose(s, spec, actor=f"webhook.{provider}")
                 
                 # Resolve trust snapshot to find tier
-                from app.models import TrustSnapshot
-                stmt_tier = (
-                    select(TrustSnapshot.tier)
-                    .where(
-                        TrustSnapshot.tenant_id == conn.tenant_id,
-                        TrustSnapshot.brand_id == conn.brand_id,
-                        TrustSnapshot.domain == spec.domain
-                    )
-                    .order_by(TrustSnapshot.ts.desc())
-                    .limit(1)
-                )
-                res_tier = await s.execute(stmt_tier)
-                tier = res_tier.scalar_one_or_none()
-                if tier is None:
-                    tier = 1  # fallback to supervised
+                from app.kernel.services import resolve_brand_tier
+                tier = await resolve_brand_tier(s, tenant_id=conn.tenant_id, brand_id=conn.brand_id, domain=spec.domain)  # fallback to supervised
 
                 await loop.preview_and_gate(s, row, tier=tier, actor=f"webhook.{provider}")
                 proposed_ops.append(row.id)

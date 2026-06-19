@@ -515,6 +515,57 @@ def approval_requirement(op: OpSpec, tier: int, gate: GateResult) -> str:
         return "AUTO"
     return "HUMAN"
 
+async def resolve_brand_tier(s: AsyncSession, tenant_id: str, brand_id: str, domain: str) -> int:
+    """Queries the latest TrustSnapshot for the brand and domain, defaulting to Tier 1."""
+    from ..models import TrustSnapshot
+    stmt = (
+        select(TrustSnapshot.tier)
+        .where(
+            TrustSnapshot.tenant_id == tenant_id,
+            TrustSnapshot.brand_id == brand_id,
+            TrustSnapshot.domain == domain
+        )
+        .order_by(TrustSnapshot.ts.desc())
+        .limit(1)
+    )
+    res = await s.execute(stmt)
+    tier = res.scalar_one_or_none()
+    return tier if tier is not None else 1
+
+
+async def dispatch_tier_alert(s: AsyncSession, tenant_id: str, brand_id: str, domain: str, old_tier: int, new_tier: int, score: float):
+    """Proposes, gates, and enqueues a grow.alert.dispatch operation to notify operators of a trust demotion."""
+    from .optypes import OpSpec, Severity, Reversibility
+    from .loop import propose, preview_and_gate, enqueue
+    
+    msg = f"⚠️ CRITICAL: Brand '{brand_id}' domain '{domain}' has been DEMOTED from Tier {old_tier} to Tier {new_tier} (Trust Score: {score:.1f})."
+    if new_tier == 0:
+        msg = f"🛑 EMERGENCY LOCKOUT: Brand '{brand_id}' domain '{domain}' has been LOCKED OUT (Tier 0) due to trust drop (Trust Score: {score:.1f})!"
+        
+    spec = OpSpec(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        domain="grow",
+        action="grow.alert.dispatch",
+        params={
+            "message": msg,
+            "severity": "CRITICAL" if new_tier == 0 else "WARNING",
+            "alert_type": "tier_demotion",
+            "details": {
+                "domain": domain,
+                "old_tier": old_tier,
+                "new_tier": new_tier,
+                "score": score
+            }
+        },
+        severity=Severity(2, Reversibility.COMPENSATABLE)
+    )
+    
+    row = await propose(s, spec, actor="trust_pipeline")
+    await preview_and_gate(s, row, tier=2, actor="trust_pipeline")
+    # preview_and_gate automatically enqueues the approved alert Op to the outbox!
+    logger.warning(f"Dispatched tier demotion alert for brand {brand_id} domain {domain} ({old_tier} -> {new_tier})")
+
 
 async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
     from ..models import Brand, TrustEvent, TrustSnapshot, BrandProperty
@@ -540,6 +591,9 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
             gmc_mismatches = prop.findings.get("disapproved_products", 0)
 
         for domain in domains:
+            # Resolve previous snapshot's tier
+            prev_tier = await resolve_brand_tier(s, brand.tenant_id, brand.id, domain)
+
             # Fetch events
             res_ev = await s.execute(
                 select(TrustEvent).where(
@@ -563,6 +617,22 @@ async def compute_snapshots(s: AsyncSession, now: Optional[dt.datetime] = None):
             trust_cfg = await load_active_trust_config(s, brand.tenant_id)
             score = trust_score(signals, event_tuples, now, config=trust_cfg)
             tier = tier_for(score, config=trust_cfg)
+
+            # Detect and handle tier transitions
+            if tier != prev_tier:
+                action = "trust.tier_demoted" if tier < prev_tier else "trust.tier_elevated"
+                payload = {
+                    "brand_id": brand.id,
+                    "domain": domain,
+                    "old_tier": prev_tier,
+                    "new_tier": tier,
+                    "score": score
+                }
+                await audit_append(s, tenant_id=brand.tenant_id, actor="trust_pipeline", action=action, payload=payload)
+                
+                # Dispatch immediate alert on demotion or lockout
+                if tier < prev_tier:
+                    await dispatch_tier_alert(s, brand.tenant_id, brand.id, domain, prev_tier, tier, score)
 
             snapshot = TrustSnapshot(
                 tenant_id=brand.tenant_id,

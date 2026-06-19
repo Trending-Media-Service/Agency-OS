@@ -62,18 +62,8 @@ async def rotate_expiring_tokens(session) -> None:
             row = await propose(session, spec, actor="tasks:rotation")
             
             # Derive tier from the latest TrustSnapshot for this brand+domain (default 1).
-            stmt_tier = (
-                select(TrustSnapshot.tier)
-                .where(
-                    TrustSnapshot.tenant_id == conn.tenant_id,
-                    TrustSnapshot.brand_id == conn.brand_id,
-                    TrustSnapshot.domain == "manage",
-                )
-                .order_by(TrustSnapshot.ts.desc())
-                .limit(1)
-            )
-            t = (await session.execute(stmt_tier)).scalar_one_or_none()
-            tier = 1 if t is None else t
+            from app.kernel.services import resolve_brand_tier
+            tier = await resolve_brand_tier(session, tenant_id=conn.tenant_id, brand_id=conn.brand_id, domain="manage")
             
             # Gate and preview
             await preview_and_gate(session, row, tier=tier, actor="tasks:rotation")
