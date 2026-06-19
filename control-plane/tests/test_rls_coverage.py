@@ -87,6 +87,8 @@ async def setup_postgres_schema():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         for role in (APP_ROLE, WORKER_ROLE):
+            # Revoke all privileges and drop owned objects to avoid DependentObjectsStillExistError
+            await conn.execute(text(f"DROP OWNED BY {role}"))
             await conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
 
 
