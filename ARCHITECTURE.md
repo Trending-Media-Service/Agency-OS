@@ -335,7 +335,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | IaC | Terraform (recipes) + small state-orchestration layer | State in GCS, locked |
 | CI/CD | Cloud Build | Per-brand triggers |
 | Secrets | Secret Manager (per-brand in brand projects) | |
-| Observability | Sentry + structured logs to Cloud Logging + Prometheus client (/metrics endpoint) | No ELK/Jaeger/Prometheus stack (monitoring is lightweight and client-pulled) |
+| Observability | Sentry + structured logs to Cloud Logging + Prometheus client (/metrics endpoint) | Exposes native /metrics endpoint scraped by Google Cloud Monitoring or lightweight operator collector (no heavy self-hosted monitoring stack) |
 | Backups | Nightly pg_dump → GCS (multi-region bucket) + Terraform state versioning | This IS the DR plan; monthly restore test |
 | Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
 | Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
@@ -376,7 +376,7 @@ Slices 2–4 can reorder based on client pull. Slice 1 cannot — everything sta
 
 ## 10. Deferred — revisit at 10 paying tenants (not before)
 
-Native mobile apps · graphical control panel · Kafka/event sourcing/CQRS · Temporal · multi-region active-active DB · hot failover · service mesh · SOC 2 program (keep audit hygiene now, certify later) · competitive cross-tenant benchmarking (also a consent/data-governance question) · self-healing auto-remediation that writes to client property (currently violates §2.3 by definition) · plugin/SDK developer ecosystem · ML forecasting of trust/ROI (needs months of executed-Op history that does not yet exist) · predictive tier-degradation alerts (same reason).
+Native mobile apps · graphical control panel · Kafka/event sourcing/CQRS · Temporal · multi-region active-active DB · hot failover · service mesh · SOC 2 program (keep audit hygiene now, certify later) · dedicated self-hosted Prometheus/Grafana stack (rely on lightweight scraping of /metrics now) · competitive cross-tenant benchmarking (also a consent/data-governance question) · self-healing auto-remediation that writes to client property (currently violates §2.3 by definition) · plugin/SDK developer ecosystem · ML forecasting of trust/ROI (needs months of executed-Op history that does not yet exist) · predictive tier-degradation alerts (same reason).
 
 Items that look deferred but are actually cheap and IN scope now: execution traces, cost attribution, override-reason logging, LLM-written root-cause explanations over the trace/event log (read-only, no remediation writes).
 

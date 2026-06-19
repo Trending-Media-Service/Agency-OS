@@ -313,6 +313,8 @@ class GrowAdapter(Adapter):
             provider = op.params.get("provider")
             raw_token = op.params.get("credential") or op.params.get("secret_ref")
             if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
@@ -347,6 +349,8 @@ class GrowAdapter(Adapter):
                 session.add(conn)
                 logger.info(f"Created new connection for {provider}")
                 
+            from app.metrics import CONNECTOR_OPERATIONS
+            CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={"message": f"Connection to {provider} registered in DB and Secret Manager"})
             
         elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
@@ -538,6 +542,8 @@ class GrowAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if not conn:
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider or "unknown", result="failure").inc()
                 return VerifyResult(ok=False, checks={"connection_in_db": False}, detail={"error": "Connection record not found"})
                 
             try:
@@ -548,12 +554,16 @@ class GrowAdapter(Adapter):
                 logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.credential})")
             except Exception as e:
                 logger.error(f"Failed to read {provider} token from Secret Manager: {e}")
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider or "unknown", result="failure").inc()
                 return VerifyResult(
                     ok=False, 
                     checks={"api_token_valid": False, "secret_retrieval_ok": False}, 
                     detail={"error": f"Secret Manager retrieval failed: {e}"}
                 )
 
+            from app.metrics import CONNECTOR_OPERATIONS
+            CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider, result="success").inc()
             return VerifyResult(
                 ok=True,
                 checks={

@@ -151,6 +151,8 @@ class ManageAdapter(Adapter):
             provider = op.params.get("provider")
             raw_token = op.params.get("credential") or op.params.get("secret_ref")
             if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider or "shopify", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
@@ -187,6 +189,8 @@ class ManageAdapter(Adapter):
                 session.add(conn)
                 logger.info("Created new connection")
                 
+            from app.metrics import CONNECTOR_OPERATIONS
+            CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={"message": "Connection registered in DB and Secret Manager"})
             
         elif op.action == "manage.shopify.disconnect":
@@ -225,6 +229,8 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if not conn:
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="rotate", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Connection record not found for rotation"})
             
             secrets_client = SecretManagerClient()
@@ -240,6 +246,8 @@ class ManageAdapter(Adapter):
             if not refresh_token_ref:
                 conn.status = "error"
                 conn.last_error = "Rotation failed: No refresh token or reference found in connection config"
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="rotate", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "No refresh token or reference found in connection config"})
                 
             from app.services.oauth import OauthService
@@ -256,6 +264,8 @@ class ManageAdapter(Adapter):
                 logger.error(f"OAuth token refresh failed: {e}", exc_info=True)
                 conn.status = "error"
                 conn.last_error = f"Rotation failed: {e}"
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="rotate", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": f"OAuth token refresh failed: {e}"})
                 
             new_access_ref = token_data.get("access_token_ref")
@@ -288,6 +298,8 @@ class ManageAdapter(Adapter):
                 except Exception as pe:
                     logger.warning(f"Failed to prune old secret versions: {pe}")
                     
+            from app.metrics import CONNECTOR_OPERATIONS
+            CONNECTOR_OPERATIONS.labels(operation="rotate", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={
                 "message": f"Connection credentials for {provider} rotated successfully",
                 "credential": new_access_ref
@@ -303,9 +315,13 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if not conn:
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Connection record not found"})
             
             if conn.status == "revoked":
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Cannot verify a revoked connection"})
                 
             try:
@@ -327,6 +343,8 @@ class ManageAdapter(Adapter):
                     reason=f"Secret Manager retrieval failed: {e}"
                 )
                 session.add(event)
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": f"Secret Manager retrieval failed: {e}"})
 
             try:
@@ -370,8 +388,12 @@ class ManageAdapter(Adapter):
                     reason=f"Verification failed: {e}"
                 )
                 session.add(event)
+                from app.metrics import CONNECTOR_OPERATIONS
+                CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider, result="failure").inc()
                 return ExecResult(ok=False, detail={"error": f"Verification failed: {e}"})
                 
+            from app.metrics import CONNECTOR_OPERATIONS
+            CONNECTOR_OPERATIONS.labels(operation="verify", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={"message": "Verification completed successfully"})
 
         elif op.action == "manage.connection.revoke":

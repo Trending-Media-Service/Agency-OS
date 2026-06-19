@@ -283,9 +283,12 @@ async def record_failure(s: AsyncSession, tenant_id: str, brand_id: str, domain:
         breaker.last_failure_at = dt.datetime.now(dt.timezone.utc)
 
         if breaker.consecutive_failures >= max_failures:
-            breaker.state = "OPEN"
-            breaker.tripped_at = dt.datetime.now(dt.timezone.utc)
-            logger.error(f"Circuit breaker TRIPPED (OPEN) for domain {domain} due to {breaker.consecutive_failures} consecutive failures.")
+            if breaker.state == "CLOSED":
+                breaker.state = "OPEN"
+                breaker.tripped_at = dt.datetime.now(dt.timezone.utc)
+                logger.error(f"Circuit breaker TRIPPED (OPEN) for domain {domain} due to {breaker.consecutive_failures} consecutive failures.")
+                from app.metrics import CIRCUIT_BREAKER_TRIPS
+                CIRCUIT_BREAKER_TRIPS.labels(domain=domain).inc()
 
         await s.commit()
     except Exception as e:
@@ -427,6 +430,9 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         latency_ms = await _decision_latency_ms(s, row.id)
     s.add(Approval(op_id=row.id, tenant_id=row.tenant_id, actor=actor, role=role, surface=surface,
                    decision=decision, reason=reason, latency_ms=latency_ms))
+    if latency_ms is not None:
+        from app.metrics import APPROVAL_LATENCY
+        APPROVAL_LATENCY.labels(domain=row.domain, action=row.action).observe(latency_ms / 1000.0)
     if decision == "approve":
         spec = _row_to_spec(row)
         params = await load_active_ruleset_params(s, row.tenant_id)

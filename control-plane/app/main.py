@@ -204,6 +204,13 @@ async def metrics_endpoint(s: AsyncSession = Depends(get_worker_db)):
         res_outbox = await s.execute(stmt_outbox)
         pending_count = res_outbox.scalar() or 0
         outbox_lag_gauge.set(pending_count)
+
+        # Count dead outbox items
+        from app.metrics import OUTBOX_DEAD_GAUGE
+        stmt_dead = select(func.count()).select_from(OutboxItem).where(OutboxItem.status == "DEAD")
+        res_dead = await s.execute(stmt_dead)
+        dead_count = res_dead.scalar() or 0
+        OUTBOX_DEAD_GAUGE.set(dead_count)
     except Exception as e:
         logger.error(f"Failed to update prometheus gauges: {e}")
 
