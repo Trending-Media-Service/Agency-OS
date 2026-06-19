@@ -273,7 +273,7 @@ async def test_periodic_token_rotation_flow(session, mock_secrets_client):
         assert op_row.state == "AWAITING_APPROVAL"
         
         # Approve the Op
-        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await loop.decide(session, op_row, decision="approve", actor="operator", role="OPERATOR", surface="whatsapp")
         await session.commit()
         
         # Execute the Op
@@ -287,8 +287,18 @@ async def test_periodic_token_rotation_flow(session, mock_secrets_client):
 @pytest.mark.asyncio
 async def test_scheduler_batch_resiliency(session, mock_secrets_client):
     """Test 37: Verify failure in one connection's rotation does not abort the entire batch."""
-    conn1 = Connection(tenant_id="t1", brand_id="b1", provider="shopify", credential="c1", status="active")
-    conn2 = Connection(tenant_id="t1", brand_id="b1", provider="google-ads", credential="c2", status="active")
+    conn1 = Connection(
+        tenant_id="t1", brand_id="b1", provider="shopify",
+        credential="projects/test-project/secrets/shopify-secret/versions/1",
+        status="active",
+        config={"refresh_token": "rt-shopify"}
+    )
+    conn2 = Connection(
+        tenant_id="t1", brand_id="b1", provider="google-ads",
+        credential="projects/test-project/secrets/ads-secret/versions/1",
+        status="active",
+        config={"refresh_token": "rt-ads"}
+    )
     if hasattr(Connection, "last_rotated_at"):
         conn1.last_rotated_at = dt.datetime.utcnow() - dt.timedelta(days=10)
         conn2.last_rotated_at = dt.datetime.utcnow() - dt.timedelta(days=10)
@@ -301,10 +311,17 @@ async def test_scheduler_batch_resiliency(session, mock_secrets_client):
         pytest.skip("Rotation tasks not implemented yet (expected Red state)")
 
     # Mock rotation to fail for conn1 and succeed for conn2
-    async def mock_rotate(tenant_id, brand_id, provider, credential):
+    async def mock_rotate(*args, **kwargs):
+        provider = kwargs.get("provider")
         if provider == "shopify":
             raise Exception("Shopify rotation failed!")
-        return {"access_token": "new-access", "refresh_token": "new-refresh"}
+        return {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+            "access_token_ref": "projects/test-project/secrets/ads-access/versions/latest",
+            "refresh_token_ref": "projects/test-project/secrets/ads-refresh/versions/latest"
+        }
 
     with patch("app.services.oauth.OauthService.refresh_token", side_effect=mock_rotate):
         await rotate_expiring_tokens(session)
@@ -321,7 +338,7 @@ async def test_scheduler_batch_resiliency(session, mock_secrets_client):
         # Approve and execute both!
         for op_row in op_rows:
             assert op_row.state == "AWAITING_APPROVAL"
-            await loop.decide(session, op_row, decision="approve", actor="operator")
+            await loop.decide(session, op_row, decision="approve", actor="operator", role="OPERATOR", surface="whatsapp")
             await session.commit()
             try:
                 await loop._execute_and_verify(session, op_row)
@@ -486,7 +503,7 @@ async def test_complete_oauth_flow(client, session, mock_secrets_client):
         assert op_row.state == "AWAITING_APPROVAL"
         
         # Approve the Op
-        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await loop.decide(session, op_row, decision="approve", actor="operator", role="OPERATOR", surface="whatsapp")
         await session.commit()
         
         # Execute the Op

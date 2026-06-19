@@ -215,10 +215,7 @@ class ManageAdapter(Adapter):
 
         elif op.action == "manage.connection.rotate":
             provider = op.params.get("provider")
-            new_credential = op.params.get("credential")
-            new_config = op.params.get("config", {})
-            
-            logger.info(f"Rotating connection credentials for provider {provider}")
+            logger.info(f"Executing token rotation for provider {provider} (tenant={op.tenant_id})")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -229,14 +226,72 @@ class ManageAdapter(Adapter):
             conn = res.scalar_one_or_none()
             if not conn:
                 return ExecResult(ok=False, detail={"error": "Connection record not found for rotation"})
+            
+            secrets_client = SecretManagerClient()
+            
+            refresh_token_ref = conn.config.get("refresh_token_ref")
+            if not refresh_token_ref and conn.config.get("refresh_token"):
+                # Write plain text refresh token to Secret Manager to get a reference (handles test seeds)
+                refresh_token_ref = await secrets_client.write_secret(
+                    f"{op.tenant_id}-{op.brand_id}-{provider}-refresh",
+                    conn.config.get("refresh_token")
+                )
                 
-            conn.credential = new_credential
-            conn.config = new_config
+            if not refresh_token_ref:
+                conn.status = "error"
+                conn.last_error = "Rotation failed: No refresh token or reference found in connection config"
+                return ExecResult(ok=False, detail={"error": "No refresh token or reference found in connection config"})
+                
+            from app.services.oauth import OauthService
+            oauth_service = OauthService()
+            
+            try:
+                token_data = await oauth_service.refresh_token(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    provider=provider,
+                    refresh_token_ref=refresh_token_ref
+                )
+            except Exception as e:
+                logger.error(f"OAuth token refresh failed: {e}", exc_info=True)
+                conn.status = "error"
+                conn.last_error = f"Rotation failed: {e}"
+                return ExecResult(ok=False, detail={"error": f"OAuth token refresh failed: {e}"})
+                
+            new_access_ref = token_data.get("access_token_ref")
+            new_refresh_ref = token_data.get("refresh_token_ref")
+            expires_in = token_data.get("expires_in", 3600)
+            
+            # Update connection record
+            updated_config = dict(conn.config)
+            updated_config["refresh_token_ref"] = new_refresh_ref
+            # Also update the plain text refresh token in config if it was there (for compatibility/tests)
+            if "refresh_token" in updated_config and token_data.get("refresh_token"):
+                updated_config["refresh_token"] = token_data.get("refresh_token")
+                
+            if expires_in:
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                expires_at_dt = now_dt + datetime.timedelta(seconds=expires_in)
+                conn.expires_at = expires_at_dt.replace(tzinfo=None)
+                updated_config["expires_at"] = expires_at_dt.isoformat()
+                
+            conn.credential = new_access_ref
+            conn.config = updated_config
             conn.status = "active"
             conn.last_verified_at = datetime.datetime.now(datetime.timezone.utc)
             conn.last_error = None
             
-            return ExecResult(ok=True, detail={"message": f"Connection credentials for {provider} rotated successfully"})
+            # Prune old secret versions
+            if hasattr(oauth_service, "prune_old_versions") and refresh_token_ref:
+                try:
+                    await oauth_service.prune_old_versions(refresh_token_ref)
+                except Exception as pe:
+                    logger.warning(f"Failed to prune old secret versions: {pe}")
+                    
+            return ExecResult(ok=True, detail={
+                "message": f"Connection credentials for {provider} rotated successfully",
+                "credential": new_access_ref
+            })
 
         elif op.action == "manage.connection.verify":
             provider = op.params.get("provider")

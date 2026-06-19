@@ -157,9 +157,12 @@ async def test_connection_lifecycle_scheduled_rotation_and_audit(client, session
         tenant_id=tenant_id,
         brand_id=brand_id,
         provider="google-search-console",
-        credential="projects/p1/secrets/gsc-token/versions/1",
+        credential="projects/p1/secrets/gsc-token_access/versions/1",
         status="active",
-        config={"site_url": "https://rot-brand.com"},
+        config={
+            "site_url": "https://rot-brand.com",
+            "refresh_token_ref": "projects/p1/secrets/gsc-token/versions/1"
+        },
         expires_at=dt.datetime.utcnow() - dt.timedelta(minutes=5)
     )
     session.add(conn)
@@ -228,7 +231,7 @@ async def test_connection_lifecycle_scheduled_rotation_and_audit(client, session
         assert op_row.state == "AWAITING_APPROVAL"
         
         # Approve and execute
-        await loop.decide(session, op_row, decision="approve", actor="operator")
+        await loop.decide(session, op_row, decision="approve", actor="operator", role="OPERATOR", surface="whatsapp")
         await session.commit()
         await loop._execute_and_verify(session, op_row)
         await session.commit()
