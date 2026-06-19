@@ -304,6 +304,7 @@ class RulesetParams:
     provision_cost_ceiling_minor: int = 1_000_000        # 10,000.00 INR/month
     grow_bid_cap_minor: int = 100_000                    # 1000.00 INR per adjustment
     grow_budget_transfer_cap_minor: int = 5_000_000      # 50,000.00 INR per action
+    grow_campaign_budget_cap_minor: int = 1_000_000      # 10,000.00 INR per campaign create/update
     statutory_refund_limit_minor: int = 1_000_000         # 10,000.00 INR per refund
     allowed_regions: tuple[str, ...] = ("asia-south1",)
     approved_dependencies: tuple[str, ...] = ("react", "react-dom", "next", "tailwindcss", "lucide-react")
@@ -396,6 +397,18 @@ def build_rules(p: RulesetParams) -> list[Rule]:
                 delta=f"+{(op.params.get('transfer_amount_minor', 0) - p.grow_budget_transfer_cap_minor) / 100:.2f} INR over cap",
                 message="Budget transfer exceeds the per-action cap.",
             ) if op.params.get("transfer_amount_minor", 0) > p.grow_budget_transfer_cap_minor else None,
+        ),
+        Rule(
+            id="grow_campaign_budget_cap",
+            applies=lambda op: op.action in ("grow.campaign.create", "grow.campaign.update"),
+            check=lambda op: Violation(
+                rule_id="grow_campaign_budget_cap",
+                limit=f"budget_minor <= {p.grow_campaign_budget_cap_minor / 100:,.2f} INR",
+                attempted=f"{op.params.get('budget_minor', 0) / 100:,.2f} INR",
+                delta=f"+{(op.params.get('budget_minor', 0) - p.grow_campaign_budget_cap_minor) / 100:.2f} INR over cap",
+                message="Campaign budget exceeds the autonomous spend cap. Human approval required."
+            ) if op.params.get("budget_minor", 0) > p.grow_campaign_budget_cap_minor else None,
+            blocking=False
         ),
         Rule(
             id="statutory_refund_gate",
