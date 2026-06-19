@@ -378,21 +378,11 @@ async def _decision_latency_ms(s: AsyncSession, op_id: str) -> Optional[int]:
 
 
 async def _record_shadow_decision(s: AsyncSession, row: OpRow, human_decision: str) -> None:
-    from ..models import TrustSnapshot, ShadowDecision
+    from ..models import ShadowDecision
+    from .services import resolve_brand_tier
     
     # Only shadow when the brand-domain is not already Tier 2
-    stmt = (
-        select(TrustSnapshot.tier)
-        .where(
-            TrustSnapshot.tenant_id == row.tenant_id,
-            TrustSnapshot.brand_id == row.brand_id,
-            TrustSnapshot.domain == row.domain
-        )
-        .order_by(TrustSnapshot.ts.desc())
-        .limit(1)
-    )
-    res = await s.execute(stmt)
-    tier = res.scalar_one_or_none()
+    tier = await resolve_brand_tier(s, tenant_id=row.tenant_id, brand_id=row.brand_id, domain=row.domain)
     if tier == 2:
         return
 
@@ -493,21 +483,8 @@ async def decide(s: AsyncSession, row: OpRow, *, decision: str, actor: str, role
         await transition(s, row, OpState.PREVIEWED, actor=actor, detail={"reason": reason or "", "params_before": old_params})
 
         # Resolve tier from latest snapshot
-        from ..models import TrustSnapshot
-        stmt = (
-            select(TrustSnapshot.tier)
-            .where(
-                TrustSnapshot.tenant_id == row.tenant_id,
-                TrustSnapshot.brand_id == row.brand_id,
-                TrustSnapshot.domain == row.domain
-            )
-            .order_by(TrustSnapshot.ts.desc())
-            .limit(1)
-        )
-        res = await s.execute(stmt)
-        tier = res.scalar_one_or_none()
-        if tier is None:
-            tier = 1
+        from .services import resolve_brand_tier
+        tier = await resolve_brand_tier(s, tenant_id=row.tenant_id, brand_id=row.brand_id, domain=row.domain)
 
         # Re-run preview and gate
         await preview_and_gate(s, row, tier=tier, actor=actor)
