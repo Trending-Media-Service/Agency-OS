@@ -38,6 +38,11 @@ isolation), §6.1 (Provision), §8 (stack). This is ops docs, not a roadmap.
    - `ENV=production`
    - `DATABASE_URL=postgresql+asyncpg://<app-role>@…/agency_os` (and `WORKER_DATABASE_URL` for the
      privileged outbox/snapshot role that bypasses RLS)
+     - **One-time DB setup:** the worker role needs DML grants + RLS bypass. Cloud SQL
+       forbids the `BYPASSRLS` attribute, so run `control-plane/scripts/setup_worker_role.sql`
+       (as the table owner) to grant the worker role and add a permissive `worker_bypass`
+       policy on every RLS table. Without this, `create_tenant` fails with
+       `InsufficientPrivilegeError: permission denied for table tenants`.
    - `AOS_STATE_BUCKET=gs://aos-tfstate-<suffix>`
    - `GCP_PROJECT`, `GCP_LOCATION`, `OUTBOX_QUEUE_NAME`, `APP_URL` (Cloud Tasks outbox drain)
    - `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APPROVER_PHONE`,

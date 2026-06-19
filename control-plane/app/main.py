@@ -83,17 +83,6 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    from app.observability import trace_context
-    trace_id = trace_context.get("unknown")
-    logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error", "trace_id": trace_id},
-    )
-
-
 # The operator/brand console (control-plane/web) is served from a separate
 # Cloud Run origin, so browser calls to this API are cross-origin. Origins come
 # from ALLOWED_ORIGINS (comma-separated); localhost + the deployed console URL
@@ -106,6 +95,31 @@ ALLOWED_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+
+
+def _cors_headers_for(request: Request) -> dict[str, str]:
+    """CORS headers for a manually-built error response.
+
+    Unhandled 500s are produced by Starlette's ServerErrorMiddleware, which sits
+    OUTSIDE CORSMiddleware — so without this the browser sees a header-less error
+    and reports an opaque "Failed to fetch" instead of the real status/detail.
+    """
+    origin = request.headers.get("origin")
+    if origin and origin in ALLOWED_ORIGINS:
+        return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+    return {}
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    from app.observability import trace_context
+    trace_id = trace_context.get("unknown")
+    logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "trace_id": trace_id},
+        headers=_cors_headers_for(request),
+    )
 
 app.add_middleware(TraceMiddleware)
 app.add_middleware(TenantIsolationMiddleware)
