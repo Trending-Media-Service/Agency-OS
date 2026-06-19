@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../recipes"))
 
+# Terraform plans are persisted between an Op's preview and its execute. The
+# container runs as a non-root user, so the previous repo-root expression
+# resolved to "/tfplans" (not creatable -> PermissionError on provision preview).
+# Default to a writable temp dir; override with TFPLAN_DIR (e.g. a mounted volume).
+TFPLAN_DIR = os.getenv("TFPLAN_DIR") or os.path.join(tempfile.gettempdir(), "aos-tfplans")
+
 
 class ProvisionAdapter(Adapter):
     domain = "provision"
@@ -317,7 +323,7 @@ class ProvisionAdapter(Adapter):
                 return PreviewArtifact(kind="terraform_plan_error", summary=f"Plan failed: {err}", detail={"stderr": err})
 
             # Save plan persistently
-            persistent_plan_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../tfplans"))
+            persistent_plan_dir = TFPLAN_DIR
             os.makedirs(persistent_plan_dir, exist_ok=True)
             plan_file_path = os.path.join(persistent_plan_dir, f"{op.id}.tfplan")
             shutil.copy2(os.path.join(temp_dir, "tfplan"), plan_file_path)
@@ -334,7 +340,7 @@ class ProvisionAdapter(Adapter):
         action_parts = op.action.split(".")
         verb = action_parts[-1] # create | destroy
         
-        persistent_plan_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../tfplans"))
+        persistent_plan_dir = TFPLAN_DIR
         plan_file_path = os.path.join(persistent_plan_dir, f"{op.id}.tfplan")
         has_saved_plan = os.path.exists(plan_file_path)
 

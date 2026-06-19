@@ -53,6 +53,18 @@ def test_provision_adapter_plan(adapter):
     assert op.severity.reversibility == Reversibility.COMPENSATABLE
 
 
+def test_tfplan_dir_is_writable_not_root():
+    """Regression: preview() crashed with PermissionError creating '/tfplans'
+    because the container runs as a non-root user. The plan dir must be a path
+    the app can actually create/write (not the filesystem root)."""
+    from app.adapters import provision
+
+    assert provision.TFPLAN_DIR != "/tfplans", "plan dir must not resolve to the non-writable root path"
+    # The exact operation that 500'd in prod must succeed for the runtime user.
+    os.makedirs(provision.TFPLAN_DIR, exist_ok=True)
+    assert os.path.isdir(provision.TFPLAN_DIR) and os.access(provision.TFPLAN_DIR, os.W_OK)
+
+
 def test_provision_adapter_preview(adapter, create_op):
     preview_art = adapter.preview(create_op)
     assert preview_art.kind == "terraform_plan"
