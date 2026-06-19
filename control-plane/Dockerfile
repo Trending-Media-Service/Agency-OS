@@ -9,14 +9,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and unzip Terraform CLI (1.5.7)
+# Establish the working directory BEFORE downloading Terraform so the binary
+# lands at /app/terraform (the runner stage copies it from that exact path).
+WORKDIR /app
+
+# Download and unzip Terraform CLI (1.5.7) into /app
 ENV TERRAFORM_VERSION=1.5.7
 RUN curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
     && unzip "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
-    && chmod +x terraform
+    && chmod +x terraform \
+    && rm "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
 
 # Create a virtual environment and install python dependencies
-WORKDIR /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
