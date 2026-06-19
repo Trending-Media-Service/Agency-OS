@@ -407,6 +407,20 @@ class GrowAdapter(Adapter):
         client = get_marketing_client(provider=provider, token=token, config=config)
         campaign_id = op.params.get("campaign_id")
 
+        is_dry = op.params.get("dry_run", False)
+        if is_dry:
+            logger.info(f"[DRY RUN] Simulating action {op.action} for campaign {campaign_id} with params {op.params}")
+            return ExecResult(
+                ok=True,
+                detail={
+                    "message": f"[DRY RUN] Campaign operation {op.action} simulated successfully.",
+                    "campaign_id": campaign_id,
+                    "dry_run": True,
+                    "action": op.action,
+                    "params": op.params
+                }
+            )
+
         if op.action == "grow.campaign.create":
             name = op.params.get("name")
             budget = op.params.get("budget_minor")
