@@ -35,6 +35,24 @@ async def test_actions_submit_provision_web_host(client):
     assert any(o["action"] == "provision.web_host.create" for o in r.json())
 
 
+async def test_actions_connect_is_governed(client):
+    """Connector directory connects flow through the governed Op path (not a raw
+    Connection DB write): a connect tool proposes a *.connect Op in the queue."""
+    r = await client.post("/tenants", json={"name": "Conn", "brand_name": "B"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+
+    r = await client.post(
+        "/actions",
+        headers={"X-Tenant-ID": tid},
+        json={"tool": "grow_google_ads_connect", "brand_id": bid, "params": {"secret_ref": "google-ads-token"}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cards"][0]["action"] == "grow.google.connect"
+
+    r = await client.get("/ops", headers={"X-Tenant-ID": tid})
+    assert any(o["action"] == "grow.google.connect" for o in r.json())
+
+
 async def test_actions_rejects_unknown_tool(client):
     r = await client.post("/tenants", json={"name": "Bad", "brand_name": "B"})
     tid, bid = r.json()["tenant_id"], r.json()["brand_id"]

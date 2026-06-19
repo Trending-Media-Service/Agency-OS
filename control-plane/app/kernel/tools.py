@@ -288,6 +288,123 @@ registry.register_tool(
 )
 
 
+# ---------------------------------------------------------------- connectors (manual connect)
+# Manual "connect a provider" actions for the console connector directory. The
+# operator supplies a Secret Manager secret name (where the provider credentials
+# already live) + config; each creates a GOVERNED Connection Op via the adapter
+# (propose -> gate -> approve -> audit), never a raw-credential DB write.
+
+def _grow_google_ads_connect_handler(tenant_id: str, brand_id: str, secret_ref: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="grow",
+        action="grow.google.connect",
+        params={"provider": "google-ads", "secret_ref": secret_ref, "config": {}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _grow_meta_connect_handler(tenant_id: str, brand_id: str, secret_ref: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="grow",
+        action="grow.meta.connect",
+        params={"provider": "meta-ads", "secret_ref": secret_ref, "config": {}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _presence_google_connect_handler(tenant_id: str, brand_id: str, secret_ref: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="presence",
+        action="presence.google.connect",
+        params={"provider": "google", "secret_ref": secret_ref, "config": {}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _presence_wordpress_connect_handler(tenant_id: str, brand_id: str, secret_ref: str, url: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="presence",
+        action="presence.wordpress.connect",
+        params={"provider": "wordpress", "secret_ref": secret_ref, "config": {"url": url}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _presence_web_connect_handler(tenant_id: str, brand_id: str, secret_ref: str, url: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="presence",
+        action="presence.web.connect",
+        params={"provider": "web", "secret_ref": secret_ref, "config": {"url": url}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+_SECRET_REF_PROP = {"type": "STRING", "description": "Secret Manager secret name holding the provider API credentials"}
+
+registry.register_tool(
+    name="grow_google_ads_connect",
+    schema={
+        "name": "grow_google_ads_connect",
+        "description": "Connect a Google Ads account.",
+        "domain": "grow",
+        "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
+    },
+    handler=_grow_google_ads_connect_handler,
+)
+
+registry.register_tool(
+    name="grow_meta_connect",
+    schema={
+        "name": "grow_meta_connect",
+        "description": "Connect a Meta (Facebook/Instagram) Ads account.",
+        "domain": "grow",
+        "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
+    },
+    handler=_grow_meta_connect_handler,
+)
+
+registry.register_tool(
+    name="presence_google_connect",
+    schema={
+        "name": "presence_google_connect",
+        "description": "Connect Google Search Console & Merchant Center.",
+        "domain": "presence",
+        "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
+    },
+    handler=_presence_google_connect_handler,
+)
+
+registry.register_tool(
+    name="presence_wordpress_connect",
+    schema={
+        "name": "presence_wordpress_connect",
+        "description": "Connect a WordPress site.",
+        "domain": "presence",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"url": {"type": "STRING", "description": "WordPress site URL"}, "secret_ref": _SECRET_REF_PROP},
+            "required": ["url", "secret_ref"],
+        },
+    },
+    handler=_presence_wordpress_connect_handler,
+)
+
+registry.register_tool(
+    name="presence_web_connect",
+    schema={
+        "name": "presence_web_connect",
+        "description": "Connect an existing website / headless app.",
+        "domain": "presence",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"url": {"type": "STRING", "description": "Website URL"}, "secret_ref": _SECRET_REF_PROP},
+            "required": ["url", "secret_ref"],
+        },
+    },
+    handler=_presence_web_connect_handler,
+)
+
+
 def parse_chat_to_tool_call(text: str) -> Optional[tuple[str, dict]]:
     """Simulates/parses text to extract tool call name and arguments (regex-backed fallback)."""
     normalized = text.lower()
