@@ -83,6 +83,7 @@ interface OpParams {
 }
 
 interface OpDetailPreviewProps {
+  action?: string;
   previewKind?: string;
   previewSummary: string | null;
   params: OpParams;

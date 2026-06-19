@@ -185,6 +185,7 @@ class OpOut(BaseModel):
 
 class ConnectionOut(BaseModel):
     id: str
+    brand_id: str
     provider: str
     scope: str
     secret_ref: str
@@ -585,6 +586,20 @@ async def verify_audit(s: AsyncSession = Depends(get_db)):
     return {"ok": ok, "first_bad_id": first_bad}
 
 
+class ConnectionCreate(BaseModel):
+    brand_id: str = Field(max_length=32)
+    provider: str = Field(max_length=40)
+    scope: str = Field(default="read", max_length=128)
+    secret_ref: str = Field(max_length=255)
+    config: dict = {}
+
+
+class ConnectionUpdate(BaseModel):
+    scope: str | None = Field(default=None, max_length=128)
+    secret_ref: str | None = Field(default=None, max_length=255)
+    config: dict | None = None
+
+
 @app.get("/connections", response_model=list[ConnectionOut])
 async def list_connections(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
     stmt = select(Connection).where(Connection.tenant_id == tid)
@@ -593,6 +608,7 @@ async def list_connections(s: AsyncSession = Depends(get_db), tid: str = Depends
     return [
         {
             "id": c.id,
+            "brand_id": c.brand_id,
             "provider": c.provider,
             "scope": c.scope,
             "secret_ref": c.secret_ref,
@@ -600,6 +616,140 @@ async def list_connections(s: AsyncSession = Depends(get_db), tid: str = Depends
             "created_at": c.created_at
         } for c in conns
     ]
+
+
+@app.post("/connections", response_model=ConnectionOut, status_code=201)
+async def create_connection(
+    body: ConnectionCreate,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    # Verify brand exists and belongs to this tenant
+    brand = await s.get(Brand, body.brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found for this tenant")
+
+    conn = Connection(
+        tenant_id=tid,
+        brand_id=body.brand_id,
+        provider=body.provider,
+        scope=body.scope,
+        secret_ref=body.secret_ref,
+        config=body.config
+    )
+    s.add(conn)
+    await s.commit()
+    return {
+        "id": conn.id,
+        "brand_id": conn.brand_id,
+        "provider": conn.provider,
+        "scope": conn.scope,
+        "secret_ref": conn.secret_ref,
+        "config": conn.config,
+        "created_at": conn.created_at
+    }
+
+
+@app.put("/connections/{connection_id}", response_model=ConnectionOut)
+async def update_connection(
+    connection_id: str,
+    body: ConnectionUpdate,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    conn = await s.get(Connection, connection_id)
+    if not conn or conn.tenant_id != tid:
+        raise HTTPException(404, "Connection not found")
+
+    if body.scope is not None:
+        conn.scope = body.scope
+    if body.secret_ref is not None:
+        conn.secret_ref = body.secret_ref
+    if body.config is not None:
+        conn.config = body.config
+
+    await s.commit()
+    return {
+        "id": conn.id,
+        "brand_id": conn.brand_id,
+        "provider": conn.provider,
+        "scope": conn.scope,
+        "secret_ref": conn.secret_ref,
+        "config": conn.config,
+        "created_at": conn.created_at
+    }
+
+
+@app.delete("/connections/{connection_id}")
+async def delete_connection(
+    connection_id: str,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    conn = await s.get(Connection, connection_id)
+    if not conn or conn.tenant_id != tid:
+        raise HTTPException(404, "Connection not found")
+
+    await s.delete(conn)
+    await s.commit()
+    return {"status": "deleted", "id": connection_id}
+
+
+@app.get("/health/integrations")
+async def health_integrations(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Health check for all active tenant integrations/connections.
+    
+    Instantiates each configured adapter and tests its connection live.
+    """
+    from app.integrations import get_provider_adapter
+    from app.services.secrets import SecretManagerClient
+    
+    # 1. Fetch tenant to get GCP project for secrets isolation
+    tenant = await s.get(Tenant, tid)
+    gcp_project = tenant.gcp_project if tenant else None
+    
+    # 2. Fetch all active connections
+    stmt = select(Connection).where(Connection.tenant_id == tid)
+    res = await s.execute(stmt)
+    conns = res.scalars().all()
+    
+    results = []
+    secrets_client = SecretManagerClient(project_id=gcp_project)
+    
+    for conn in conns:
+        # Resolve credential token
+        try:
+            token = await secrets_client.read_secret(conn.secret_ref)
+        except Exception:
+            token = conn.secret_ref # fallback in local dev
+            
+        # Build configuration for adapter
+        adapter_config = {**conn.config, "token": token}
+        
+        try:
+            adapter = get_provider_adapter(conn.provider, adapter_config)
+            health = await adapter.connect()
+            results.append({
+                "connection_id": conn.id,
+                "provider": conn.provider,
+                "brand_id": conn.brand_id,
+                "is_healthy": health.is_healthy,
+                "status_code": health.status_code,
+                "error_message": health.error_message,
+                "last_checked": health.last_checked.isoformat() if health.last_checked else dt.datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Failed to run health check for connection {conn.id} ({conn.provider}): {e}")
+            results.append({
+                "connection_id": conn.id,
+                "provider": conn.provider,
+                "brand_id": conn.brand_id,
+                "is_healthy": False,
+                "error_message": f"Initialization failed: {e}",
+                "last_checked": dt.datetime.utcnow().isoformat()
+            })
+            
+    return results
 
 
 @app.get("/circuit-breakers", response_model=list[CircuitBreakerOut])
