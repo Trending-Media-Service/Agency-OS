@@ -20,7 +20,7 @@ type BodyOf<P extends Path, M extends string> =
     : never;
 
 export function useApi() {
-  const { tenantId } = useTenant();
+  const { tenantId, operatorToken } = useTenant();
   const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   async function request<
@@ -33,9 +33,11 @@ export function useApi() {
     headers?: Record<string, string>
   ): Promise<ResponseOf<P, M>> {
     const url = `${baseUrl}${path}`;
-    const reqHeaders = {
+    const reqHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       "X-Tenant-ID": tenantId,
+      // Operator-gated endpoints require the bearer token; include it when set.
+      ...(operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {}),
       ...headers,
     };
 

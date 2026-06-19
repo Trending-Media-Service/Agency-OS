@@ -10,7 +10,7 @@ import { Bot } from "lucide-react";
 export default function Home() {
   const router = useRouter();
   const { request } = useApi();
-  const { tenantId, setTenantId, knownTenants, addKnownTenant } = useTenant();
+  const { tenantId, setTenantId, knownTenants, addKnownTenant, operatorToken, setOperatorToken } = useTenant();
   
   // Onboarding & Tenant Creation state
   const [newTenantName, setNewTenantName] = useState("");
@@ -68,6 +68,19 @@ export default function Home() {
           </div>
 
           <form onSubmit={handleCreateTenant} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Operator Token</label>
+              <input
+                type="password"
+                required
+                placeholder="Paste your OPERATOR_TOKEN"
+                value={operatorToken}
+                onChange={(e) => setOperatorToken(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
+              />
+              <p className="text-[9px] text-zinc-600 leading-relaxed">Authenticates operator actions. Stored in this browser only.</p>
+            </div>
+
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Tenant Name</label>
               <input 

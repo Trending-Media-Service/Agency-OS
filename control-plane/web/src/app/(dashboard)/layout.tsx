@@ -27,13 +27,15 @@ export default function DashboardLayout({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { request } = useApi();
-  const { 
-    tenantId, 
-    setTenantId, 
-    role, 
-    setRole, 
-    knownTenants, 
-    addKnownTenant 
+  const {
+    tenantId,
+    setTenantId,
+    role,
+    setRole,
+    operatorToken,
+    setOperatorToken,
+    knownTenants,
+    addKnownTenant
   } = useTenant();
 
   const [showCreateTenant, setShowCreateTenant] = useState(false);
@@ -183,6 +185,16 @@ export default function DashboardLayout({
         </div>
         
         <div className="flex items-center space-x-3">
+          {/* Operator token (authenticates operator-gated calls; stored in this browser only) */}
+          <input
+            type="password"
+            placeholder="Operator token"
+            value={operatorToken}
+            onChange={(e) => setOperatorToken(e.target.value)}
+            title={operatorToken ? "Operator token set" : "Paste your OPERATOR_TOKEN to authenticate operator actions"}
+            className={`bg-zinc-900 border rounded px-2 py-1 text-[10px] text-zinc-300 focus:outline-none focus:border-zinc-700 font-mono w-32 ${operatorToken ? "border-emerald-800/60" : "border-zinc-800"}`}
+          />
+
           {/* Quick Dev Role Switcher */}
           <div className="flex bg-zinc-900 p-0.5 rounded border border-zinc-800 text-[10px]">
             <button 

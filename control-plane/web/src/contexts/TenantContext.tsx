@@ -16,6 +16,8 @@ interface TenantContextType {
   setActiveBrandId: (id: string | null) => void;
   role: string;
   setRole: (role: string) => void;
+  operatorToken: string;
+  setOperatorToken: (token: string) => void;
   knownTenants: KnownTenant[];
   addKnownTenant: (tenantId: string, tenantName: string, brandId: string, brandName: string) => void;
 }
@@ -35,6 +37,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   const [tenantId, setTenantIdState] = useState<string>("t1");
   const [activeBrandId, setActiveBrandIdState] = useState<string | null>("brand-bootstrap");
   const [role, setRoleState] = useState<string>("AGENCY_OWNER"); // default dev role
+  const [operatorToken, setOperatorTokenState] = useState<string>("");
   const [knownTenants, setKnownTenants] = useState<KnownTenant[]>(DEFAULT_TENANTS);
 
   // Load from localStorage on client boot
@@ -52,7 +55,11 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     if (savedRole) {
       setRoleState(savedRole);
     }
-    
+    const savedToken = localStorage.getItem("aos_operator_token");
+    if (savedToken) {
+      setOperatorTokenState(savedToken);
+    }
+
     const savedKnownTenants = localStorage.getItem("aos_known_tenants");
     if (savedKnownTenants) {
       try {
@@ -68,8 +75,12 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const fetchTenants = async () => {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      // GET /tenants is operator-gated; attach the bearer token if the operator has set one.
+      const token = localStorage.getItem("aos_operator_token");
       try {
-        const res = await fetch(`${baseUrl}/tenants`);
+        const res = await fetch(`${baseUrl}/tenants`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const data = await res.json();
         const mapped = data.map((t: { tenant_id: string; tenant_name: string; brand_id: string; brand_name: string }) => ({
@@ -126,6 +137,15 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem("aos_role", r);
   };
 
+  const setOperatorToken = (token: string) => {
+    setOperatorTokenState(token);
+    if (token) {
+      localStorage.setItem("aos_operator_token", token);
+    } else {
+      localStorage.removeItem("aos_operator_token");
+    }
+  };
+
   const addKnownTenant = (tId: string, tName: string, bId: string, bName: string) => {
     setKnownTenants(prev => {
       // Prevent duplicates
@@ -142,10 +162,12 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       setTenantId, 
       activeBrandId, 
       setActiveBrandId, 
-      role, 
-      setRole, 
-      knownTenants, 
-      addKnownTenant 
+      role,
+      setRole,
+      operatorToken,
+      setOperatorToken,
+      knownTenants,
+      addKnownTenant
     }}>
       {children}
     </TenantContext.Provider>
