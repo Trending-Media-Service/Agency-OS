@@ -413,7 +413,14 @@ class GrowAdapter(Adapter):
             bid = op.params.get("bid_minor")
             provider = op.params.get("provider", "google-ads")
             
-            ok = await client.create_campaign(campaign_id, name, budget, bid)
+            # IDEMPOTENCY CHECK: Check if campaign already exists in external system
+            existing_ext = await client.get_campaign(campaign_id)
+            if existing_ext:
+                logger.info(f"Campaign {campaign_id} already exists in external provider {provider} (idempotent replay).")
+                ok = True
+            else:
+                ok = await client.create_campaign(campaign_id, name, budget, bid)
+                
             if ok:
                 if session:
                     # Write to local DB
@@ -443,7 +450,14 @@ class GrowAdapter(Adapter):
             return ExecResult(ok=False, detail={"error": f"Failed to update campaign {campaign_id}"})
             
         elif op.action == "grow.campaign.delete":
-            ok = await client.delete_campaign(campaign_id)
+            # IDEMPOTENCY CHECK: Check if campaign is already deleted in external system
+            existing_ext = await client.get_campaign(campaign_id)
+            if not existing_ext:
+                logger.info(f"Campaign {campaign_id} does not exist in external provider (already deleted/never created).")
+                ok = True
+            else:
+                ok = await client.delete_campaign(campaign_id)
+                
             if ok:
                 if session:
                     # Delete from local DB
