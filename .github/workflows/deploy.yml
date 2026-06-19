@@ -21,6 +21,7 @@ env:
   # Verify with: gcloud projects describe aos-control-plane-tmg --format='value(projectNumber)'
   WIP_PROVIDER: projects/730671240713/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   DEPLOY_SA: deploy-cloudrun@aos-control-plane-tmg.iam.gserviceaccount.com
+  WORKER_SA: aos-worker@aos-control-plane-tmg.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -138,7 +139,7 @@ jobs:
             --quiet \
             --no-traffic \
             --tag=canary \
-            --set-env-vars="^###^ALLOWED_ORIGINS=${{ steps.cors.outputs.allowed_origins }}###ENV=production###GCP_PROJECT=${PROJECT_ID}###GCP_LOCATION=${REGION}###AOS_STATE_BUCKET=${STATE_BUCKET}###OUTBOX_QUEUE_NAME=${OUTBOX_QUEUE}###APP_URL=${APP_URL}" \
+            --set-env-vars="^###^ALLOWED_ORIGINS=${{ steps.cors.outputs.allowed_origins }}###ENV=production###GCP_PROJECT=${PROJECT_ID}###GCP_LOCATION=${REGION}###AOS_STATE_BUCKET=${STATE_BUCKET}###OUTBOX_QUEUE_NAME=${OUTBOX_QUEUE}###APP_URL=${APP_URL}###AOS_WORKER_SERVICE_ACCOUNT=${{ env.WORKER_SA }}" \
             --set-secrets="DATABASE_URL=aos-database-url:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --memory 2Gi
@@ -191,6 +192,17 @@ jobs:
             --platform managed \
             --region "${REGION}" \
             --project "${PROJECT_ID}"
+
+      - name: Provision Cloud Scheduler Jobs
+        run: |
+          echo "Provisioning Cloud Scheduler Jobs..."
+          chmod +x control-plane/scripts/provision_scheduler.sh
+          ./control-plane/scripts/provision_scheduler.sh
+        env:
+          GCP_PROJECT: ${{ env.PROJECT_ID }}
+          GCP_LOCATION: ${{ env.REGION }}
+          AOS_WORKER_SERVICE_ACCOUNT: ${{ env.WORKER_SA }}
+          APP_URL: ${{ env.APP_URL }}
 
   deploy-web:
     name: Deploy Console to Cloud Run
