@@ -137,6 +137,107 @@ registry.register_tool(
 )
 
 
+# ---------------------------------------------------------------- structured operator-action tools
+# These back the console's explicit Action Panel (no free-text parsing). Each handler
+# builds the same OpSpec an adapter.plan() would, from structured params.
+
+def _provision_web_host_handler(tenant_id: str, brand_id: str, domain: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="provision",
+        action="provision.web_host.create",
+        params={"domain": domain, "recipe": "web-host", "version": "0.1.0"},
+        severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, secret_ref: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="manage",
+        action="manage.shopify.connect",
+        params={"provider": "shopify", "secret_ref": secret_ref, "config": {"shop_url": shop_url}},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+    )]
+
+
+def _manage_diagnostics_handler(tenant_id: str, brand_id: str) -> list[OpSpec]:
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="manage",
+        action="manage.diagnostics.check",
+        params={"log_source": "cloud-run-logs"},
+        severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+    )]
+
+
+def _presence_citation_audit_handler(tenant_id: str, brand_id: str, competitors: str = "") -> list[OpSpec]:
+    comp_list = [c.strip() for c in competitors.replace(",", " ").split() if c.strip()]
+    return [OpSpec(
+        tenant_id=tenant_id, brand_id=brand_id, domain="presence",
+        action="presence.citation.audit",
+        params={"brand_id": brand_id, "competitors": comp_list},
+        severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+    )]
+
+
+registry.register_tool(
+    name="provision_web_host",
+    schema={
+        "name": "provision_web_host",
+        "description": "Provision a Cloud Run web host for a domain.",
+        "domain": "provision",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"domain": {"type": "STRING", "description": "Domain to host, e.g. ableys.in"}},
+            "required": ["domain"],
+        },
+    },
+    handler=_provision_web_host_handler,
+)
+
+registry.register_tool(
+    name="manage_shopify_connect",
+    schema={
+        "name": "manage_shopify_connect",
+        "description": "Connect a Shopify store (creates a governed Connection).",
+        "domain": "manage",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "shop_url": {"type": "STRING", "description": "myshop.myshopify.com"},
+                "secret_ref": {"type": "STRING", "description": "Secret Manager reference for the API token"},
+            },
+            "required": ["shop_url", "secret_ref"],
+        },
+    },
+    handler=_manage_shopify_connect_handler,
+)
+
+registry.register_tool(
+    name="manage_diagnostics",
+    schema={
+        "name": "manage_diagnostics",
+        "description": "Run diagnostics on the brand's Cloud Run logs.",
+        "domain": "manage",
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+    },
+    handler=_manage_diagnostics_handler,
+)
+
+registry.register_tool(
+    name="presence_citation_audit",
+    schema={
+        "name": "presence_citation_audit",
+        "description": "Run an SEO citation/competitor audit for the brand.",
+        "domain": "presence",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"competitors": {"type": "STRING", "description": "Space/comma-separated competitor domains"}},
+            "required": [],
+        },
+    },
+    handler=_presence_citation_audit_handler,
+)
+
+
 def parse_chat_to_tool_call(text: str) -> Optional[tuple[str, dict]]:
     """Simulates/parses text to extract tool call name and arguments (regex-backed fallback)."""
     normalized = text.lower()
