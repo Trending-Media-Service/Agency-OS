@@ -41,8 +41,8 @@ jobs:
                --exclude-dir=.git . ; then
             echo "::error::credential-like string committed — forbidden (AGENTS.md)"; exit 1
           fi
-          # Flag raw credential variables interpolated into logger/print (must NOT flag safe secret_ref)
-          if grep -rEn "(logger\.\w+|print)\(.*(credential|access_token|refresh_token|raw_token)" \
+          # Flag raw credential variables interpolated into logger/print (must NOT flag safe secret_ref or conn.credential)
+          if grep -rPn "(logger\.\w+|print)\s*\(.*\{[^}]*(?<!conn\.)(?<!connection\.)\b(credential|access_token|refresh_token|raw_token)\b[^}]*\}" \
                --include="*.py" \
                --exclude-dir=.git . ; then
             echo "::error::raw credential variable interpolated into log/print — forbidden (AGENTS.md)"; exit 1

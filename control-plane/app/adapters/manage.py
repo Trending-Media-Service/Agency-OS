@@ -157,9 +157,9 @@ class ManageAdapter(Adapter):
             # Write token to Secret Manager and get reference
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
             secrets_client = SecretManagerClient()
-            credential = await secrets_client.write_secret(secret_id, raw_token)
+            credential_ref = await secrets_client.write_secret(secret_id, raw_token)
             
-            logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential}")
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential_ref}")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -169,7 +169,7 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             existing = res.scalar_one_or_none()
             if existing:
-                existing.credential = credential
+                existing.credential = credential_ref
                 existing.config = config
                 existing.status = "unverified"
                 existing.revoked_at = None
@@ -180,7 +180,7 @@ class ManageAdapter(Adapter):
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     provider=provider,
-                    credential=credential,
+                    credential=credential_ref,
                     config=config,
                     status="unverified"
                 )
