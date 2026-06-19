@@ -19,7 +19,7 @@ import {
 interface Recommendation {
   action: string;
   domain: string;
-  params: Record<string, any>;
+  params: Record<string, unknown>;
   preview_summary: string;
   impact: number;
   reversibility: string;
