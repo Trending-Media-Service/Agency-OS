@@ -6,12 +6,14 @@ on:
       - main
 
 env:
-  PROJECT_ID: agency-os-prod
+  PROJECT_ID: aos-control-plane-tmg
   REGION: asia-south1
   SERVICE_NAME: agency-os-control-plane
-  ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/agency-os-prod/agency-os/control-plane
+  ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane
+  # NOTE: 730671240713 must be the project NUMBER of aos-control-plane-tmg.
+  # Verify with: gcloud projects describe aos-control-plane-tmg --format='value(projectNumber)'
   WIP_PROVIDER: projects/730671240713/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-  DEPLOY_SA: deploy-cloudrun@agency-os-prod.iam.gserviceaccount.com
+  DEPLOY_SA: deploy-cloudrun@aos-control-plane-tmg.iam.gserviceaccount.com
 
 jobs:
   deploy:
