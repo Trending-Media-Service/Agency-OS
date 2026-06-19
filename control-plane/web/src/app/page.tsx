@@ -21,10 +21,10 @@ export default function Home() {
 
   const isFirstRun = knownTenants.length <= 1 && tenantId === "t1";
 
-  // Redirect to dashboard operations page once onboarded
+  // Redirect to dashboard twin page once onboarded
   useEffect(() => {
     if (!isFirstRun || showDashboardOverride) {
-      router.push("/ops");
+      router.push("/twin");
     }
   }, [isFirstRun, showDashboardOverride, router]);
 

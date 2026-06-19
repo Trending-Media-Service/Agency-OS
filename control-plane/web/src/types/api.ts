@@ -524,6 +524,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/brands/{brand_id}/objective": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Brand Objective */
+        get: operations["get_brand_objective_brands__brand_id__objective_get"];
+        put?: never;
+        /** Set Brand Objective */
+        post: operations["set_brand_objective_brands__brand_id__objective_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/brands/{brand_id}/recommendations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Brand Recommendations */
+        get: operations["get_brand_recommendations_brands__brand_id__recommendations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/whatsapp": {
         parameters: {
             query?: never;
@@ -768,6 +803,11 @@ export interface components {
             /** First Bad Id */
             first_bad_id?: number | null;
         };
+        /** BrandObjectiveIn */
+        BrandObjectiveIn: {
+            /** Objective */
+            objective: string;
+        };
         /** ChatIn */
         ChatIn: {
             /** Brand Id */
@@ -910,6 +950,25 @@ export interface components {
              * @default 0.1.0
              */
             version: string;
+        };
+        /** RecommendationOut */
+        RecommendationOut: {
+            /** Action */
+            action: string;
+            /** Domain */
+            domain: string;
+            /** Params */
+            params: {
+                [key: string]: unknown;
+            };
+            /** Preview Summary */
+            preview_summary: string;
+            /** Impact */
+            impact: number;
+            /** Reversibility */
+            reversibility: string;
+            /** Cost Minor */
+            cost_minor: number;
         };
         /** TenantBrandOut */
         TenantBrandOut: {
@@ -1819,6 +1878,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_brand_objective_brands__brand_id__objective_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path: {
+                brand_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_brand_objective_brands__brand_id__objective_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path: {
+                brand_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BrandObjectiveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_brand_recommendations_brands__brand_id__recommendations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path: {
+                brand_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecommendationOut"][];
                 };
             };
             /** @description Validation Error */

@@ -24,7 +24,7 @@ from app.adapters.dr import DRAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
 from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
-from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection, CircuitBreakerRow, AuditEvent
+from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection, CircuitBreakerRow, AuditEvent, BrandObjective
 
 # Setup Sentry SDK if DSN is set
 SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -1517,6 +1517,108 @@ async def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
         hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+# =========================================================================
+# Brand Twin & Recommender Engine Endpoints (Epic #166)
+# =========================================================================
+
+class BrandObjectiveIn(BaseModel):
+    objective: str
+
+class RecommendationOut(BaseModel):
+    action: str
+    domain: str
+    params: dict
+    preview_summary: str
+    impact: int
+    reversibility: str
+    cost_minor: int
+
+@app.get("/brands/{brand_id}/objective")
+async def get_brand_objective(
+    brand_id: str,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+    
+    stmt = select(BrandObjective).where(BrandObjective.brand_id == brand_id)
+    res = await s.execute(stmt)
+    obj = res.scalar_one_or_none()
+    return {"brand_id": brand_id, "objective": obj.objective if obj else "footprint"}
+
+
+@app.post("/brands/{brand_id}/objective")
+async def set_brand_objective(
+    brand_id: str,
+    body: BrandObjectiveIn,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    if body.objective not in ("footprint", "growth", "retention"):
+        raise HTTPException(400, "Invalid objective value. Must be footprint, growth, or retention.")
+        
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+        
+    stmt = select(BrandObjective).where(BrandObjective.brand_id == brand_id)
+    res = await s.execute(stmt)
+    obj = res.scalar_one_or_none()
+    
+    if obj:
+        obj.objective = body.objective
+    else:
+        obj = BrandObjective(tenant_id=tid, brand_id=brand_id, objective=body.objective)
+        s.add(obj)
+        
+    return {"brand_id": brand_id, "objective": body.objective}
+
+
+@app.get("/brands/{brand_id}/recommendations", response_model=list[RecommendationOut])
+async def get_brand_recommendations(
+    brand_id: str,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+        
+    from app.services.recommender import get_recommendations
+    specs = await get_recommendations(s, brand_id)
+    
+    recs = []
+    for spec in specs:
+        if spec.action == "presence.google.connect":
+            summary = "Connect Google Search Console and Merchant Center channels to establish presence."
+        elif spec.action == "presence.search_console.audit":
+            summary = "Run Search Console organic search indexing and crawl health audit."
+        elif spec.action == "presence.merchant_center.audit":
+            summary = "Run Merchant Center product feed formatting and sync health audit."
+        elif spec.action == "presence.citation.audit":
+            summary = "Run Playwright competitor citation gap and organic keywords audit."
+        elif spec.action == "grow.budget.reallocate":
+            summary = spec.params.get("preview_summary") or "Optimize marketing ad spend by reallocating budget to high-performing campaigns."
+        elif spec.action == "presence.wordpress.connect":
+            summary = "Connect WordPress blog to launch customer retention content marketing."
+        else:
+            summary = f"Govern operation for action: {spec.action}"
+
+        recs.append({
+            "action": spec.action,
+            "domain": spec.domain,
+            "params": spec.params,
+            "preview_summary": summary,
+            "impact": spec.severity.impact,
+            "reversibility": spec.severity.reversibility.value,
+            "cost_minor": spec.cost_estimate.amount_minor if spec.cost_estimate else 0
+        })
+        
+    return recs
 
 
 @app.get("/webhooks/whatsapp")
