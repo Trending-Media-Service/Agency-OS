@@ -169,7 +169,7 @@ export default function ConnectionsPage() {
       {/* Active connections */}
       <div className="space-y-2 pt-2">
         <div className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">Active Connections</div>
-        {connections && (connections as ConnectionRow[]).length === 0 ? (
+        {connections && (connections as unknown as ConnectionRow[]).length === 0 ? (
           <p className="text-[10px] text-zinc-600 border border-dashed border-zinc-800 rounded-lg py-6 text-center">
             No active connections yet — connect a provider above.
           </p>
@@ -185,7 +185,7 @@ export default function ConnectionsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-900">
-                {(connections as ConnectionRow[] | undefined)?.map((c) => (
+                {(connections as unknown as ConnectionRow[] | undefined)?.map((c) => (
                   <tr key={c.id} className="hover:bg-zinc-900/10 transition-colors">
                     <td className="px-6 py-3 font-semibold text-zinc-200 uppercase">{c.provider}</td>
                     <td className="px-6 py-3"><span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[9px] uppercase">{c.scope}</span></td>

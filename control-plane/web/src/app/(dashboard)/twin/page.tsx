@@ -33,9 +33,9 @@ export default function TwinPage() {
   const readOnly = role === "BRAND_VIEWER";
 
   // 1. Fetch active strategic objective
-  const { data: objectiveData } = useQuery({
+  const { data: objectiveData } = useQuery<{ objective: string }>({
     queryKey: ["brandObjective", activeBrandId],
-    queryFn: () => request(`/brands/${activeBrandId}/objective` as "/brands/{brand_id}/objective", "get"),
+    queryFn: () => request(`/brands/${activeBrandId}/objective` as "/brands/{brand_id}/objective", "get") as Promise<{ objective: string }>,
     enabled: !!activeBrandId
   });
   const activeObjective = objectiveData?.objective || "footprint";
@@ -48,9 +48,9 @@ export default function TwinPage() {
   });
 
   // 3. Fetch Brand B-Score (Advisory Business performance)
-  const { data: bScoreData } = useQuery({
+  const { data: bScoreData } = useQuery<{ performance_score?: { score: number } }>({
     queryKey: ["brandPerformanceScore", activeBrandId],
-    queryFn: () => request(`/brands/${activeBrandId}/performance-score` as "/brands/{brand_id}/performance-score", "get"),
+    queryFn: () => request(`/brands/${activeBrandId}/performance-score` as "/brands/{brand_id}/performance-score", "get") as Promise<{ performance_score?: { score: number } }>,
     enabled: !!activeBrandId
   });
   const bScore = bScoreData?.performance_score?.score ?? 85.0;
@@ -78,7 +78,7 @@ export default function TwinPage() {
       const toolName = rec.action.replace(/\./g, "_");
       return request("/actions", "post", {
         tool: toolName,
-        brand_id: activeBrandId,
+        brand_id: activeBrandId!,
         params: rec.params
       });
     },
