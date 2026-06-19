@@ -41,6 +41,12 @@ jobs:
                --exclude-dir=.git . ; then
             echo "::error::credential-like string committed — forbidden (AGENTS.md)"; exit 1
           fi
+          # Flag raw credential variables interpolated into logger/print (must NOT flag safe secret_ref or conn.credential)
+          if grep -rPn "(logger\.\w+|print)\s*\(.*\{[^}]*(?<!conn\.)(?<!connection\.)\b(credential|access_token|refresh_token|raw_token)\b[^}]*\}" \
+               --include="*.py" \
+               --exclude-dir=.git --exclude-dir=tests . ; then
+            echo "::error::raw credential variable interpolated into log/print — forbidden (AGENTS.md)"; exit 1
+          fi
           # Gating paths must stay model-free (ARCHITECTURE.md §2.1)
           if grep -nE "anthropic|openai|google\.generativeai|genai|vertexai" control-plane/app/kernel/services.py control-plane/app/kernel/optypes.py 2>/dev/null; then
             echo "::error::model SDK referenced inside a gating module — forbidden (§2.1)"; exit 1
