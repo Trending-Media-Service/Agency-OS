@@ -30,7 +30,7 @@ const CONNECTOR_META: Record<string, { label: string; category: string; provider
 const CATEGORY_ORDER = ["Marketing & Ads", "Commerce & Stores", "Analytics & SEO", "Operations & MCPs", "Other"];
 
 interface ConnectionRow {
-  id: string; provider: string; scope: string; secret_ref: string; config: Record<string, unknown>; created_at: string;
+  id: string; provider: string; scope: string; credential: string | null; config: Record<string, unknown>; created_at: string;
 }
 
 export default function ConnectionsPage() {
@@ -180,7 +180,7 @@ export default function ConnectionsPage() {
                 <tr className="border-b border-zinc-900 bg-zinc-900/60 text-zinc-400 font-semibold uppercase tracking-wider text-[10px]">
                   <th className="px-6 py-3">Provider</th>
                   <th className="px-6 py-3">Scope</th>
-                  <th className="px-6 py-3">Secret Reference</th>
+                  <th className="px-6 py-3">Credential Reference</th>
                   <th className="px-6 py-3 text-right">Connected At</th>
                 </tr>
               </thead>
@@ -189,7 +189,7 @@ export default function ConnectionsPage() {
                   <tr key={c.id} className="hover:bg-zinc-900/10 transition-colors">
                     <td className="px-6 py-3 font-semibold text-zinc-200 uppercase">{c.provider}</td>
                     <td className="px-6 py-3"><span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[9px] uppercase">{c.scope}</span></td>
-                    <td className="px-6 py-3"><code className="text-zinc-400 font-mono text-[10px]">{c.secret_ref}</code></td>
+                    <td className="px-6 py-3"><code className="text-zinc-400 font-mono text-[10px]">{c.credential || "****"}</code></td>
                     <td className="px-6 py-3 text-right text-zinc-500">{new Date(c.created_at).toLocaleString()}</td>
                   </tr>
                 ))}

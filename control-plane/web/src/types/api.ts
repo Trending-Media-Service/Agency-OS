@@ -78,6 +78,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/brands/portfolio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Portfolio
+         * @description Returns the portfolio overview of all brands under the tenant.
+         *
+         *     Includes active objective, B-score, trust telemetry, hosting tier, and total costs.
+         */
+        get: operations["get_portfolio_brands_portfolio_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costs/rollup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Costs Rollup
+         * @description Returns the tenant's cost ledger rollup grouped by resource kind.
+         */
+        get: operations["get_costs_rollup_costs_rollup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/chat": {
         parameters: {
             query?: never;
@@ -430,6 +472,28 @@ export interface paths {
          *     Bypasses RLS by using get_worker_db.
          */
         post: operations["refresh_tokens_task_tasks_refresh_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/check-graduations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Graduations Task
+         * @description Background task to check for shared tenants exceeding revenue threshold and propose graduation.
+         *
+         *     Bypasses RLS by using get_worker_db.
+         */
+        post: operations["check_graduations_task_tasks_check_graduations_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -808,6 +872,23 @@ export interface components {
             /** Objective */
             objective: string;
         };
+        /** BrandPortfolioItem */
+        BrandPortfolioItem: {
+            /** Brand Id */
+            brand_id: string;
+            /** Brand Name */
+            brand_name: string;
+            /** Active Objective */
+            active_objective: string;
+            /** B Score */
+            b_score: number;
+            /** Trust Score */
+            trust_score: number;
+            /** Trust Tier */
+            trust_tier: number;
+            /** Total Cost Minor */
+            total_cost_minor: number;
+        };
         /** ChatIn */
         ChatIn: {
             /** Brand Id */
@@ -988,6 +1069,19 @@ export interface components {
             /** Brand Name */
             brand_name: string;
         };
+        /** TenantPortfolioOut */
+        TenantPortfolioOut: {
+            /** Tenant Id */
+            tenant_id: string;
+            /** Tenant Name */
+            tenant_name: string;
+            /** Hosting Tier */
+            hosting_tier: string;
+            /** Gcp Project */
+            gcp_project: string;
+            /** Portfolio */
+            portfolio: components["schemas"]["BrandPortfolioItem"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1115,6 +1209,68 @@ export interface operations {
                 "application/json": components["schemas"]["TenantIn"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_portfolio_brands_portfolio_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantPortfolioOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_costs_rollup_costs_rollup_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-tenant-id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -1737,6 +1893,37 @@ export interface operations {
         };
     };
     refresh_tokens_task_tasks_refresh_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_graduations_task_tasks_check_graduations_post: {
         parameters: {
             query?: never;
             header?: {

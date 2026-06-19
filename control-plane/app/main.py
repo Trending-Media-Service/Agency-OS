@@ -328,6 +328,101 @@ async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
     return [dict(row) for row in res.mappings().all()]
 
 
+class BrandPortfolioItem(BaseModel):
+    brand_id: str
+    brand_name: str
+    active_objective: str
+    b_score: float
+    trust_score: float
+    trust_tier: int
+    total_cost_minor: int
+
+class TenantPortfolioOut(BaseModel):
+    tenant_id: str
+    tenant_name: str
+    hosting_tier: str
+    gcp_project: str
+    portfolio: list[BrandPortfolioItem]
+
+@app.get("/brands/portfolio", response_model=TenantPortfolioOut)
+async def get_portfolio(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Returns the portfolio overview of all brands under the tenant.
+
+    Includes active objective, B-score, trust telemetry, hosting tier, and total costs.
+    """
+    from app.models import Tenant, Brand, BrandObjective, CostEntry, TrustSnapshot
+    from sqlalchemy import func
+    
+    tenant_stmt = select(Tenant).where(Tenant.id == tid)
+    tenant_res = await s.execute(tenant_stmt)
+    tenant = tenant_res.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+        
+    brands_stmt = select(Brand).where(Brand.tenant_id == tid).order_by(Brand.name)
+    brands_res = await s.execute(brands_stmt)
+    brands = brands_res.scalars().all()
+    
+    portfolio = []
+    for brand in brands:
+        # Fetch active objective and B-score
+        objective_stmt = select(BrandObjective).where(BrandObjective.brand_id == brand.id)
+        obj_res = await s.execute(objective_stmt)
+        obj = obj_res.scalar_one_or_none()
+        
+        active_objective = obj.objective if obj else "footprint"
+        b_score = obj.b_score if obj else 72.5
+        
+        # Fetch latest Trust Snapshot
+        trust_stmt = (
+            select(TrustSnapshot)
+            .where(TrustSnapshot.tenant_id == tid, TrustSnapshot.brand_id == brand.id)
+            .order_by(TrustSnapshot.ts.desc())
+            .limit(1)
+        )
+        trust_res = await s.execute(trust_stmt)
+        trust = trust_res.scalar_one_or_none()
+        
+        trust_score = trust.score if trust else 82.0
+        trust_tier = trust.tier if trust else 1
+        
+        # Sum total costs from cost_ledger
+        cost_stmt = select(func.sum(CostEntry.amount_minor)).where(
+            CostEntry.tenant_id == tid,
+            CostEntry.op_id.in_(
+                select(OpRow.id).where(OpRow.tenant_id == tid, OpRow.brand_id == brand.id)
+            )
+        )
+        cost_res = await s.execute(cost_stmt)
+        total_cost_minor = cost_res.scalar() or 0
+        
+        portfolio.append(BrandPortfolioItem(
+            brand_id=brand.id,
+            brand_name=brand.name,
+            active_objective=active_objective,
+            b_score=b_score,
+            trust_score=trust_score,
+            trust_tier=trust_tier,
+            total_cost_minor=total_cost_minor
+        ))
+        
+    return TenantPortfolioOut(
+        tenant_id=tid,
+        tenant_name=tenant.name,
+        hosting_tier=tenant.hosting_tier,
+        gcp_project=tenant.gcp_project or f"aos-tenant-{tid[:8]}",
+        portfolio=portfolio
+    )
+
+
+@app.get("/costs/rollup")
+async def get_costs_rollup(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Returns the tenant's cost ledger rollup grouped by resource kind."""
+    from app.kernel.services import get_tenant_cost_rollup
+    rollup = await get_tenant_cost_rollup(s, tid)
+    return {"tenant_id": tid, "rollup": rollup}
+
+
 class ChatIn(BaseModel):
     brand_id: str = Field(max_length=100)
     text: str = Field(max_length=5000)
@@ -1191,6 +1286,17 @@ async def refresh_tokens_task(s: AsyncSession = Depends(get_worker_db)):
     from app.tasks.rotation import rotate_expiring_tokens
     await rotate_expiring_tokens(s)
     return {"status": "ok", "message": "Token rotation completed"}
+
+
+@app.post("/tasks/check-graduations", dependencies=[Depends(verify_worker_auth)])
+async def check_graduations_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to check for shared tenants exceeding revenue threshold and propose graduation.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.graduation import check_and_propose_graduations
+    await check_and_propose_graduations(s)
+    return {"status": "ok", "message": "Tenant graduation checks completed"}
 
 
 
