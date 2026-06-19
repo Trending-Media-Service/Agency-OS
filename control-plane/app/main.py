@@ -332,8 +332,11 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
                 })
                 if row.state == "AWAITING_APPROVAL":
                     background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
-            
+
             await s.commit()
+            # Drain so auto-approved (within-policy) Ops actually execute — they are
+            # APPROVED with a PENDING outbox item but no /decision call fires otherwise.
+            enqueue_drain(background_tasks, worker_session_maker)
             return {
                 "reply": f"Structured request parsed. Generated {len(cards)} proposal(s) under safety gates.",
                 "cards": cards
@@ -440,8 +443,11 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
             })
             if row.state == "AWAITING_APPROVAL":
                 background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
-    
+
     await s.commit()
+    # Drain so auto-approved (within-policy) Ops actually execute — they are APPROVED
+    # with a PENDING outbox item but no /decision call fires otherwise.
+    enqueue_drain(background_tasks, worker_session_maker)
     return {
         "reply": f"Understood. I have initiated the planning for your request: '{intent_text}'. Please approve the generated proposal.",
         "cards": cards
@@ -510,6 +516,11 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
             if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
                 background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
     await s.commit()
+    # Auto-approved (within-policy) Ops are now APPROVED with a PENDING outbox item
+    # (loop.preview_and_gate -> enqueue), but nothing has triggered execution. Drain
+    # the outbox so they actually run — mirrors POST /ops/{op_id}/decision. drain_once
+    # only processes PENDING items, so this is a no-op when every Op awaits approval.
+    enqueue_drain(background_tasks, worker_session_maker)
     return {"cards": cards}
 
 
