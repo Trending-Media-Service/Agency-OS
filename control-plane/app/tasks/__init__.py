@@ -10,6 +10,7 @@ GCP_PROJECT = os.getenv("GCP_PROJECT")
 GCP_LOCATION = os.getenv("GCP_LOCATION")
 QUEUE_NAME = os.getenv("OUTBOX_QUEUE_NAME")
 APP_URL = os.getenv("APP_URL")
+WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
 
 async def _drain_local_task(session_maker):
     """Local fallback: run drain_once directly with a privileged session."""
@@ -43,6 +44,10 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
                     "url": f"{APP_URL}/tasks/drain-outbox",
                 }
             }
+            if WORKER_SA:
+                task["http_request"]["oidc_token"] = {
+                    "service_account_email": WORKER_SA
+                }
             # We don't block the request waiting for Cloud Tasks API
             # but since create_task is sync, it might block slightly.
             # In a highly optimized setup, we could run this in a thread pool.
