@@ -99,6 +99,38 @@ jobs:
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --memory 2Gi
 
+      - name: Post-deploy smoke test
+        run: |
+          set -euo pipefail
+          BASE=$(gcloud run services describe "${SERVICE_NAME}" --platform managed \
+            --region "${REGION}" --project "${PROJECT_ID}" --format="value(status.url)")
+          echo "Smoke-testing ${BASE}"
+
+          # 1. Readiness (also confirms the app booted with its prod config + DB)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 5 --retry-all-errors \
+            --retry-delay 3 "${BASE}/readyz")
+          [ "$code" = "200" ] || { echo "::error::/readyz returned $code"; exit 1; }
+
+          # 2. CORS preflight must allow the console origin (regression guard for the
+          #    URL-form mismatch that caused 'Failed to fetch').
+          ORIGIN=$(gcloud run services describe "${FRONTEND_SERVICE}" --platform managed \
+            --region "${REGION}" --project "${PROJECT_ID}" --format="value(status.url)" 2>/dev/null || true)
+          if [ -n "${ORIGIN}" ] && [ "${ORIGIN}" != "null" ]; then
+            allow=$(curl -sS -D - -o /dev/null -X OPTIONS "${BASE}/tenants" \
+              -H "Origin: ${ORIGIN}" -H "Access-Control-Request-Method: POST" \
+              | grep -i "access-control-allow-origin" || true)
+            echo "preflight allow-origin: ${allow:-<none>}"
+            [ -n "${allow}" ] || { echo "::error::CORS preflight did not allow ${ORIGIN}"; exit 1; }
+          fi
+
+          # 3. POST /tenants must be reachable + auth-gated (401), NOT a 500/crash.
+          #    (The create_tenant DB write path is covered by the Postgres RLS test in CI.)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE}/tenants" \
+            -H "Content-Type: application/json" -d '{"name":"smoke","brand_name":"smoke"}')
+          [ "$code" = "401" ] || { echo "::error::POST /tenants (no token) returned $code, expected 401"; exit 1; }
+
+          echo "Smoke test passed."
+
   deploy-web:
     name: Deploy Console to Cloud Run
     runs-on: ubuntu-latest
