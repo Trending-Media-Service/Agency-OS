@@ -638,8 +638,19 @@ async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depen
         {"ts": t.ts.isoformat(), "kind": t.kind, "detail": t.detail}
         for t in result.scalars()
     ]
-    return {"op_id": row.id, "action": row.action, "state": row.state, "params": row.params,
-            "preview": row.preview_summary, "trace": traces}
+    return {
+        "op_id": row.id,
+        "action": row.action,
+        "state": row.state,
+        "params": row.params,
+        "preview": row.preview_summary,
+        "trace": traces,
+        "impact": row.impact,
+        "reversibility": row.reversibility,
+        "statutory": row.statutory,
+        "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                          if row.cost_amount_minor else None)
+    }
 
 
 @app.get("/ops", response_model=list[OpOut])

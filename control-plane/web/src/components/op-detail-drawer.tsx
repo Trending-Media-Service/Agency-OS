@@ -245,6 +245,10 @@ export interface OpDetailData {
   preview: string | null;
   params: OpParams;
   trace: TraceItem[];
+  impact?: number;
+  reversibility?: string;
+  statutory?: boolean;
+  cost_estimate?: string | null;
 }
 
 interface OpDetailDrawerProps {
@@ -261,6 +265,66 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [tweakReason, setTweakReason] = useState("");
   const [showTweakForm, setShowTweakForm] = useState(false);
+
+  // Extract policy violations from trace history
+  const policyViolations = opData.trace
+    ?.filter(t => t.kind === "gate" && t.detail?.violations)
+    .flatMap(t => t.detail.violations as TraceViolation[]) || [];
+
+  // Keyboard Shortcuts for quick approvals
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")
+      ) {
+        return;
+      }
+
+      if (opData.state !== "AWAITING_APPROVAL" || role === "BRAND_VIEWER") {
+        if (e.key === "Escape") {
+          onClose();
+        }
+        return;
+      }
+
+      switch (e.key) {
+        case "a":
+        case "Enter":
+          e.preventDefault();
+          onDecision(opId, "approve");
+          break;
+        case "r":
+          e.preventDefault();
+          setShowRejectForm(true);
+          setShowTweakForm(false);
+          setTimeout(() => {
+            const textarea = document.querySelector("textarea");
+            if (textarea) textarea.focus();
+          }, 10);
+          break;
+        case "m":
+          e.preventDefault();
+          setShowTweakForm(true);
+          setShowRejectForm(false);
+          setTimeout(() => {
+            const input = document.querySelector("input[placeholder*='increase']");
+            if (input) (input as HTMLInputElement).focus();
+          }, 10);
+          break;
+        case "Escape":
+          e.preventDefault();
+          onClose();
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [opId, opData.state, role, onClose, onDecision]);
 
   if (loading) {
     return (
@@ -320,6 +384,58 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
             <X className="h-4 w-4" />
           </button>
         </div>
+
+        {/* Badge Bar: Severity, Reversibility, Cost */}
+        <div className="flex flex-wrap gap-2">
+          {opData.impact !== undefined && (
+            <span className={`px-2 py-0.5 rounded text-[9px] font-semibold tracking-wider uppercase border ${
+              opData.impact >= 3 
+                ? "bg-red-950/30 text-red-400 border-red-800/40" 
+                : opData.impact >= 2 
+                  ? "bg-amber-950/30 text-amber-400 border-amber-800/40" 
+                  : "bg-emerald-950/30 text-emerald-400 border-emerald-800/40"
+            }`}>
+              Tier-{opData.impact} Severity
+            </span>
+          )}
+          {opData.reversibility && (
+            <span className={`px-2 py-0.5 rounded text-[9px] font-semibold tracking-wider uppercase border ${
+              opData.reversibility.toLowerCase() === "reversible"
+                ? "bg-emerald-950/30 text-emerald-400 border-emerald-800/40"
+                : "bg-red-950/30 text-red-400 border-red-800/40"
+            }`}>
+              {opData.reversibility}
+            </span>
+          )}
+          {opData.cost_estimate && (
+            <span className="px-2 py-0.5 rounded text-[9px] font-semibold tracking-wider uppercase border bg-zinc-900/50 text-zinc-300 border-zinc-800">
+              {opData.cost_estimate}
+            </span>
+          )}
+        </div>
+
+        {/* Statutory Dual-Control Warning */}
+        {opData.statutory && (
+          <div className="bg-amber-950/20 border border-amber-900/40 rounded p-3 text-[10px] text-amber-300/90 leading-relaxed space-y-1">
+            <p className="font-bold uppercase tracking-wider text-amber-400">⚠️ Dual-Control Required</p>
+            <p>This operation is flagged as statutory and requires dual-operator consensus to execute.</p>
+          </div>
+        )}
+
+        {/* Policy Violations Red Box */}
+        {policyViolations.length > 0 && (
+          <div className="bg-red-950/20 border border-red-900/40 rounded p-4 space-y-2">
+            <h4 className="font-bold text-red-400 uppercase tracking-wider text-[9px]">⚠️ Policy Violations Detected</h4>
+            <div className="space-y-1.5 pl-2 border-l border-red-900/50">
+              {policyViolations.map((v, vIdx) => (
+                <div key={vIdx} className="text-[10px] text-red-300 leading-normal">
+                  <span className="font-mono font-bold text-red-400 bg-red-950/30 px-1 py-0.2 rounded mr-1.5">{v.rule_id}</span>
+                  {v.message}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Op Meta */}
         <div className="grid grid-cols-2 gap-4 bg-zinc-900/20 border border-zinc-900 rounded p-4">
