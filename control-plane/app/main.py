@@ -513,6 +513,74 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
     return {"cards": cards}
 
 
+class ActionIn(BaseModel):
+    tool: str = Field(max_length=100)
+    brand_id: str = Field(max_length=100)
+    params: dict = Field(default_factory=dict)
+
+
+@app.get("/actions/catalog")
+async def actions_catalog(tid: str = Depends(tenant_id)):
+    """Tool schemas backing the console's explicit Action Panel (replaces the chat)."""
+    from app.kernel.tools import registry as tool_registry
+    return {"actions": tool_registry.get_schemas()}
+
+
+@app.post("/actions")
+async def submit_action(body: ActionIn, background_tasks: BackgroundTasks,
+                        s: AsyncSession = Depends(get_db),
+                        worker_session_maker = Depends(get_worker_session_maker),
+                        tid: str = Depends(tenant_id)):
+    """Structured operator action -> governed Op(s). No free-text parsing: routes the
+    chosen tool + params through the tool registry, then propose -> preview_and_gate ->
+    drain. Gates and approval are unchanged (auto-approve within policy, else the Op
+    waits in the queue / WhatsApp)."""
+    from app.kernel.tools import registry as tool_registry
+    tool = tool_registry.get_tool(body.tool)
+    if not tool:
+        raise HTTPException(400, f"unknown action {body.tool!r}")
+    if "brand_id" in body.params or "tenant_id" in body.params:
+        raise HTTPException(400, "brand_id/tenant_id are supplied by the request, not in params")
+    try:
+        specs = tool["handler"](tenant_id=tid, brand_id=body.brand_id, **body.params)
+    except TypeError as e:
+        raise HTTPException(400, f"invalid params for action {body.tool!r}: {e}")
+
+    cards = []
+    for spec in specs:
+        # Derive tier from the latest TrustSnapshot for this brand+domain (default 1).
+        stmt = (
+            select(TrustSnapshot.tier)
+            .where(
+                TrustSnapshot.tenant_id == tid,
+                TrustSnapshot.brand_id == body.brand_id,
+                TrustSnapshot.domain == spec.domain,
+            )
+            .order_by(TrustSnapshot.ts.desc())
+            .limit(1)
+        )
+        t = (await s.execute(stmt)).scalar_one_or_none()
+        tier = 1 if t is None else t
+
+        row = await loop.propose(s, spec, actor="forms:operator")
+        gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
+        if row.parent_op_id is None:
+            cards.append({
+                "op_id": row.id, "action": row.action, "state": row.state,
+                "requirement": requirement,
+                "preview": row.preview_summary,
+                "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
+                                  if row.cost_amount_minor else None),
+                "violations": [v.as_dict() for v in gate.violations],
+            })
+            if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
+                background_tasks.add_task(send_whatsapp_card_task, row.id, worker_session_maker)
+    await s.commit()
+    # Execute auto-approved Ops (same governed drain path as /chat and /decision).
+    enqueue_drain(background_tasks, worker_session_maker)
+    return {"cards": cards}
+
+
 class DecisionIn(BaseModel):
     decision: str  # approve | reject
     actor: str

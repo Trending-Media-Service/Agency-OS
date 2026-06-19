@@ -85,7 +85,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
   async def dispatch(self, request, call_next):
     # Rate limit POST /chat and public webhooks
-    rate_limited_paths = ["/chat", "/webhooks/whatsapp", "/tenants", "/intents", "/policy-simulate"]
+    rate_limited_paths = ["/chat", "/webhooks/whatsapp", "/tenants", "/intents", "/actions", "/policy-simulate"]
     if request.method == "POST" and request.url.path in rate_limited_paths:
       client_ip = request.client.host if request.client else "unknown"
       now = self.time.time()
