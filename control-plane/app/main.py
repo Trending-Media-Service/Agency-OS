@@ -437,6 +437,9 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
             "cards": [],
         }
 
+    from app.kernel.loop import is_domain_disabled
+    if is_domain_disabled(domain_name):
+        raise HTTPException(400, f"Domain {domain_name!r} is disabled via kill-switch")
     adapter = loop.REGISTRY.get(domain_name)
     if not adapter:
         raise HTTPException(400, f"no adapter for domain {domain_name!r}")
@@ -508,6 +511,9 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
                         s: AsyncSession = Depends(get_db),
                         worker_session_maker = Depends(get_worker_session_maker),
                         tid: str = Depends(tenant_id)):
+    from app.kernel.loop import is_domain_disabled
+    if is_domain_disabled(body.domain):
+        raise HTTPException(400, f"Domain {body.domain!r} is disabled via kill-switch")
     adapter = loop.REGISTRY.get(body.domain)
     if not adapter:
         raise HTTPException(400, f"no adapter for domain {body.domain!r}")

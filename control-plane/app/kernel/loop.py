@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 import re
@@ -38,7 +39,17 @@ class RBACError(ValueError):
 REGISTRY: dict[str, Adapter] = {}
 
 
+def is_domain_disabled(domain: str) -> bool:
+    """Returns True if the domain is disabled via AOS_DISABLED_DOMAINS env var."""
+    disabled = os.getenv("AOS_DISABLED_DOMAINS", "")
+    domains = [d.strip() for d in disabled.split(",") if d.strip()]
+    return domain in domains
+
+
 def register(adapter: Adapter) -> None:
+    if is_domain_disabled(adapter.domain):
+        logger.warning(f"Domain '{adapter.domain}' is disabled via AOS_DISABLED_DOMAINS. Skipping registration.")
+        return
     REGISTRY[adapter.domain] = adapter
 
 
@@ -111,6 +122,21 @@ async def propose(s: AsyncSession, spec: OpSpec, *, actor: str) -> OpRow:
 
 async def preview_and_gate(s: AsyncSession, row: OpRow, *, tier: int, actor: str = "kernel") -> tuple[GateResult, str]:
     """PROPOSED -> PREVIEWED -> (AWAITING_APPROVAL | APPROVED(auto) | BLOCKED)."""
+    if is_domain_disabled(row.domain):
+        from .services import Violation, GateResult
+        if row.state != OpState.PREVIEWED.value:
+            await transition(s, row, OpState.PREVIEWED, actor=actor)
+        v = Violation(
+            rule_id="kill_switch",
+            limit="Domain ENABLED",
+            attempted=f"Domain '{row.domain}' is DISABLED",
+            delta="n/a",
+            message=f"Operation blocked: Domain '{row.domain}' is disabled via AOS_DISABLED_DOMAINS kill-switch."
+        )
+        row.preview_summary = f"Operation BLOCKED. Domain '{row.domain}' is disabled via kill-switch."
+        await transition(s, row, OpState.BLOCKED, actor="kill_switch", detail={"error": f"Domain {row.domain} is disabled."})
+        return GateResult(blocked=True, requires_human=False, violations=[v]), "BLOCKED"
+
     spec = _row_to_spec(row)
     adapter = REGISTRY[row.domain]
 
@@ -548,6 +574,14 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
 
                 if OpState(row.state) in (OpState.FAILED, OpState.ROLLED_BACK, OpState.REJECTED, OpState.BLOCKED):
                     item.status = "DEAD"
+                    processed += 1
+                    continue
+
+                # 0. Kill Switch Check
+                if is_domain_disabled(row.domain):
+                    item.status = "DEAD"
+                    await transition(s, row, OpState.BLOCKED, actor="kill_switch",
+                                     detail={"error": f"Adapter execution BLOCKED. Domain {row.domain} is disabled via AOS_DISABLED_DOMAINS kill-switch."})
                     processed += 1
                     continue
 
