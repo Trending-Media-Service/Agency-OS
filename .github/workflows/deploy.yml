@@ -12,6 +12,7 @@ env:
   SERVICE_NAME: agency-os-backend
   FRONTEND_SERVICE: agency-os-web
   ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane
+  WEB_ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane-web
   CLOUDSQL_INSTANCE: aos-control-plane-tmg:asia-south1:aos-db
   STATE_BUCKET: aos-tfstate-tmg
   OUTBOX_QUEUE: aos-outbox
@@ -83,3 +84,60 @@ jobs:
             --set-secrets="DATABASE_URL=aos-database-url:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --memory 2Gi
+
+  deploy-web:
+    name: Deploy Console to Cloud Run
+    runs-on: ubuntu-latest
+    needs: deploy
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIP_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+
+      - name: Resolve backend URL
+        id: backend
+        run: |
+          # The console bakes NEXT_PUBLIC_API_URL in at build time, so resolve the
+          # live backend URL (mirrors deploy_web.sh), falling back to APP_URL.
+          BACKEND_URL=$(gcloud run services describe "${SERVICE_NAME}" \
+            --platform managed --region "${REGION}" \
+            --format="value(status.url)" --project "${PROJECT_ID}" 2>/dev/null || true)
+          if [ -z "${BACKEND_URL}" ] || [ "${BACKEND_URL}" = "null" ]; then
+            BACKEND_URL="${APP_URL}"
+          fi
+          echo "url=${BACKEND_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and Push Console Container
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL="${{ steps.backend.outputs.url }}" \
+            -t "${WEB_ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
+            -t "${WEB_ARTIFACT_REGISTRY}:latest" \
+            ./control-plane/web
+          docker push "${WEB_ARTIFACT_REGISTRY}:${GITHUB_SHA}"
+          docker push "${WEB_ARTIFACT_REGISTRY}:latest"
+
+      - name: Deploy Console to Cloud Run
+        run: |
+          gcloud run services update "${FRONTEND_SERVICE}" \
+            --image "${WEB_ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --platform managed \
+            --quiet
