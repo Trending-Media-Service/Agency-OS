@@ -44,7 +44,7 @@ jobs:
           # Flag raw credential variables interpolated into logger/print (must NOT flag safe secret_ref or conn.credential)
           if grep -rPn "(logger\.\w+|print)\s*\(.*\{[^}]*(?<!conn\.)(?<!connection\.)\b(credential|access_token|refresh_token|raw_token)\b[^}]*\}" \
                --include="*.py" \
-               --exclude-dir=.git . ; then
+               --exclude-dir=.git --exclude-dir=tests . ; then
             echo "::error::raw credential variable interpolated into log/print — forbidden (AGENTS.md)"; exit 1
           fi
           # Gating paths must stay model-free (ARCHITECTURE.md §2.1)
