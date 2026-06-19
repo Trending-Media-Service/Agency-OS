@@ -4,13 +4,19 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   PROJECT_ID: aos-control-plane-tmg
   REGION: asia-south1
   SERVICE_NAME: agency-os-backend
+  FRONTEND_SERVICE: agency-os-web
   ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane
-  # NOTE: 730671240713 must be the project NUMBER of aos-control-plane-tmg.
+  CLOUDSQL_INSTANCE: aos-control-plane-tmg:asia-south1:aos-db
+  STATE_BUCKET: aos-tfstate-tmg
+  OUTBOX_QUEUE: aos-outbox
+  APP_URL: https://agency-os-backend-730671240713.asia-south1.run.app
+  # NOTE: 730671240713 is the project NUMBER of aos-control-plane-tmg.
   # Verify with: gcloud projects describe aos-control-plane-tmg --format='value(projectNumber)'
   WIP_PROVIDER: projects/730671240713/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   DEPLOY_SA: deploy-cloudrun@aos-control-plane-tmg.iam.gserviceaccount.com
@@ -38,23 +44,42 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker
-        run: |
-          gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
 
       - name: Build and Push Container
         run: |
-          docker build -t ${{ env.ARTIFACT_REGISTRY }}:${{ github.sha }} -t ${{ env.ARTIFACT_REGISTRY }}:latest ./control-plane
-          docker push ${{ env.ARTIFACT_REGISTRY }}:${{ github.sha }}
-          docker push ${{ env.ARTIFACT_REGISTRY }}:latest
+          # Terraform recipes live at the repo root, but the Dockerfile builds from the
+          # control-plane/ context. Stage them in first (mirrors deploy.sh), clean up after.
+          cp -r recipes control-plane/recipes
+          trap 'rm -rf control-plane/recipes' EXIT
+          docker build \
+            -t "${ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
+            -t "${ARTIFACT_REGISTRY}:latest" \
+            ./control-plane
+          docker push "${ARTIFACT_REGISTRY}:${GITHUB_SHA}"
+          docker push "${ARTIFACT_REGISTRY}:latest"
+
+      - name: Resolve frontend URL for CORS
+        id: cors
+        run: |
+          FRONTEND_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
+            --platform managed --region "${REGION}" \
+            --format="value(status.url)" --project "${PROJECT_ID}" 2>/dev/null || true)
+          if [ -n "${FRONTEND_URL}" ] && [ "${FRONTEND_URL}" != "null" ]; then
+            echo "allowed_origins=${FRONTEND_URL},http://localhost:3000" >> "${GITHUB_OUTPUT}"
+          else
+            echo "allowed_origins=http://localhost:3000" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.SERVICE_NAME }}
-          region: ${{ env.REGION }}
-          image: ${{ env.ARTIFACT_REGISTRY }}:${{ github.sha }}
-          flags: |
-            --allow-unauthenticated
-            --max-instances=10
-            --memory=1Gi
-            --cpu=1
+        run: |
+          gcloud run services update "${SERVICE_NAME}" \
+            --image "${ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --platform managed \
+            --quiet \
+            --set-env-vars="^###^ALLOWED_ORIGINS=${{ steps.cors.outputs.allowed_origins }}###ENV=production###GCP_PROJECT=${PROJECT_ID}###GCP_LOCATION=${REGION}###AOS_STATE_BUCKET=${STATE_BUCKET}###OUTBOX_QUEUE_NAME=${OUTBOX_QUEUE}###APP_URL=${APP_URL}" \
+            --set-secrets="DATABASE_URL=aos-database-url:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
+            --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+            --memory 2Gi
