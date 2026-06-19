@@ -266,11 +266,6 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
   const [tweakReason, setTweakReason] = useState("");
   const [showTweakForm, setShowTweakForm] = useState(false);
 
-  // Extract policy violations from trace history
-  const policyViolations = opData?.trace
-    ?.filter(t => t.kind === "gate" && t.detail?.violations)
-    .flatMap(t => t.detail.violations as TraceViolation[]) || [];
-
   // Keyboard Shortcuts for quick approvals
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -337,6 +332,11 @@ export function OpDetailDrawer({ opId, onClose, opData, loading, onDecision, rol
   }
 
   if (!opData) return null;
+
+  // Extract policy violations from trace history
+  const policyViolations = opData.trace
+    ?.filter(t => t.kind === "gate" && t.detail?.violations)
+    .flatMap(t => t.detail.violations as TraceViolation[]) || [];
 
   const previewKind = opData.trace?.find((t) => t.kind === "preview")?.detail?.kind;
   

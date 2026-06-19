@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/api-client";
 import { useTenant } from "@/contexts/TenantContext";
@@ -13,7 +13,10 @@ import {
   ShieldCheck,
   AlertTriangle,
   ArrowRight,
-  TrendingDown
+  Shield,
+  Server,
+  ChevronRight,
+  Coins
 } from "lucide-react";
 
 interface Recommendation {
@@ -26,12 +29,42 @@ interface Recommendation {
   cost_minor: number;
 }
 
+interface PortfolioBrand {
+  brand_id: string;
+  brand_name: string;
+  active_objective: string;
+  b_score: number;
+  trust_score: number;
+  trust_tier: number;
+  total_cost_minor: number;
+}
+
+interface PortfolioData {
+  tenant_id: string;
+  tenant_name: string;
+  hosting_tier: string;
+  gcp_project: string;
+  portfolio: PortfolioBrand[];
+}
+
 export default function TwinPage() {
   const { request } = useApi();
-  const { tenantId, activeBrandId, role } = useTenant();
+  const { tenantId, activeBrandId, setActiveBrandId, role } = useTenant();
   const queryClient = useQueryClient();
   const readOnly = role === "BRAND_VIEWER";
 
+  // ==========================================
+  // PORTFOLIO VIEW (activeBrandId === null)
+  // ==========================================
+  const { data: portfolioData, isLoading: portfolioLoading } = useQuery<PortfolioData>({
+    queryKey: ["portfolio", tenantId],
+    queryFn: () => request("/brands/portfolio", "get") as Promise<PortfolioData>,
+    enabled: !activeBrandId
+  });
+
+  // ==========================================
+  // INDIVIDUAL BRAND VIEW (activeBrandId !== null)
+  // ==========================================
   // 1. Fetch active strategic objective
   const { data: objectiveData } = useQuery<{ objective: string }>({
     queryKey: ["brandObjective", activeBrandId],
@@ -54,9 +87,8 @@ export default function TwinPage() {
     enabled: !!activeBrandId
   });
   const bScore = bScoreData?.performance_score?.score ?? 85.0;
-  const bScoreDetails = bScoreData?.performance_score ?? {};
 
-  // 4. Fetch Active Connections (to display active assets)
+  // 4. Fetch Active Connections
   const { data: connections = [] } = useQuery({
     queryKey: ["connections", tenantId],
     queryFn: () => request("/connections", "get"),
@@ -98,15 +130,128 @@ export default function TwinPage() {
     proposeActionMutation.mutate(rec);
   };
 
+  // If no brand is selected, render the Tenant Portfolio Console!
+  if (!activeBrandId) {
+    if (portfolioLoading) {
+      return (
+        <div className="py-12 text-center text-zinc-500 text-xs font-mono animate-pulse">
+          Loading tenant portfolio console...
+        </div>
+      );
+    }
+
+    const pf = portfolioData;
+    if (!pf) {
+      return (
+        <div className="py-12 text-center text-zinc-500 text-xs font-mono">
+          No portfolio data found for this tenant.
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-8">
+        {/* Page Header */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+              <Compass className="h-4 w-4 text-zinc-500" />
+              Tenant Portfolio Console
+            </h2>
+            <p className="text-xs text-zinc-500">
+              High-level strategic and operational overview of all brands under Tenant <span className="font-semibold text-zinc-400">{pf.tenant_name}</span>.
+            </p>
+          </div>
+
+          {/* Hosting Tier Info Badge */}
+          <div className="flex items-center space-x-3 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs">
+            <div className="flex items-center gap-1.5 text-zinc-400">
+              <Server className="h-3.5 w-3.5 text-zinc-500" />
+              <span>Hosting Tier:</span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${pf.hosting_tier === "dedicated" ? "bg-purple-950 border border-purple-800 text-purple-200" : "bg-zinc-950 border border-zinc-800 text-zinc-300"}`}>
+                {pf.hosting_tier}
+              </span>
+            </div>
+            <span className="text-zinc-700">|</span>
+            <div className="flex items-center gap-1.5 text-zinc-500 font-mono text-[10px]">
+              <Shield className="h-3.5 w-3.5 text-zinc-600" />
+              <span>GCP: {pf.gcp_project}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Brand Portfolio Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {pf.portfolio.map((brand) => (
+            <div 
+              key={brand.brand_id} 
+              className="bg-zinc-900/25 border border-zinc-900 rounded-xl p-5 hover:border-zinc-800 transition-all flex flex-col justify-between space-y-5"
+            >
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-zinc-100">{brand.brand_name}</h3>
+                  <div className="flex items-center space-x-2">
+                    <span className="px-2 py-0.5 bg-zinc-950 border border-zinc-850 text-zinc-400 text-[9px] font-semibold uppercase tracking-wider rounded-md">
+                      {brand.active_objective}
+                    </span>
+                    <span className={`px-1.5 py-0.5 text-[8px] font-bold uppercase rounded ${brand.trust_tier === 2 ? "bg-emerald-950 border border-emerald-800 text-emerald-300" : "bg-amber-950 border border-amber-800 text-amber-300"}`}>
+                      Tier {brand.trust_tier}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="bg-zinc-950 border border-zinc-900 p-2.5 rounded-lg space-y-1">
+                    <span className="text-[8px] text-zinc-500 uppercase font-bold tracking-wider">B-Score</span>
+                    <div className="text-lg font-bold text-zinc-200 font-mono">{brand.b_score.toFixed(0)}</div>
+                  </div>
+                  <div className="bg-zinc-950 border border-zinc-900 p-2.5 rounded-lg space-y-1">
+                    <span className="text-[8px] text-zinc-500 uppercase font-bold tracking-wider">Trust</span>
+                    <div className="text-lg font-bold text-zinc-200 font-mono">{brand.trust_score.toFixed(0)}%</div>
+                  </div>
+                  <div className="bg-zinc-950 border border-zinc-900 p-2.5 rounded-lg space-y-1">
+                    <span className="text-[8px] text-zinc-500 uppercase font-bold tracking-wider">Spend</span>
+                    <div className="text-sm font-bold text-emerald-500 font-mono mt-1 flex items-center justify-center gap-0.5">
+                      <Coins className="h-3 w-3 shrink-0" />
+                      {(brand.total_cost_minor / 100).toFixed(0)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <Button
+                onClick={() => setActiveBrandId(brand.brand_id)}
+                className="w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-200 text-xs font-medium h-9 rounded-lg flex items-center justify-center gap-1 shadow-sm transition-all"
+              >
+                View Twin Cockpit
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Brand is selected -> Render individual Twin Cockpit (original dashboard view)
   return (
     <div className="space-y-8">
       {/* Page Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="space-y-1">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
-            <Compass className="h-4 w-4 text-zinc-500" />
-            Brand Twin Cockpit
-          </h2>
+          <div className="flex items-center space-x-2">
+            <button 
+              onClick={() => setActiveBrandId(null)}
+              className="text-xs text-zinc-500 hover:text-zinc-300 font-medium transition-colors flex items-center"
+            >
+              Portfolio
+            </button>
+            <ChevronRight className="h-3.5 w-3.5 text-zinc-700" />
+            <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+              <Compass className="h-4 w-4 text-zinc-500" />
+              Brand Twin Cockpit
+            </h2>
+          </div>
           <p className="text-xs text-zinc-500">
             Strategic alignment layer. View B-score health and execute goal-aligned governed operations.
           </p>

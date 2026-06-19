@@ -363,7 +363,7 @@ class ProvisionAdapter(Adapter):
                     pass
             else:
                 # Fallback: run apply/destroy with auto-approve (non-blocking)
-                if verb in ("create", "apply"):
+                if verb in ("create", "apply", "update"):
                     code, out, err = await asyncio.to_thread(self._run_terraform, op, ["apply", "-auto-approve", "-input=false", "-no-color"], temp_dir)
                 elif verb == "destroy":
                     code, out, err = await asyncio.to_thread(self._run_terraform, op, ["destroy", "-auto-approve", "-input=false", "-no-color"], temp_dir)
@@ -372,10 +372,21 @@ class ProvisionAdapter(Adapter):
                 
             if code != 0:
                 return ExecResult(ok=False, detail={"error": f"Execution failed: {err}", "stdout": out})
+
+            # If baseline was created or updated successfully, update the Tenant's hosting_tier in DB
+            if "brand_baseline" in op.action and session:
+                from app.models import Tenant
+                from sqlalchemy import select
+                stmt = select(Tenant).where(Tenant.id == op.tenant_id)
+                res = await session.execute(stmt)
+                tenant = res.scalar_one_or_none()
+                if tenant:
+                    tenant.hosting_tier = op.params.get("tier", "shared")
+                    logger.info(f"Successfully updated Tenant {op.tenant_id} hosting_tier in DB to {tenant.hosting_tier}")
                 
             # Read outputs
             outputs = {}
-            if verb == "create":
+            if verb in ("create", "update"):
                 code_out, out_out, err_out = await asyncio.to_thread(self._run_terraform, op, ["output", "-json"], temp_dir)
                 if code_out == 0:
                     try:
@@ -386,7 +397,7 @@ class ProvisionAdapter(Adapter):
                         
             # Simulate execution costs to test cost ledger ingestion
             costs = []
-            if verb in ("create", "apply"):
+            if verb in ("create", "apply", "update"):
                 costs.append(CostSpec(kind="api_call", amount_minor=2000, currency="INR", meta={"service": "dns_provider", "action": "zone_register"}))
                 costs.append(CostSpec(kind="api_call", amount_minor=150, currency="INR", meta={"service": "gcp_iam", "action": "service_account_create"}))
                 

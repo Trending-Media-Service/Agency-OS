@@ -156,6 +156,98 @@
         }
       }
     },
+    "/brands/portfolio": {
+      "get": {
+        "summary": "Get Portfolio",
+        "description": "Returns the portfolio overview of all brands under the tenant.\n\nIncludes active objective, B-score, trust telemetry, hosting tier, and total costs.",
+        "operationId": "get_portfolio_brands_portfolio_get",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Tenant-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantPortfolioOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/costs/rollup": {
+      "get": {
+        "summary": "Get Costs Rollup",
+        "description": "Returns the tenant's cost ledger rollup grouped by resource kind.",
+        "operationId": "get_costs_rollup_costs_rollup_get",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Tenant-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/chat": {
       "post": {
         "summary": "Chat",
@@ -1305,6 +1397,51 @@
         "summary": "Refresh Tokens Task",
         "description": "Background task to rotate all expiring OAuth tokens across all tenants.\n\nBypasses RLS by using get_worker_db.",
         "operationId": "refresh_tokens_task_tasks_refresh_tokens_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/check-graduations": {
+      "post": {
+        "summary": "Check Graduations Task",
+        "description": "Background task to check for shared tenants exceeding revenue threshold and propose graduation.\n\nBypasses RLS by using get_worker_db.",
+        "operationId": "check_graduations_task_tasks_check_graduations_post",
         "parameters": [
           {
             "name": "authorization",
@@ -2497,6 +2634,49 @@
         ],
         "title": "BrandObjectiveIn"
       },
+      "BrandPortfolioItem": {
+        "properties": {
+          "brand_id": {
+            "type": "string",
+            "title": "Brand Id"
+          },
+          "brand_name": {
+            "type": "string",
+            "title": "Brand Name"
+          },
+          "active_objective": {
+            "type": "string",
+            "title": "Active Objective"
+          },
+          "b_score": {
+            "type": "number",
+            "title": "B Score"
+          },
+          "trust_score": {
+            "type": "number",
+            "title": "Trust Score"
+          },
+          "trust_tier": {
+            "type": "integer",
+            "title": "Trust Tier"
+          },
+          "total_cost_minor": {
+            "type": "integer",
+            "title": "Total Cost Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "brand_id",
+          "brand_name",
+          "active_objective",
+          "b_score",
+          "trust_score",
+          "trust_tier",
+          "total_cost_minor"
+        ],
+        "title": "BrandPortfolioItem"
+      },
       "ChatIn": {
         "properties": {
           "brand_id": {
@@ -2973,6 +3153,42 @@
           "brand_name"
         ],
         "title": "TenantIn"
+      },
+      "TenantPortfolioOut": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "tenant_name": {
+            "type": "string",
+            "title": "Tenant Name"
+          },
+          "hosting_tier": {
+            "type": "string",
+            "title": "Hosting Tier"
+          },
+          "gcp_project": {
+            "type": "string",
+            "title": "Gcp Project"
+          },
+          "portfolio": {
+            "items": {
+              "$ref": "#/components/schemas/BrandPortfolioItem"
+            },
+            "type": "array",
+            "title": "Portfolio"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "tenant_name",
+          "hosting_tier",
+          "gcp_project",
+          "portfolio"
+        ],
+        "title": "TenantPortfolioOut"
       },
       "ValidationError": {
         "properties": {
