@@ -29,6 +29,8 @@ export default function DashboardLayout({
   const {
     tenantId,
     setTenantId,
+    activeBrandId,
+    setActiveBrandId,
     role,
     setRole,
     operatorToken,
@@ -36,6 +38,12 @@ export default function DashboardLayout({
     knownTenants,
     addKnownTenant
   } = useTenant();
+
+  // Deduplicate brands for the currently selected tenant
+  const tenantBrands = knownTenants.filter((t) => t.tenantId === tenantId);
+  const uniqueBrands = Array.from(
+    new Map(tenantBrands.map((b) => [b.brandId, b])).values()
+  );
 
   const [showCreateTenant, setShowCreateTenant] = useState(false);
   const [newTenantName, setNewTenantName] = useState("");
@@ -163,12 +171,26 @@ export default function DashboardLayout({
                 onChange={(e) => setTenantId(e.target.value)}
                 className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5 text-zinc-300 focus:outline-none focus:border-zinc-700 font-sans"
               >
-                {knownTenants.map((t) => (
+                {Array.from(new Map(knownTenants.map(t => [t.tenantId, t])).values()).map((t) => (
                   <option key={t.tenantId} value={t.tenantId}>
                     {t.tenantName} ({t.tenantId})
                   </option>
                 ))}
               </select>
+
+              <span>| Brand:</span>
+              <select
+                value={activeBrandId || ""}
+                onChange={(e) => setActiveBrandId(e.target.value || null)}
+                className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5 text-zinc-300 focus:outline-none focus:border-zinc-700 font-sans"
+              >
+                {uniqueBrands.map((b) => (
+                  <option key={b.brandId} value={b.brandId}>
+                    {b.brandName} ({b.brandId})
+                  </option>
+                ))}
+              </select>
+
               <span>| Role: {role}</span>
             </div>
           </div>

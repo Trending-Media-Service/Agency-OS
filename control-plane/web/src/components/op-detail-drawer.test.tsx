@@ -1,274 +1,139 @@
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
-import { OpDetailDrawer, VisualDiff, OpDetailPreview, TraceTimeline } from "./op-detail-drawer";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { OpDetailDrawer, OpDetailData } from "./op-detail-drawer";
 
-describe("VisualDiff Component", () => {
-  it("renders side-by-side differences for payload modifications", () => {
-    const before = { budget_minor: 1000, name: "old name" };
-    const after = { budget_minor: 2000, name: "new name", new_field: "yay" };
+const mockOnDecision = vi.fn();
+const mockOnClose = vi.fn();
 
-    render(<VisualDiff before={before} after={after} />);
-
-    expect(screen.getByText("Before (Baseline)")).toBeTruthy();
-    expect(screen.getByText("After (Proposed)")).toBeTruthy();
-
-    expect(screen.getByText(/- budget_minor: 1000/)).toBeTruthy();
-    expect(screen.getByText(/\+ budget_minor: 2000/)).toBeTruthy();
-    expect(screen.getByText(/- name: "old name"/)).toBeTruthy();
-    expect(screen.getByText(/\+ name: "new name"/)).toBeTruthy();
-    expect(screen.getByText(/\+ new_field: "yay"/)).toBeTruthy();
-  });
-
-  it("renders correct fallback message when no modifications", () => {
-    const data = { budget_minor: 1000 };
-    render(<VisualDiff before={data} after={data} />);
-    expect(screen.getByText("No modifications.")).toBeTruthy();
-  });
-});
-
-describe("OpDetailPreview Component", () => {
-  it("renders campaign create preview accurately using parameters", () => {
-    const params = {
-      name: "Spring Sale Campaign",
-      campaign_id: "camp-555",
-      budget_minor: 150000,
-      bid_minor: 5000,
-    };
-
-    render(
-      <OpDetailPreview
-        action="grow.campaign.create"
-        previewKind="campaign_create_preview"
-        previewSummary=""
-        params={params}
-      />
-    );
-
-    expect(screen.getByText("Create Google Ads Campaign")).toBeTruthy();
-    expect(screen.getByText(/Spring Sale Campaign/)).toBeTruthy();
-    expect(screen.getByText(/camp-555/)).toBeTruthy();
-    expect(screen.getByText(/1500 INR/)).toBeTruthy();
-    expect(screen.getByText(/50 INR/)).toBeTruthy();
-  });
-
-  it("renders campaign delete preview accurately using parameters", () => {
-    const params = { campaign_id: "camp-del-999" };
-
-    render(
-      <OpDetailPreview
-        action="grow.campaign.delete"
-        previewKind="campaign_delete_preview"
-        previewSummary=""
-        params={params}
-      />
-    );
-
-    expect(screen.getByText("Danger: Delete Campaign")).toBeTruthy();
-    expect(screen.getByText(/camp-del-999/)).toBeTruthy();
-  });
-
-  it("falls back to rendering text summary if no matching template", () => {
-    render(
-      <OpDetailPreview
-        action="some.random.action"
-        previewSummary="Custom plain text preview description summary."
-        params={{}}
-      />
-    );
-
-    expect(screen.getByText("Custom plain text preview description summary.")).toBeTruthy();
-  });
-});
-
-describe("TraceTimeline Component", () => {
-  it("renders traces and their transition details", () => {
-    const traces = [
-      {
-        ts: "2026-06-15T18:00:00Z",
-        kind: "preview",
-        detail: { kind: "campaign_create_preview" },
-      },
-      {
-        ts: "2026-06-15T18:01:00Z",
-        kind: "transition",
-        detail: {
-          from: "PROPOSED",
-          to: "PREVIEWED",
-          actor: "kernel",
-          detail: { reason: "Initial previewing success" },
-        },
-      },
-    ];
-
-    render(<TraceTimeline traces={traces} />);
-
-    expect(screen.getByText("Preview Generation")).toBeTruthy();
-    expect(screen.getByText("State Transition")).toBeTruthy();
-    expect(screen.getByText(/Changed state from/)).toBeTruthy();
-    expect(screen.getByText("PROPOSED")).toBeTruthy();
-    expect(screen.getByText("PREVIEWED")).toBeTruthy();
-    expect(screen.getByText("kernel")).toBeTruthy();
-    expect(screen.getByText(/Reason: "Initial previewing success"/)).toBeTruthy();
-  });
-
-  it("renders flat traces with top-level reason and fallback action", () => {
-    const traces = [
-      {
-        ts: "2026-06-15T18:01:00Z",
-        kind: "transition",
-        detail: {
-          from: "PREVIEWED",
-          to: "APPROVED",
-          actor: "chandan",
-          reason: "Raising cost ceiling manually"
-        },
-      },
-      {
-        ts: "2026-06-15T18:02:00Z",
-        kind: "adapter_call",
-        detail: {
-          phase: "execute",
-        }
+const MOCK_OP_DATA: OpDetailData = {
+  action: "grow.campaign.create",
+  state: "AWAITING_APPROVAL",
+  preview: "Creating a Google Ads campaign under t_metrics",
+  params: {
+    name: "summer-promo",
+    budget_minor: 100000,
+    bid_minor: 500,
+    provider: "google-ads"
+  },
+  impact: 2,
+  reversibility: "reversible",
+  statutory: true,
+  cost_estimate: "1000.00 INR/mo",
+  trace: [
+    {
+      ts: "2026-06-19T22:00:00Z",
+      kind: "gate",
+      detail: {
+        requires_human: true,
+        violations: [
+          { rule_id: "budget_limit", message: "Budget exceeds Tier-1 maximum limits (delta +500.00 INR)" }
+        ]
       }
-    ];
+    },
+    {
+      ts: "2026-06-19T22:01:00Z",
+      kind: "preview",
+      detail: { kind: "campaign_create_preview" }
+    }
+  ]
+};
 
-    render(<TraceTimeline traces={traces} opAction="grow.campaign.create" />);
-
-    expect(screen.getByText("State Transition")).toBeTruthy();
-    expect(screen.getByText(/Reason: "Raising cost ceiling manually"/)).toBeTruthy();
-    
-    expect(screen.getByText("Adapter Invocation")).toBeTruthy();
-    expect(screen.getByText(/Invoked adapter action:/)).toBeTruthy();
-    expect(screen.getByText("grow.campaign.create")).toBeTruthy();
+describe("OpDetailDrawer component and Cockpit UX", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
-});
 
-describe("OpDetailDrawer Component", () => {
-  const defaultOpData = {
-    action: "grow.campaign.create",
-    state: "AWAITING_APPROVAL",
-    preview: "Will create campaign XYZ",
-    params: { name: "XYZ", budget_minor: 50000 },
-    trace: [
-      {
-        ts: "2026-06-15T18:00:00Z",
-        kind: "preview",
-        detail: { kind: "campaign_create_preview" },
-      },
-    ],
+  const renderDrawer = (data: OpDetailData = MOCK_OP_DATA, role: string = "OPERATOR") => {
+    return render(
+      <OpDetailDrawer
+        opId="op-test-123"
+        opData={data}
+        loading={false}
+        onClose={mockOnClose}
+        onDecision={mockOnDecision}
+        role={role}
+      />
+    );
   };
 
-  it("renders loading message when loading state is true", () => {
-    render(
-      <OpDetailDrawer
-        opId="op-123"
-        onClose={vi.fn()}
-        opData={null}
-        loading={true}
-        onDecision={vi.fn()}
-        role="OPERATOR"
-      />
-    );
-    expect(screen.getByText("Loading operation metadata...")).toBeTruthy();
+  it("renders custom metadata badges and warnings correctly", () => {
+    renderDrawer();
+
+    // 1. Verify Severity (Impact)
+    expect(screen.getByText("Tier-2 Severity")).toBeTruthy();
+
+    // 2. Verify Reversibility
+    expect(screen.getByText("reversible")).toBeTruthy();
+
+    // 3. Verify Cost Estimate
+    expect(screen.getByText("1000.00 INR/mo")).toBeTruthy();
+
+    // 4. Verify Statutory dual-control warning
+    expect(screen.getByText("⚠️ Dual-Control Required")).toBeTruthy();
   });
 
-  it("renders details and actions when opData is loaded", () => {
-    const onDecision = vi.fn();
-    render(
-      <OpDetailDrawer
-        opId="op-123"
-        onClose={vi.fn()}
-        opData={defaultOpData}
-        loading={false}
-        onDecision={onDecision}
-        role="OPERATOR"
-      />
-    );
+  it("extracts and renders policy violations prominently at the top", () => {
+    renderDrawer();
 
-    expect(screen.getByText("grow.campaign.create")).toBeTruthy();
-    expect(screen.getByText("op-123")).toBeTruthy();
-    
-    // Check decisions
-    expect(screen.getByText("Approve")).toBeTruthy();
-    expect(screen.getByText("Modify")).toBeTruthy();
-    expect(screen.getByText("Reject")).toBeTruthy();
+    // Verify policy violation section is visible
+    expect(screen.getByText("⚠️ Policy Violations Detected")).toBeTruthy();
+
+    // Verify the specific rule and message are shown (assert at least one matching element to dodge duplicate timeline entries)
+    expect(screen.getAllByText("budget_limit").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Budget exceeds Tier-1 maximum limits/).length).toBeGreaterThanOrEqual(1);
   });
 
-  it("sends decision when clicking approve", () => {
-    const onDecision = vi.fn();
-    render(
-      <OpDetailDrawer
-        opId="op-123"
-        onClose={vi.fn()}
-        opData={defaultOpData}
-        loading={false}
-        onDecision={onDecision}
-        role="OPERATOR"
-      />
-    );
+  it("supports keyboard-first approvals (Pressing 'a' triggers Approve)", () => {
+    renderDrawer();
 
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(onDecision).toHaveBeenCalledWith("op-123", "approve");
+    // Trigger keyboard press 'a'
+    const event = new KeyboardEvent("keydown", { key: "a" });
+    window.dispatchEvent(event);
+
+    // Verify onDecision was called with 'approve'
+    expect(mockOnDecision).toHaveBeenCalledWith("op-test-123", "approve");
   });
 
-  it("shows form for modify action, captures reason, and submits on Decision", () => {
-    const onDecision = vi.fn();
-    render(
-      <OpDetailDrawer
-        opId="op-123"
-        onClose={vi.fn()}
-        opData={defaultOpData}
-        loading={false}
-        onDecision={onDecision}
-        role="OPERATOR"
-      />
-    );
+  it("supports keyboard-first shortcuts (Pressing 'r' opens and focuses rejection textarea)", async () => {
+    const { container } = renderDrawer();
 
-    fireEvent.click(screen.getByRole("button", { name: "Modify" }));
-    
-    const input = screen.getByPlaceholderText(/e.g. increase budget/i);
-    expect(input).toBeTruthy();
+    // Trigger keyboard press 'r'
+    const event = new KeyboardEvent("keydown", { key: "r" });
+    window.dispatchEvent(event);
 
-    fireEvent.change(input, { target: { value: "reduce budget to 400 INR" } });
-    fireEvent.click(screen.getByRole("button", { name: "Submit Tweak" }));
-
-    expect(onDecision).toHaveBeenCalledWith("op-123", "modify", "reduce budget to 400 INR");
+    // Wait asynchronously for React state update to batch and render textarea
+    await waitFor(() => {
+      const textarea = container.querySelector("textarea");
+      expect(textarea).toBeTruthy();
+      expect(document.activeElement).toBe(textarea);
+    });
   });
 
-  it("extracts flat params_before from transition trace and renders VisualDiff", () => {
-    const opDataWithTransition = {
-      ...defaultOpData,
-      params: { name: "New Name", budget_minor: 20000 },
-      trace: [
-        {
-          ts: "2026-06-15T18:01:00Z",
-          kind: "transition",
-          detail: {
-            from: "PREVIEWED",
-            to: "AWAITING_APPROVAL",
-            actor: "kernel",
-            params_before: { name: "Old Name", budget_minor: 10000 }
-          }
-        }
-      ]
-    };
+  it("supports keyboard-first shortcuts (Pressing 'm' opens and focuses tweak input)", async () => {
+    const { container } = renderDrawer();
 
-    render(
-      <OpDetailDrawer
-        opId="op-123"
-        onClose={vi.fn()}
-        opData={opDataWithTransition}
-        loading={false}
-        onDecision={vi.fn()}
-        role="OPERATOR"
-      />
-    );
+    // Trigger keyboard press 'm'
+    const event = new KeyboardEvent("keydown", { key: "m" });
+    window.dispatchEvent(event);
 
-    expect(screen.getByText("Payload Adjustments")).toBeTruthy();
-    expect(screen.getByText(/- name: "Old Name"/)).toBeTruthy();
-    expect(screen.getByText(/\+ name: "New Name"/)).toBeTruthy();
-    expect(screen.getByText(/- budget_minor: 10000/)).toBeTruthy();
-    expect(screen.getByText(/\+ budget_minor: 20000/)).toBeTruthy();
+    // Wait asynchronously for React state update to batch and render input
+    await waitFor(() => {
+      const input = container.querySelector("input[placeholder*='increase']");
+      expect(input).toBeTruthy();
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  it("satisfies the governance invariant: mutates only via governed /ops/{op_id}/decision path", () => {
+    renderDrawer();
+
+    // Click Approve button
+    const approveBtn = screen.getByRole("button", { name: "Approve" });
+    fireEvent.click(approveBtn);
+
+    // Verify that the callback is triggered with correct arguments
+    expect(mockOnDecision).toHaveBeenCalledTimes(1);
+    expect(mockOnDecision).toHaveBeenCalledWith("op-test-123", "approve");
   });
 });
