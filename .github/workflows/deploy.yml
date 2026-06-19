@@ -60,16 +60,30 @@ jobs:
           docker push "${ARTIFACT_REGISTRY}:${GITHUB_SHA}"
           docker push "${ARTIFACT_REGISTRY}:latest"
 
-      - name: Resolve frontend URL for CORS
+      - name: Resolve frontend URLs for CORS
         id: cors
         run: |
-          FRONTEND_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
+          # Cloud Run assigns each service two URL forms (numeric + hash-based).
+          # Read both from the service annotation to allow either access form.
+          FRONTEND_URLS_JSON=$(gcloud run services describe "${FRONTEND_SERVICE}" \
             --platform managed --region "${REGION}" \
-            --format="value(status.url)" --project "${PROJECT_ID}" 2>/dev/null || true)
-          if [ -n "${FRONTEND_URL}" ] && [ "${FRONTEND_URL}" != "null" ]; then
-            echo "allowed_origins=${FRONTEND_URL},http://localhost:3000" >> "${GITHUB_OUTPUT}"
+            --format="value(metadata.annotations.\"run.googleapis.com/urls\")" \
+            --project "${PROJECT_ID}" 2>/dev/null || true)
+
+          if [ -n "${FRONTEND_URLS_JSON}" ] && [ "${FRONTEND_URLS_JSON}" != "null" ]; then
+            # Convert ["url1","url2",...] to url1,url2,...
+            FRONTEND_URLS=$(echo "${FRONTEND_URLS_JSON}" | tr -d '[]"' | tr '\n' ',' | sed 's/,$//')
+            echo "allowed_origins=${FRONTEND_URLS},http://localhost:3000" >> "${GITHUB_OUTPUT}"
           else
-            echo "allowed_origins=http://localhost:3000" >> "${GITHUB_OUTPUT}"
+            # Fallback to single status.url if annotation is unavailable
+            FRONTEND_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
+              --platform managed --region "${REGION}" \
+              --format="value(status.url)" --project "${PROJECT_ID}" 2>/dev/null || true)
+            if [ -n "${FRONTEND_URL}" ] && [ "${FRONTEND_URL}" != "null" ]; then
+              echo "allowed_origins=${FRONTEND_URL},http://localhost:3000" >> "${GITHUB_OUTPUT}"
+            else
+              echo "allowed_origins=http://localhost:3000" >> "${GITHUB_OUTPUT}"
+            fi
           fi
 
       - name: Deploy to Cloud Run
