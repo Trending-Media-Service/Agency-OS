@@ -25,12 +25,12 @@ def test_grow_google_connect_plan(adapter, google_connect_intent):
     op = ops[0]
     assert op.action == "grow.google.connect"
     assert op.params["provider"] == "google-ads"
-    assert op.params["secret_ref"] == "gads-secret-token"
+    assert op.params["credential"] == "gads-secret-token"
 
 def test_grow_google_connect_preview(adapter, google_connect_op):
     preview_art = adapter.preview(google_connect_op)
     assert preview_art.kind == "google_connect_preview"
-    assert "gads-secret-token" in preview_art.summary
+    assert "****" in preview_art.summary
 
 async def test_grow_google_connect_execute(adapter, google_connect_op, session):
     res = await adapter.execute(google_connect_op, "idem_gads_connect_123", session=session)
@@ -44,10 +44,10 @@ async def test_grow_google_connect_execute(adapter, google_connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "gads-secret-token"
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_grow_google_execute_disconnect(adapter, google_connect_op, sessio
         tenant_id="t1",
         brand_id="b1",
         provider="google-ads",
-        secret_ref="gads-secret-token",
+        credential="gads-secret-token",
         config={}
     )
     session.add(conn)
@@ -112,12 +112,12 @@ def test_grow_meta_connect_plan(adapter, meta_connect_intent):
     op = ops[0]
     assert op.action == "grow.meta.connect"
     assert op.params["provider"] == "meta-ads"
-    assert op.params["secret_ref"] == "meta-secret-token"
+    assert op.params["credential"] == "meta-secret-token"
 
 def test_grow_meta_connect_preview(adapter, meta_connect_op):
     preview_art = adapter.preview(meta_connect_op)
     assert preview_art.kind == "meta_connect_preview"
-    assert "meta-secret-token" in preview_art.summary
+    assert "****" in preview_art.summary
 
 async def test_grow_meta_connect_execute(adapter, meta_connect_op, session):
     res = await adapter.execute(meta_connect_op, "idem_meta_connect_123", session=session)
@@ -131,10 +131,10 @@ async def test_grow_meta_connect_execute(adapter, meta_connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "meta-secret-token"
 
 @pytest.mark.asyncio
@@ -157,7 +157,7 @@ async def test_grow_meta_execute_disconnect(adapter, meta_connect_op, session):
         tenant_id="t1",
         brand_id="b1",
         provider="meta-ads",
-        secret_ref="meta-secret-token",
+        credential="meta-secret-token",
         config={}
     )
     session.add(conn)
@@ -179,3 +179,36 @@ async def test_grow_meta_execute_disconnect(adapter, meta_connect_op, session):
     )
     db_res = await session.execute(stmt)
     assert db_res.scalar_one_or_none() is None
+
+# Backward Compatibility Tests
+@pytest.mark.asyncio
+async def test_grow_google_connect_execute_backward_compatibility(adapter, session):
+    op = OpSpec(
+        tenant_id="t1",
+        brand_id="b1",
+        domain="grow",
+        action="grow.google.connect",
+        params={
+            "provider": "google-ads",
+            "secret_ref": "legacy-gads-secret-token",
+            "config": {}
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(0)
+    )
+    res = await adapter.execute(op, "idem_gads_legacy_123", session=session)
+    assert res.ok is True
+    
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t1",
+        Connection.brand_id == "b1",
+        Connection.provider == "google-ads"
+    )
+    db_res = await session.execute(stmt)
+    conn = db_res.scalar_one_or_none()
+    assert conn is not None
+    
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient()
+    val = await secrets_client.read_secret(conn.credential)
+    assert val == "legacy-gads-secret-token"

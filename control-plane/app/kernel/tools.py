@@ -150,11 +150,11 @@ def _provision_web_host_handler(tenant_id: str, brand_id: str, domain: str) -> l
     )]
 
 
-def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, secret_ref: str) -> list[OpSpec]:
+def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, credential: str) -> list[OpSpec]:
     return [OpSpec(
         tenant_id=tenant_id, brand_id=brand_id, domain="manage",
         action="manage.shopify.connect",
-        params={"provider": "shopify", "secret_ref": secret_ref, "config": {"shop_url": shop_url}},
+        params={"provider": "shopify", "credential": credential, "config": {"shop_url": shop_url}},
         severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
     )]
 
@@ -203,9 +203,9 @@ registry.register_tool(
             "type": "OBJECT",
             "properties": {
                 "shop_url": {"type": "STRING", "description": "myshop.myshopify.com"},
-                "secret_ref": {"type": "STRING", "description": "Secret Manager reference for the API token"},
+                "credential": {"type": "STRING", "description": "Secret Manager reference for the API token"},
             },
-            "required": ["shop_url", "secret_ref"],
+            "required": ["shop_url", "credential"],
         },
     },
     handler=_manage_shopify_connect_handler,
@@ -220,6 +220,56 @@ registry.register_tool(
         "parameters": {"type": "OBJECT", "properties": {}, "required": []},
     },
     handler=_manage_diagnostics_handler,
+)
+
+
+def _connection_rotate_secret_handler(
+    tenant_id: str,
+    brand_id: str,
+    provider: str,
+    credential: str,
+    config: dict = None,
+    old_credential: str = None,
+    old_config: dict = None
+) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="manage",
+            action="manage.connection.rotate",
+            params={
+                "provider": provider,
+                "credential": credential,
+                "config": config or {},
+                "old_credential": old_credential,
+                "old_config": old_config or {},
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+        )
+    ]
+
+
+registry.register_tool(
+    name="connection_rotate_secret",
+    schema={
+        "name": "connection_rotate_secret",
+        "description": "Rotate the credentials and configuration of an existing Connection.",
+        "domain": "manage",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "provider": {"type": "STRING"},
+                "credential": {"type": "STRING", "description": "New access token Secret Manager reference"},
+                "config": {"type": "OBJECT", "description": "New connection configuration dictionary"},
+                "old_credential": {"type": "STRING", "description": "Previous credential reference for rollback"},
+                "old_config": {"type": "OBJECT", "description": "Previous configuration dictionary for rollback"}
+            },
+            "required": ["brand_id", "provider", "credential"]
+        }
+    },
+    handler=_connection_rotate_secret_handler
 )
 
 registry.register_tool(

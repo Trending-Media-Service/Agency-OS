@@ -27,7 +27,7 @@ async def setup_connection_and_trust(db_engine):
                 tenant_id="tenant-webhook-test",
                 brand_id="brand-shopify-test",
                 provider="shopify",
-                secret_ref="shopify-secret-key-123",
+                credential="shopify-secret-key-123",
                 config={"shop_url": "test-store.myshopify.com"}
             )
             s.add(conn)
@@ -136,9 +136,9 @@ async def test_shopify_webhook_resolves_secret_from_secret_manager(client, db_en
     
     # 1. Write the secret token value to Secret Manager mock registry
     secret_id = "tenant-webhook-test-brand-shopify-test-shopify-secret"
-    secret_ref = await secrets_client.write_secret(secret_id, "super-secret-mcp-key")
+    credential = await secrets_client.write_secret(secret_id, "super-secret-mcp-key")
 
-    # 2. Update the connection in the database to use this secret_ref
+    # 2. Update the connection in the database to use this credential
     from sqlalchemy.ext.asyncio import async_sessionmaker
     async_session = async_sessionmaker(db_engine, expire_on_commit=False)
     async with async_session() as s:
@@ -146,7 +146,7 @@ async def test_shopify_webhook_resolves_secret_from_secret_manager(client, db_en
             stmt = select(Connection).where(Connection.tenant_id == "tenant-webhook-test", Connection.provider == "shopify")
             res = await s.execute(stmt)
             conn = res.scalar_one()
-            conn.secret_ref = secret_ref
+            conn.credential = credential
             s.add(conn)
 
     # 3. Generate signature using the actual secret value
@@ -182,7 +182,7 @@ async def test_shopify_webhook_uses_tenant_gcp_project_for_secrets(client, db_en
     secret_id = "tenant-webhook-test-brand-shopify-test-shopify-secret"
     
     secrets_client = SecretManagerClient(project_id=dedicated_project)
-    secret_ref = await secrets_client.write_secret(secret_id, "dedicated-mcp-key-999")
+    credential = await secrets_client.write_secret(secret_id, "dedicated-mcp-key-999")
     
     async with async_session() as s:
         async with s.begin():
@@ -197,7 +197,7 @@ async def test_shopify_webhook_uses_tenant_gcp_project_for_secrets(client, db_en
             stmt_c = select(Connection).where(Connection.tenant_id == "tenant-webhook-test", Connection.provider == "shopify")
             res_c = await s.execute(stmt_c)
             conn = res_c.scalar_one()
-            conn.secret_ref = secret_ref
+            conn.credential = credential
             s.add(conn)
 
     payload = b'{"id": 224466, "total_price": "199.99"}'

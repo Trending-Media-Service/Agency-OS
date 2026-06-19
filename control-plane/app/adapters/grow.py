@@ -20,9 +20,9 @@ class GrowAdapter(Adapter):
         words = normalized.split()
 
         if "connect" in words and ("google" in words or "google-ads" in words or "google_ads" in words):
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:google-ads-token")
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            credential = next((w for w in words if w.startswith("secret:")), "secret:google-ads-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
             return [
                 OpSpec(
                     tenant_id=tenant_id,
@@ -31,7 +31,7 @@ class GrowAdapter(Adapter):
                     action="grow.google.connect",
                     params={
                         "provider": "google-ads",
-                        "secret_ref": secret_ref,
+                        "credential": credential,
                         "config": {}
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -52,9 +52,9 @@ class GrowAdapter(Adapter):
             ]
             
         elif "connect" in words and ("meta" in words or "facebook" in words or "fb" in words):
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:meta-ads-token")
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            credential = next((w for w in words if w.startswith("secret:")), "secret:meta-ads-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
             return [
                 OpSpec(
                     tenant_id=tenant_id,
@@ -63,7 +63,7 @@ class GrowAdapter(Adapter):
                     action="grow.meta.connect",
                     params={
                         "provider": "meta-ads",
-                        "secret_ref": secret_ref,
+                        "credential": credential,
                         "config": {}
                     },
                     severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -254,13 +254,13 @@ class GrowAdapter(Adapter):
     def preview(self, op: OpSpec) -> PreviewArtifact:
         """Generates preview for growth actions."""
         if op.action == "grow.google.connect":
-            summary = f"Will establish connection to Google Ads account.\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to Google Ads account.\nCredential: ****"
             return PreviewArtifact(kind="google_connect_preview", summary=summary, detail=op.params)
         elif op.action == "grow.google.disconnect":
             summary = "Will remove connection to Google Ads account."
             return PreviewArtifact(kind="google_disconnect_preview", summary=summary, detail=op.params)
         elif op.action == "grow.meta.connect":
-            summary = f"Will establish connection to Meta Ads account.\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to Meta Ads account.\nCredential: ****"
             return PreviewArtifact(kind="meta_connect_preview", summary=summary, detail=op.params)
         elif op.action == "grow.meta.disconnect":
             summary = "Will remove connection to Meta Ads account."
@@ -311,15 +311,17 @@ class GrowAdapter(Adapter):
                 return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
                 
             provider = op.params.get("provider")
-            raw_token = op.params.get("secret_ref")
+            raw_token = op.params.get("credential") or op.params.get("secret_ref")
+            if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+                return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
             # Write to Secret Manager
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
             secrets_client = SecretManagerClient()
-            secret_ref = await secrets_client.write_secret(secret_id, raw_token)
+            credential = await secrets_client.write_secret(secret_id, raw_token)
             
-            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret reference {secret_ref}")
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential}")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -329,16 +331,18 @@ class GrowAdapter(Adapter):
             res = await session.execute(stmt)
             existing = res.scalar_one_or_none()
             if existing:
-                existing.secret_ref = secret_ref
+                existing.credential = credential
                 existing.config = config
+                existing.status = "unverified"
                 logger.info(f"Updated existing connection for {provider}")
             else:
                 conn = Connection(
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     provider=provider,
-                    secret_ref=secret_ref,
-                    config=config
+                    credential=credential,
+                    config=config,
+                    status="unverified"
                 )
                 session.add(conn)
                 logger.info(f"Created new connection for {provider}")
@@ -360,9 +364,9 @@ class GrowAdapter(Adapter):
             )
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
-            if conn:
+            if conn and conn.credential:
                 secrets_client = SecretManagerClient()
-                await secrets_client.delete_secret(conn.secret_ref)
+                await secrets_client.delete_secret(conn.credential)
                 
             stmt_del = delete(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -395,7 +399,7 @@ class GrowAdapter(Adapter):
 
                 try:
                     secrets_client = SecretManagerClient(project_id=gcp_project)
-                    token = await secrets_client.read_secret(conn.secret_ref)
+                    token = await secrets_client.read_secret(conn.credential)
                 except Exception as e:
                     logger.error(f"Failed to read marketing secret from Secret Manager: {e}")
                     raise RuntimeError(f"Failed to resolve marketing credentials from Secret Manager: {e}") from e
@@ -510,10 +514,10 @@ class GrowAdapter(Adapter):
                 
             try:
                 secrets_client = SecretManagerClient()
-                token = await secrets_client.read_secret(conn.secret_ref)
+                token = await secrets_client.read_secret(conn.credential)
                 if not token:
                     raise ValueError("Retrieved token is empty")
-                logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.secret_ref})")
+                logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.credential})")
             except Exception as e:
                 logger.error(f"Failed to read {provider} token from Secret Manager: {e}")
                 return VerifyResult(
@@ -529,7 +533,7 @@ class GrowAdapter(Adapter):
                     "account_accessible": True,
                     "secret_retrieval_ok": True
                 },
-                detail={"verified_at": "mock-time", "secret_ref": conn.secret_ref}
+                detail={"verified_at": "mock-time", "credential": conn.credential}
             )
         elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
             return VerifyResult(ok=True, checks={"disconnected": True})
@@ -551,10 +555,10 @@ class GrowAdapter(Adapter):
                 config = conn.config or {}
                 try:
                     secrets_client = SecretManagerClient()
-                    token = await secrets_client.read_secret(conn.secret_ref)
+                    token = await secrets_client.read_secret(conn.credential)
                 except Exception as e:
-                    logger.warning(f"Failed to resolve marketing token from Secret Manager: {e}. Using raw secret_ref.")
-                    token = conn.secret_ref
+                    logger.warning(f"Failed to resolve marketing token from Secret Manager: {e}. Using raw credential.")
+                    token = conn.credential
 
         client = get_marketing_client(provider=provider, token=token, config=config)
 

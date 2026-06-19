@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import shutil
 import pathlib
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from app.models import Base
 from httpx import ASGITransport, AsyncClient
@@ -294,4 +294,76 @@ def reset_rate_limiter():
     from app.middleware import active_rate_limiter
     if active_rate_limiter is not None:
         active_rate_limiter.buckets.clear()
+
+
+@pytest.fixture
+def mock_secrets_client():
+    import unittest.mock
+    mock = MagicMock()
+    # In-memory storage for secrets
+    secrets_store = {}
+    
+    async def default_write(secret_id, value):
+        if mock.write_secret._mock_return_value is not unittest.mock.DEFAULT:
+            return mock.write_secret._mock_return_value
+        ref = f"projects/test-project/secrets/{secret_id}/versions/1"
+        secrets_store[ref] = value
+        return ref
+
+    async def default_read(secret_ref):
+        if mock.read_secret._mock_return_value is not unittest.mock.DEFAULT:
+            return mock.read_secret._mock_return_value
+        if secret_ref not in secrets_store:
+            raise ValueError(f"Secret not found: {secret_ref}")
+        return secrets_store[secret_ref]
+
+    async def default_delete(secret_ref):
+        if mock.delete_secret._mock_return_value is not unittest.mock.DEFAULT:
+            return mock.delete_secret._mock_return_value
+        if secret_ref in secrets_store:
+            del secrets_store[secret_ref]
+
+    mock.write_secret = AsyncMock(side_effect=default_write)
+    mock.read_secret = AsyncMock(side_effect=default_read)
+    mock.delete_secret = AsyncMock(side_effect=default_delete)
+    mock.store = secrets_store  # Allow test inspection
+
+    with patch("app.services.secrets.SecretManagerClient.write_secret", side_effect=mock.write_secret),\
+         patch("app.services.secrets.SecretManagerClient.read_secret", side_effect=mock.read_secret),\
+         patch("app.services.secrets.SecretManagerClient.delete_secret", side_effect=mock.delete_secret):
+        yield mock
+
+
+@pytest.fixture
+def mock_mcp_client():
+    import unittest.mock
+    mock = MagicMock()
+    
+    async def default_call_tool(tool_name, arguments):
+        if mock.call_tool._mock_return_value is not unittest.mock.DEFAULT:
+            return mock.call_tool._mock_return_value
+        # Default mock returns
+        if tool_name == "shopify_get_shop_info":
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"shop_name": "Mock Ableys Shop", "domain": "ableys.myshopify.com", "currency": "INR", "status": "active"}'
+                    }
+                ]
+            }
+        return {"content": [{"type": "text", "text": "{}"}]}
+
+    mock.call_tool = AsyncMock(side_effect=default_call_tool)
+    mock.list_tools = AsyncMock(return_value=[])
+    
+    with patch("app.services.mcp.McpClient.call_tool", side_effect=mock.call_tool),\
+         patch("app.services.mcp.McpClient.list_tools", side_effect=mock.list_tools):
+        yield mock
+
+
+@pytest.fixture
+def mock_oidc_verification():
+    with patch("google.oauth2.id_token.verify_oauth2_token") as mock:
+        yield mock
 

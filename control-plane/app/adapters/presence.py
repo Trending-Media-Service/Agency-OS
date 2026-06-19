@@ -29,9 +29,9 @@ class PresenceAdapter(Adapter):
 
         if "connect" in words and ("wordpress" in words or "wp" in words):
             url = next((w for w in words if "." in w and not w.startswith("secret:") and not w.startswith("http")), "blog.mybrand.com")
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:wp-token")
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            credential = next((w for w in words if w.startswith("secret:")), "secret:wp-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
             ops.append(OpSpec(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
@@ -39,7 +39,7 @@ class PresenceAdapter(Adapter):
                 action="presence.wordpress.connect",
                 params={
                     "provider": "wordpress",
-                    "secret_ref": secret_ref,
+                    "credential": credential,
                     "config": {"url": url}
                 },
                 severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -58,9 +58,9 @@ class PresenceAdapter(Adapter):
             
         elif "connect" in words and any(w in words for w in ["web", "website", "static", "vercel"]):
             url = next((w for w in words if "." in w and not w.startswith("secret:") and not w.startswith("http")), "www.mybrand.com")
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:vercel-token")
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            credential = next((w for w in words if w.startswith("secret:")), "secret:vercel-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
             ops.append(OpSpec(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
@@ -68,7 +68,7 @@ class PresenceAdapter(Adapter):
                 action="presence.web.connect",
                 params={
                     "provider": "web",
-                    "secret_ref": secret_ref,
+                    "credential": credential,
                     "config": {"url": url}
                 },
                 severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -86,9 +86,9 @@ class PresenceAdapter(Adapter):
             ))
             
         elif "connect" in words and ("google" in words or "gsc" in words or "gmc" in words):
-            secret_ref = next((w for w in words if w.startswith("secret:")), "secret:google-token")
-            if secret_ref.startswith("secret:"):
-                secret_ref = secret_ref[7:]
+            credential = next((w for w in words if w.startswith("secret:")), "secret:google-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
             ops.append(OpSpec(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
@@ -96,7 +96,7 @@ class PresenceAdapter(Adapter):
                 action="presence.google.connect",
                 params={
                     "provider": "google",
-                    "secret_ref": secret_ref,
+                    "credential": credential,
                     "config": {}
                 },
                 severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
@@ -158,20 +158,20 @@ class PresenceAdapter(Adapter):
     def preview(self, op: OpSpec) -> PreviewArtifact:
         if op.action == "presence.wordpress.connect":
             url = op.params.get("config", {}).get("url")
-            summary = f"Will establish connection to WordPress blog: {url}\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to WordPress blog: {url}\nCredential: ****"
             return PreviewArtifact(kind="wordpress_connect_preview", summary=summary, detail=op.params)
         elif op.action == "presence.wordpress.disconnect":
             summary = "Will remove connection to WordPress blog."
             return PreviewArtifact(kind="wordpress_disconnect_preview", summary=summary, detail=op.params)
         elif op.action == "presence.web.connect":
             url = op.params.get("config", {}).get("url")
-            summary = f"Will establish connection to static/headless website: {url}\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to static/headless website: {url}\nCredential: ****"
             return PreviewArtifact(kind="web_connect_preview", summary=summary, detail=op.params)
         elif op.action == "presence.web.disconnect":
             summary = "Will remove connection to static/headless website."
             return PreviewArtifact(kind="web_disconnect_preview", summary=summary, detail=op.params)
         elif op.action == "presence.google.connect":
-            summary = f"Will establish connection to Google Services (Search Console & Merchant Center).\nCredential Ref: {op.params.get('secret_ref')}"
+            summary = f"Will establish connection to Google Services (Search Console & Merchant Center).\nCredential: ****"
             return PreviewArtifact(kind="google_connect_preview", summary=summary, detail=op.params)
         elif op.action == "presence.google.disconnect":
             summary = "Will remove connection to Google Services."
@@ -200,7 +200,9 @@ class PresenceAdapter(Adapter):
 
         if op.action in ("presence.wordpress.connect", "presence.web.connect", "presence.google.connect"):
             provider = op.params.get("provider")
-            raw_token = op.params.get("secret_ref")
+            raw_token = op.params.get("credential") or op.params.get("secret_ref")
+            if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+                return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
             scope = "read"
@@ -212,9 +214,9 @@ class PresenceAdapter(Adapter):
             # Write to Secret Manager
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
             secrets_client = SecretManagerClient()
-            secret_ref = await secrets_client.write_secret(secret_id, raw_token)
+            credential = await secrets_client.write_secret(secret_id, raw_token)
             
-            logger.info(f"Connecting {provider} for brand {op.brand_id} with secret reference {secret_ref}")
+            logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential}")
             
             stmt = select(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -224,18 +226,20 @@ class PresenceAdapter(Adapter):
             res = await session.execute(stmt)
             existing = res.scalar_one_or_none()
             if existing:
-                existing.secret_ref = secret_ref
+                existing.credential = credential
                 existing.config = config
                 existing.scope = scope
+                existing.status = "unverified"
                 logger.info(f"Updated existing connection for {provider}")
             else:
                 conn = Connection(
                     tenant_id=op.tenant_id,
                     brand_id=op.brand_id,
                     provider=provider,
-                    secret_ref=secret_ref,
+                    credential=credential,
                     scope=scope,
-                    config=config
+                    config=config,
+                    status="unverified"
                 )
                 session.add(conn)
                 logger.info(f"Created new connection for {provider}")
@@ -254,9 +258,9 @@ class PresenceAdapter(Adapter):
             )
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
-            if conn:
+            if conn and conn.credential:
                 secrets_client = SecretManagerClient()
-                await secrets_client.delete_secret(conn.secret_ref)
+                await secrets_client.delete_secret(conn.credential)
                 
             stmt_del = delete(Connection).where(
                 Connection.tenant_id == op.tenant_id,
@@ -289,7 +293,7 @@ class PresenceAdapter(Adapter):
                 config = conn.config or {}
                 try:
                     secrets_client = SecretManagerClient()
-                    token = await secrets_client.read_secret(conn.secret_ref)
+                    token = await secrets_client.read_secret(conn.credential)
                 except Exception as e:
                     logger.error(f"Failed to resolve google token from Secret Manager: {e}")
                     raise RuntimeError(f"Failed to resolve credentials: {e}") from e
@@ -300,7 +304,7 @@ class PresenceAdapter(Adapter):
                     brand_id=op.brand_id,
                     type="search_console",
                     provider="google",
-                    connection_ref=conn.secret_ref if conn else "secret/gsc-oauth"
+                    connection_ref=conn.credential if conn else "secret/gsc-oauth"
                 )
                 session.add(prop)
 
@@ -341,7 +345,7 @@ class PresenceAdapter(Adapter):
                 config = conn.config or {}
                 try:
                     secrets_client = SecretManagerClient()
-                    token = await secrets_client.read_secret(conn.secret_ref)
+                    token = await secrets_client.read_secret(conn.credential)
                 except Exception as e:
                     logger.error(f"Failed to resolve google token from Secret Manager: {e}")
                     raise RuntimeError(f"Failed to resolve credentials: {e}") from e
@@ -352,7 +356,7 @@ class PresenceAdapter(Adapter):
                     brand_id=op.brand_id,
                     type="merchant_feed",
                     provider="google",
-                    connection_ref=conn.secret_ref if conn else "secret/gmc-oauth"
+                    connection_ref=conn.credential if conn else "secret/gmc-oauth"
                 )
                 session.add(prop)
 
@@ -500,10 +504,10 @@ class PresenceAdapter(Adapter):
                 
             try:
                 secrets_client = SecretManagerClient()
-                token = await secrets_client.read_secret(conn.secret_ref)
+                token = await secrets_client.read_secret(conn.credential)
                 if not token:
                     raise ValueError("Retrieved token is empty")
-                logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.secret_ref})")
+                logger.info(f"Successfully retrieved {provider} token from Secret Manager (ref: {conn.credential})")
             except Exception as e:
                 logger.error(f"Failed to read {provider} token from Secret Manager: {e}")
                 return VerifyResult(
@@ -519,7 +523,7 @@ class PresenceAdapter(Adapter):
                     "site_reachable": True,
                     "secret_retrieval_ok": True
                 },
-                detail={"verified_at": dt.datetime.now(dt.timezone.utc).isoformat(), "secret_ref": conn.secret_ref}
+                detail={"verified_at": dt.datetime.now(dt.timezone.utc).isoformat(), "credential": conn.credential}
             )
         elif op.action in ("presence.wordpress.disconnect", "presence.web.disconnect", "presence.google.disconnect"):
             return VerifyResult(ok=True, checks={"disconnected": True})

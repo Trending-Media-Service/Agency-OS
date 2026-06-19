@@ -65,7 +65,7 @@ GCP Organization
 - **Dedicated tier:** one GCP project per brand. Native billing isolation, IAM boundary, budget alerts, and credential blast-radius containment. A compromised brand service account structurally cannot see another brand's project. Brand-scoped third-party credentials (Shopify tokens, ad-platform creds) live in **that brand's** Secret Manager, not the control plane's.
 - **Shared tier:** scale-to-zero Cloud Run services + per-tenant databases on a shared Cloud SQL instance (or Supabase/Neon for tiny tenants), inside `aos-shared-tier`. Exists because a dedicated project has a ~$30–60/month cost floor before traffic. Brands graduate to dedicated at a defined revenue/usage threshold. **The two tiers are the hosting price list.**
 - **Control-plane data isolation:** every table containing tenant-scoped data carries a `tenant_id` column with Postgres Row-Level Security (RLS) enabled and forced.
-  - The following tables are subject to RLS policy: `brands`, `ops`, `audit_events`, `trust_events`, `trust_snapshots`, `cost_ledger`, `connections`, `brand_properties`, `cadences`, `op_traces`, `approvals`, `orders`, `order_lines`, `refunds`, `fulfillment_costs`, `campaigns`, `spend_facts`, `touchpoints`, `circuit_breakers`, `op_dependencies`, `policy_versions`.
+  - The following tables are subject to RLS policy: `brands`, `ops`, `audit_events`, `trust_events`, `trust_snapshots`, `cost_ledger`, `connections`, `brand_properties`, `cadences`, `op_traces`, `approvals`, `orders`, `order_lines`, `refunds`, `fulfillment_costs`, `campaigns`, `spend_facts`, `touchpoints`, `circuit_breakers`, `op_dependencies`, `policy_versions`, `shadow_decisions`, `consent_bases`.
   - Every session transaction sets the session configuration `app.current_tenant_id` via middleware before executing queries. If no tenant context is set, the session is isolated and denied read/write access to all rows. App-level checks are defense-in-depth on top of project isolation, not a substitute for it.
 - **Service accounts:** per-brand, minimally scoped, short-lived tokens where the platform supports them. No standing org-wide credentials.
 - **Worker Role RLS Bypass:** The background outbox worker (`loop.py`) runs in a privileged system context and uses `get_worker_db()` to bypass Postgres RLS. This is necessary because the worker must poll the global `outbox` table and coordinate operations across multiple tenants. However, the worker is strictly a scheduling and routing kernel. When it executes a tenant-specific adapter operation, the session context dynamically sets the active `app.current_tenant_id` for that transaction. This ensures that any queries executed by the adapter (or by verification checks) are strictly bounded to that tenant's RLS workspace, maintaining deep isolation during execution.
@@ -335,8 +335,9 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | IaC | Terraform (recipes) + small state-orchestration layer | State in GCS, locked |
 | CI/CD | Cloud Build | Per-brand triggers |
 | Secrets | Secret Manager (per-brand in brand projects) | |
-| Observability | Sentry + structured logs to Cloud Logging + one dashboard | No ELK/Jaeger/Prometheus stack |
+| Observability | Sentry + structured logs to Cloud Logging + Prometheus client (/metrics endpoint) | No ELK/Jaeger/Prometheus stack (monitoring is lightweight and client-pulled) |
 | Backups | Nightly pg_dump → GCS (multi-region bucket) + Terraform state versioning | This IS the DR plan; monthly restore test |
+| Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
 | Frontend | Next.js + shadcn/Tailwind on Firebase Hosting/Cloud Run | The one place defaults win |
 | LLM | Vertex AI Gemini API (agents, parsing, explanations) | Never gates (§2.1) |
 | WhatsApp | Meta Cloud API | Template messages for cards |
@@ -345,7 +346,7 @@ Surfaces: WhatsApp (approvals + simple intents), web chat (rich intents + previe
 | Browser Crawl / Audit | playwright | Headless Chromium, read-only citation/competitor audit scope |
 
 
-**Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).
+**Core tables (control plane):** `tenants`, `brands`, `ops`, `op_traces`, `approvals`, `audit_events` (hash-chained), `trust_events`, `trust_snapshots`, `cost_ledger`, `recipes`, `outbox`, `policy_versions`, `connections`, `shadow_decisions`, `consent_bases` (Manage credentials metadata — secrets themselves stay in brand-project Secret Manager).
 - **policy_versions table:** Dynamic parameter records with columns `tenant_id`, `version`, `status` (active|proposed|superseded), `params` (JSON RulesetParams), `note`, `created_by`, and timestamps. Proposed policy revisions are saved as `proposed` records during simulation, but only `active` status records are loaded by the active ruleset evaluator.
 
 ---

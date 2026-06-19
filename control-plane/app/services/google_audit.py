@@ -25,7 +25,7 @@ class GoogleAuditClient:
         self.merchant_id = self.config.get("merchant_id", "mock-merchant-123")
         
         env = os.getenv("AOS_ENV", "development")
-        self._is_mock = env == "test" or not token or token == "mock-google-token"
+        self._is_mock = not token or token == "mock-google-token"
         
         # Always initialize self.headers so that mock overrides or runtime changes don't cause AttributeError
         self.headers = {
@@ -39,6 +39,27 @@ class GoogleAuditClient:
             logger.info(f"Initializing real GoogleAuditClient targeting site {self.site_url}")
 
     async def _refresh_token(self) -> Optional[str]:
+        tenant_id = self.config.get("tenant_id")
+        brand_id = self.config.get("brand_id")
+        provider = self.config.get("provider")
+        credential_ref = self.config.get("credential_ref")
+        
+        if tenant_id and brand_id and provider and credential_ref:
+            try:
+                from app.services.oauth import OauthService
+                logger.info(f"Attempting token refresh via OauthService for tenant={tenant_id}, provider={provider}")
+                service = OauthService()
+                res = await service.refresh_token(tenant_id, brand_id, provider, credential_ref)
+                new_token = res.get("access_token")
+                if new_token:
+                    self.token = new_token
+                    self.headers["Authorization"] = f"Bearer {new_token}"
+                    logger.info("Successfully refreshed Google OAuth token via OauthService")
+                    return new_token
+            except Exception as e:
+                logger.error(f"Failed to refresh Google OAuth token via OauthService: {e}")
+
+        # Fallback to private refresh if credentials are in config
         refresh_token = self.config.get("refresh_token")
         client_id = self.config.get("client_id")
         client_secret = self.config.get("client_secret")
@@ -60,14 +81,14 @@ class GoogleAuditClient:
                 resp = await client.post(url, data=payload)
                 if resp.status_code == 200:
                     new_token = resp.json().get("access_token")
-                    logger.info("Successfully refreshed Google OAuth token")
+                    logger.info("Successfully refreshed Google OAuth token via direct API call")
                     self.token = new_token
                     self.headers["Authorization"] = f"Bearer {new_token}"
                     return new_token
-                logger.error(f"Failed to refresh Google OAuth token: {resp.status_code} - {resp.text}")
+                logger.error(f"Failed to refresh Google OAuth token via direct API call: {resp.status_code} - {resp.text}")
                 return None
             except Exception as e:
-                logger.error(f"Error refreshing Google OAuth token: {e}")
+                logger.error(f"Error refreshing Google OAuth token via direct API call: {e}")
                 return None
 
     async def _send_with_retry(
@@ -233,3 +254,47 @@ class GoogleAuditClient:
             except Exception as e:
                 logger.error(f"GMC API request failed: {e}")
                 raise
+
+
+class GoogleSearchConsoleAudit:
+    """High-level runner for Google Search Console audits, handling token resolution and auto-refresh."""
+
+    def __init__(self, tenant_id: str, brand_id: str, session: Any):
+        self.tenant_id = tenant_id
+        self.brand_id = brand_id
+        self.session = session
+
+    async def run(self) -> dict:
+        from app.models import Connection
+        from app.services.secrets import SecretManagerClient
+        from sqlalchemy import select
+
+        # 1. Query the google-search-console connection
+        stmt = select(Connection).where(
+            Connection.tenant_id == self.tenant_id,
+            Connection.brand_id == self.brand_id,
+            Connection.provider == "google-search-console"
+        )
+        res = await self.session.execute(stmt)
+        conn = res.scalar_one_or_none()
+        if not conn:
+            raise ValueError(f"No active google-search-console connection found for brand {self.brand_id}")
+
+        # 2. Resolve token from Secret Manager
+        secrets_client = SecretManagerClient()
+        token = await secrets_client.read_secret(conn.credential)
+
+        # 3. Setup client config, including metadata for OauthService refresh
+        config = {
+            **(conn.config or {}),
+            "tenant_id": self.tenant_id,
+            "brand_id": self.brand_id,
+            "provider": conn.provider,
+            "credential_ref": conn.credential
+        }
+
+        # 4. Instantiate GoogleAuditClient and run audit
+        client = GoogleAuditClient(token=token, config=config)
+        result = await client.run_search_console_audit()
+        return result
+

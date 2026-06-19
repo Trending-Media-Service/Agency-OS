@@ -24,8 +24,11 @@ async def migrate(engine=None):
         should_dispose = False
 
     print("Running database migrations via Alembic...")
-    alembic_cfg = Config("alembic.ini")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    ini_path = os.path.join(base_dir, "alembic.ini")
+    alembic_cfg = Config(ini_path)
     async with engine.begin() as conn:
+
         await conn.run_sync(run_upgrade, alembic_cfg)
 
     print("Migration complete.")

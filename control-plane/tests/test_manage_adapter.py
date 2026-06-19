@@ -24,16 +24,16 @@ def test_manage_adapter_plan(adapter, connect_intent):
     op = ops[0]
     assert op.action == "manage.shopify.connect"
     assert op.params["provider"] == "shopify"
-    assert op.params["secret_ref"] == "brand-name-shopify-token"
+    assert op.params["credential"] == "brand-name-shopify-token"
     assert op.params["config"]["shop_url"] == "brand-name.myshopify.com"
 
 def test_manage_adapter_preview(adapter, connect_op):
     preview_art = adapter.preview(connect_op)
     assert preview_art.kind == "shopify_connect_preview"
     assert "brand-name.myshopify.com" in preview_art.summary
-    assert "brand-name-shopify-token" in preview_art.summary
+    assert "****" in preview_art.summary
 
-async def test_manage_adapter_execute_connect(adapter, connect_op, session):
+async def test_manage_adapter_execute_connect(adapter, connect_op, session, mock_secrets_client):
     # Execute connect
     res = await adapter.execute(connect_op, "idem_connect_123", session=session)
     assert res.ok is True
@@ -47,10 +47,10 @@ async def test_manage_adapter_execute_connect(adapter, connect_op, session):
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
     assert conn is not None
-    assert "secrets" in conn.secret_ref
+    assert "secrets" in conn.credential
     from app.services.secrets import SecretManagerClient
     secrets_client = SecretManagerClient()
-    val = await secrets_client.read_secret(conn.secret_ref)
+    val = await secrets_client.read_secret(conn.credential)
     assert val == "brand-name-shopify-token"
     assert conn.config["shop_url"] == "brand-name.myshopify.com"
 
@@ -74,7 +74,7 @@ async def test_manage_adapter_execute_disconnect(adapter, connect_op, session):
         tenant_id="t1",
         brand_id="b1",
         provider="shopify",
-        secret_ref="token",
+        credential="token",
         config={"shop_url": "url"}
     )
     session.add(conn)
@@ -125,7 +125,7 @@ async def test_get_brand_status_connected(client, session):
         tenant_id=tid,
         brand_id=bid,
         provider="shopify",
-        secret_ref="test-secret",
+        credential="test-secret",
         config={"shop_url": "test-brand.myshopify.com"}
     )
     session.add(conn)
@@ -248,7 +248,7 @@ async def test_manage_adapter_backup_degraded_flow(adapter, backup_op, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_manage_adapter_real_shopify_mcp_verification(adapter, session):
+async def test_manage_adapter_real_shopify_mcp_verification(adapter, session, mock_secrets_client):
     # 1. Plan with custom mcp_url
     intent = "connect shopify store luxury-tea.myshopify.com with secret:luxury-secret-token mcp_url:https://mcp-shopify.tms.internal/rpc"
     ops = adapter.plan(intent, "t1", "b1")
@@ -294,3 +294,36 @@ async def test_manage_adapter_real_shopify_mcp_verification(adapter, session):
         assert url == "https://mcp-shopify.tms.internal/rpc"
         assert payload["method"] == "tools/call"
         assert payload["params"]["name"] == "shopify_get_shop_info"
+
+# Backward Compatibility Tests
+@pytest.mark.asyncio
+async def test_manage_adapter_execute_connect_backward_compatibility(adapter, session, mock_secrets_client):
+    op = OpSpec(
+        tenant_id="t1",
+        brand_id="b1",
+        domain="manage",
+        action="manage.shopify.connect",
+        params={
+            "provider": "shopify",
+            "secret_ref": "legacy-shopify-token",
+            "config": {"shop_url": "brand-name.myshopify.com"}
+        },
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+        cost_estimate=Money(amount_minor=0, currency="INR"),
+    )
+    res = await adapter.execute(op, "idem_shopify_legacy_123", session=session)
+    assert res.ok is True
+    
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t1",
+        Connection.brand_id == "b1",
+        Connection.provider == "shopify"
+    )
+    db_res = await session.execute(stmt)
+    conn = db_res.scalar_one_or_none()
+    assert conn is not None
+    
+    from app.services.secrets import SecretManagerClient
+    secrets_client = SecretManagerClient()
+    val = await secrets_client.read_secret(conn.credential)
+    assert val == "legacy-shopify-token"

@@ -63,6 +63,19 @@ conflict with your default behavior, these rules win.
 - Branch naming: `s1-<issue#>/<slug>` (e.g. `s1-2/postgres-rls`).
 - Commit messages explain WHY, reference the issue.
 
+## Connector conventions (Manage/Grow/Presence connect surface)
+- **Governed connections only.** Connect, verify, disconnect, rotate, and OAuth
+  callbacks are governed Ops (§2.3/§4.1) — never direct `connections` writes. The
+  plugin-webhook pattern (ARCHITECTURE.md §5.1) is the template for public callbacks:
+  resolve the connection under a privileged session, set `tenant_context`, then propose.
+- **Credentials are Secret Manager refs.** Raw credentials/tokens are written to the
+  brand project's Secret Manager at execute time; the DB stores only the `secret_ref`
+  pointer + non-secret config. Never log, preview, or audit a raw credential.
+- **Directory naming invariant.** The console builds the connector grid from tool
+  names containing the substring "connect". Connect tools MUST contain "connect";
+  lifecycle tools (verify/revoke/rotate) MUST NOT. Pinned by
+  `tests/test_connector_contract.py`.
+
 ## When blocked
 Stop and comment on the issue. A wrong guess that passes review costs more
 than a question. Specifically stop if: a test you didn't write fails, the

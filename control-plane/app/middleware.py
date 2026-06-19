@@ -46,7 +46,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     tenant_id = request.headers.get("X-Tenant-ID")
 
     # Bypass validation strictly on public API paths
-    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics"]:
+    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/connections/oauth/callback"]:
       return await call_next(request)
 
     if not tenant_id:
@@ -81,7 +81,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     from collections import defaultdict
     self.time = time
     self.defaultdict = defaultdict
-    self.buckets = self.defaultdict(lambda: (capacity, self.time.time()))
+    if not hasattr(app, "_rate_limit_buckets"):
+      app._rate_limit_buckets = self.defaultdict(lambda: (capacity, self.time.time()))
+    self.buckets = app._rate_limit_buckets
 
   async def dispatch(self, request, call_next):
     # Rate limit POST /chat and public webhooks
@@ -126,20 +128,27 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     return response
 
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Histogram, REGISTRY
 import time
 
 # Module-level globals, initialized once
-REQUEST_COUNT = Counter(
-    "http_requests_total",
-    "Total number of HTTP requests processed",
-    ["method", "path", "status"]
-)
-REQUEST_LATENCY = Histogram(
-    "http_request_duration_seconds",
-    "HTTP request latency in seconds",
-    ["method", "path"]
-)
+if "http_requests_total" in REGISTRY._names_to_collectors:
+  REQUEST_COUNT = REGISTRY._names_to_collectors["http_requests_total"]
+else:
+  REQUEST_COUNT = Counter(
+      "http_requests_total",
+      "Total number of HTTP requests processed",
+      ["method", "path", "status"]
+  )
+
+if "http_request_duration_seconds" in REGISTRY._names_to_collectors:
+  REQUEST_LATENCY = REGISTRY._names_to_collectors["http_request_duration_seconds"]
+else:
+  REQUEST_LATENCY = Histogram(
+      "http_request_duration_seconds",
+      "HTTP request latency in seconds",
+      ["method", "path"]
+  )
 
 class MetricsMiddleware(BaseHTTPMiddleware):
   """Collects Prometheus metrics for API requests (latencies, counts, status codes)."""

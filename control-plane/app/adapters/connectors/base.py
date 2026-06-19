@@ -28,7 +28,7 @@ def register_connector(connector_cls: Type[Connector]) -> Type[Connector]:
     return connector_cls
 
 
-async def get_connector(provider: str, secret_ref: str, config: dict[str, Any], tenant_project_id: Optional[str] = None) -> Optional[Connector]:
+async def get_connector(provider: str, credential: str, config: dict[str, Any], tenant_project_id: Optional[str] = None) -> Optional[Connector]:
     """Connector factory that resolves credentials from Secret Manager and returns the configured Connector instance."""
     connector_cls = _REGISTRY.get(provider)
     if not connector_cls:
@@ -36,12 +36,12 @@ async def get_connector(provider: str, secret_ref: str, config: dict[str, Any], 
         return None
 
     # Resolve actual API credential token from Secret Manager
-    token = secret_ref
+    token = credential
     try:
         secrets_client = SecretManagerClient(project_id=tenant_project_id)
-        token = await secrets_client.read_secret(secret_ref)
+        token = await secrets_client.read_secret(credential)
     except Exception as e:
-        logger.warning(f"Failed to resolve connector secret from Secret Manager: {e}. Falling back to raw secret_ref.")
+        logger.warning(f"Failed to resolve connector secret from Secret Manager: {e}. Falling back to raw credential.")
 
     try:
         instance = connector_cls(token=token, config=config)

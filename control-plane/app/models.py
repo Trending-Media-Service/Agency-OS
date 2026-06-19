@@ -200,7 +200,7 @@ class OutboxItem(Base):
 
 
 class Connection(Base):
-    """Manage-pillar credential metadata. secret_ref points into the BRAND
+    """Manage-pillar credential metadata. credential points into the BRAND
     project's Secret Manager — the secret itself never touches this DB (§3)."""
     __tablename__ = "connections"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
@@ -208,9 +208,15 @@ class Connection(Base):
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     provider: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(128), default="read")  # e.g. read|write or comma-separated scopes
-    secret_ref: Mapped[str] = mapped_column(String(255))
+    credential: Mapped[str] = mapped_column("secret_ref", String(255), nullable=True)  # Mapped to physical column 'secret_ref' in DB, nullable to support revocation
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="unverified")  # unverified|active|error|revoked|degraded
+    last_verified_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
 class OpDependency(Base):
     """Stores dependency edges for DAG-based sagas [L4]."""
     __tablename__ = "op_dependencies"

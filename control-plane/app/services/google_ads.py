@@ -28,7 +28,7 @@ class GoogleAdsClient(MarketingClient):
         self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v17")
         
         # Use delegation to MockMarketingClient for mock runs.
-        # Gate on AOS_ENV=test or no/mock token — do NOT treat a bare secret_ref path
+        # Gate on AOS_ENV=test or no/mock token — do NOT treat a bare credential path
         # as a ******; grow.py raises if SecretManager fails, so a raw ref
         # should never reach here in production.
         self._mock_client = MockMarketingClient(provider=self.provider)

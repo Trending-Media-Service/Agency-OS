@@ -17,3 +17,4 @@ control-plane/bin/LICENSE.txt
 logs/
 *.log
 
+.agents/

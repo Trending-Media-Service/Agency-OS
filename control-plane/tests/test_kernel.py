@@ -1467,7 +1467,7 @@ async def test_read_endpoints_connections_breakers_events(client, db_engine):
                 brand_id="b-read-test",
                 provider="shopify",
                 scope="read",
-                secret_ref="shopify-secret",
+                credential="shopify-secret",
                 config={"shop_url": "test.myshopify.com"}
             )
             s.add(conn)
@@ -1492,7 +1492,7 @@ async def test_read_endpoints_connections_breakers_events(client, db_engine):
     conns = resp.json()
     assert len(conns) == 1
     assert conns[0]["provider"] == "shopify"
-    assert conns[0]["secret_ref"] == "shopify-secret"
+    assert conns[0]["credential"] == "shopify-secret"
 
     # 2. Test GET /circuit-breakers
     resp = await client.get("/circuit-breakers", headers=H)

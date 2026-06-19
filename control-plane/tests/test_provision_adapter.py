@@ -364,7 +364,7 @@ async def test_provision_adapter_shopify_storefront_lifecycle(adapter):
         action="provision.shopify_storefront.create",
         params={
             "shop_url": "test-store.myshopify.com",
-            "secret_ref": "shopify-secret-key-123",
+            "credential": "shopify-secret-key-123",
             "gcp_project": "aos-brand-shopify-test",
             "recipe": "shopify-storefront",
             "version": "0.1.0"

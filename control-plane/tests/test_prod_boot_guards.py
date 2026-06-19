@@ -3,17 +3,32 @@ import sys
 import importlib
 import pytest
 
+_ORIGINAL_SYS_MODULES = None
+
+@pytest.fixture(scope="module", autouse=True)
+def snapshot_sys_modules():
+    global _ORIGINAL_SYS_MODULES
+    _ORIGINAL_SYS_MODULES = sys.modules.copy()
+    yield
+
 def clean_imports():
     """Clear sys.modules to force python to re-execute module-level code on import."""
-    for mod in ["app.main", "app.database"]:
-        if mod in sys.modules:
+    for mod in list(sys.modules.keys()):
+        if mod == "app" or mod.startswith("app."):
             del sys.modules[mod]
 
 @pytest.fixture(autouse=True)
-def cleanup_after_test():
-    """Ensure we clean up sys.modules after each test so we don't pollute other tests."""
+def restore_sys_modules_after_test():
+    """Ensure we restore the original sys.modules after each test to prevent polluting other tests."""
     yield
-    clean_imports()
+    # 1. Clear any current app modules in sys.modules to avoid mixing
+    for mod in list(sys.modules.keys()):
+        if mod == "app" or mod.startswith("app."):
+            del sys.modules[mod]
+    # 2. Restore the original module instances from the snapshot
+    for mod, val in _ORIGINAL_SYS_MODULES.items():
+        if mod == "app" or mod.startswith("app."):
+            sys.modules[mod] = val
 
 def test_prod_boot_guards_operator_token(monkeypatch):
     # Case 1: ENV=production + OPERATOR_TOKEN=default-dev-token -> RuntimeError
