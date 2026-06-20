@@ -259,3 +259,128 @@ class GoogleAdsClient(MarketingClient):
             except Exception as e:
                 logger.error(f"Google Ads API request failed: {e}")
                 return None
+
+    async def swap_pmax_audience(self, campaign_names: list[str], new_audience_id: str) -> bool:
+        if self._is_mock:
+            return await self._mock_client.swap_pmax_audience(campaign_names, new_audience_id)
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                # Step 1: Query Campaign IDs matching the PMax names
+                names_str = ", ".join(f"'{name}'" for name in campaign_names)
+                query_camp = f"SELECT campaign.id, campaign.name FROM campaign WHERE campaign.name IN ({names_str}) AND campaign.advertising_channel_type = 'PERFORMANCE_MAX'"
+                resp = await self._send_with_retry(client, "POST", f"{self.api_url}/customers/{self.customer_id}/googleAds:search", headers=self.headers, json_data={"query": query_camp})
+                if resp.status_code != 200:
+                    return False
+                
+                campaign_ids = [row["campaign"]["id"] for row in resp.json().get("results", [])]
+                if not campaign_ids:
+                    logger.warning("No matching PMax campaigns found")
+                    return True
+
+                # Step 2: Query Asset Groups linked to these campaigns
+                camp_ids_str = ", ".join(f"'{cid}'" for cid in campaign_ids)
+                query_ag = f"SELECT asset_group.id, asset_group.resource_name FROM asset_group WHERE campaign.id IN ({camp_ids_str})"
+                resp_ag = await self._send_with_retry(client, "POST", f"{self.api_url}/customers/{self.customer_id}/googleAds:search", headers=self.headers, json_data={"query": query_ag})
+                if resp_ag.status_code != 200:
+                    return False
+                
+                asset_groups = resp_ag.json().get("results", [])
+                
+                # Step 3: Transactional Swap (Remove old -> Create new) on each Asset Group
+                operations = []
+                for ag in asset_groups:
+                    ag_id = ag["asset_group"]["id"]
+                    ag_resource = ag["asset_group"]["resourceName"]
+                    
+                    # A. Query existing Audience signal in this asset group
+                    query_sig = f"SELECT asset_group_signal.resource_name FROM asset_group_signal WHERE asset_group.id = '{ag_id}' AND asset_group_signal.audience.audience IS NOT NULL"
+                    resp_sig = await self._send_with_retry(client, "POST", f"{self.api_url}/customers/{self.customer_id}/googleAds:search", headers=self.headers, json_data={"query": query_sig})
+                    
+                    if resp_sig.status_code == 200:
+                        for row in resp_sig.json().get("results", []):
+                            # Add Remove Operation
+                            operations.append({"remove": row["asset_group_signal"]["resourceName"]})
+                    
+                    # B. Add Create Operation linking the new Audience list
+                    operations.append({
+                        "create": {
+                            "asset_group": ag_resource,
+                            "audience": {
+                                "audience": f"customers/{self.customer_id}/audiences/{new_audience_id}"
+                            }
+                        }
+                    })
+
+                if not operations:
+                    return True
+
+                # Dispatch the transactional swap mutate request
+                url_mutate = f"{self.api_url}/customers/{self.customer_id}/assetGroupSignals:mutate"
+                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data={"operations": operations})
+                if resp_mutate.status_code == 200:
+                    logger.info(f"Successfully swapped PMax audiences to list '{new_audience_id}' across {len(campaign_names)} campaigns.")
+                    return True
+                logger.error(f"AssetGroupSignal mutate failed: {resp_mutate.status_code} - {resp_mutate.text}")
+                return False
+            except Exception as e:
+                logger.exception(f"PMax audience swap failed: {e}")
+                return False
+
+    async def clean_search_keywords(self, campaign_name: str, brand_terms: list[str]) -> tuple[bool, list[str]]:
+        if self._is_mock:
+            return await self._mock_client.clean_search_keywords(campaign_name, brand_terms)
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                # Step 1: Query all enabled search keywords in the campaign
+                query_kw = f"""
+                    SELECT ad_group_criterion.criterion_id, ad_group_criterion.resource_name, ad_group_criterion.keyword.text, ad_group_criterion.status 
+                    FROM ad_group_criterion 
+                    WHERE campaign.name = '{campaign_name}' AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status = 'ENABLED'
+                """
+                url_search = f"{self.api_url}/customers/{self.customer_id}/googleAds:search"
+                resp = await self._send_with_retry(client, "POST", url_search, headers=self.headers, json_data={"query": query_kw})
+                if resp.status_code != 200:
+                    return False, []
+
+                results = resp.json().get("results", [])
+                
+                # Step 2: Identify generic keywords (leakage) that DO NOT contain brand terms
+                brand_patterns = [rf"\b{term.lower()}\b" for term in brand_terms]
+                paused_resources = []
+                operations = []
+
+                for row in results:
+                    criterion = row["ad_group_criterion"]
+                    kw_text = criterion["keyword"]["text"].lower()
+                    resource_name = criterion["resourceName"]
+
+                    # If none of the brand patterns match the keyword text, it is generic!
+                    is_generic = not any(re.search(pat, kw_text) for pat in brand_patterns)
+                    if is_generic:
+                        paused_resources.append(resource_name)
+                        operations.append({
+                            "update": {
+                                "resourceName": resource_name,
+                                "status": "PAUSED"
+                            },
+                            "updateMask": "status"
+                        })
+
+                if not operations:
+                    logger.info("No generic keyword leakage detected.")
+                    return True, []
+
+                # Step 3: Mutate Ad Group Criteria (Pause the generic keywords)
+                url_mutate = f"{self.api_url}/customers/{self.customer_id}/adGroupCriteria:mutate"
+                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data={"operations": operations})
+                if resp_mutate.status_code == 200:
+                    logger.info(f"Successfully paused {len(paused_resources)} generic keywords in campaign '{campaign_name}'.")
+                    return True, paused_resources
+                
+                logger.error(f"AdGroupCriteria keyword pause failed: {resp_mutate.status_code} - {resp_mutate.text}")
+                return False, []
+            except Exception as e:
+                logger.exception(f"Generic keyword cleanup failed: {e}")
+                return False, []

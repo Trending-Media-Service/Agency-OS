@@ -377,6 +377,20 @@ class BrandObjective(Base):
     brand: Mapped[Brand] = relationship("Brand", back_populates="objective_association")
 
 
+class Lead(Base):
+    __tablename__ = "leads"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    brand_id: Mapped[str] = mapped_column(String(32), index=True)
+    lead_id: Mapped[str] = mapped_column(String(64), unique=True) # HubSpot/Salesforce Deal ID
+    email_hashed: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32)) # lead | mql | sql | closed_won
+    deal_value_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gclid: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    placed_at: Mapped[dt.datetime] = mapped_column(default=_now) # when the stage updated
+    created_at: Mapped[dt.datetime] = mapped_column(default=_now)
+
+
 def make_engine(url: str = "sqlite:///./agencyos.db"):
     if url.startswith("sqlite"):
         from sqlalchemy.pool import StaticPool

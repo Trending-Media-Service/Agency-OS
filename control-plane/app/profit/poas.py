@@ -11,7 +11,9 @@ from app.models import (
     Campaign,
     SpendFact,
     Touchpoint,
-    BrandProperty
+    BrandProperty,
+    Lead,
+    BrandObjective
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,176 @@ async def calculate_campaign_poas(
     alpha_prop = res_alpha.scalar_one_or_none()
     if alpha_prop and alpha_prop.findings and "alpha_inc" in alpha_prop.findings:
         alpha_inc = float(alpha_prop.findings["alpha_inc"])
+
+    # Check Brand Objective
+    stmt_obj = select(BrandObjective).where(
+        BrandObjective.tenant_id == tenant_id,
+        BrandObjective.brand_id == brand_id
+    ).limit(1)
+    res_obj = await s.execute(stmt_obj)
+    objective_row = res_obj.scalar_one_or_none()
+    objective = objective_row.objective if objective_row else "retention"
+
+    if objective == "growth": # Lead Gen Brand!
+        # Compute CRM Lead POAS instead of E-commerce!
+        leads_q = await s.execute(select(Lead).where(Lead.tenant_id == tenant_id, Lead.brand_id == brand_id))
+        leads = leads_q.scalars().all()
+
+        campaigns_q = await s.execute(select(Campaign).where(Campaign.tenant_id == tenant_id, Campaign.brand_id == brand_id))
+        campaigns = campaigns_q.scalars().all()
+
+        spend_facts_q = await s.execute(
+            select(SpendFact)
+            .join(Campaign, Campaign.id == SpendFact.campaign_id)
+            .where(SpendFact.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+        )
+        spend_facts = spend_facts_q.scalars().all()
+
+        touchpoints_q = await s.execute(
+            select(Touchpoint)
+            .join(Campaign, Campaign.id == Touchpoint.campaign_id)
+            .where(Touchpoint.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+        )
+        touchpoints = touchpoints_q.scalars().all()
+
+        # Attribution mapping for leads
+        touchpoints_by_customer = {}
+        for tp in touchpoints:
+            if not tp.customer_id:
+                continue
+            if tp.customer_id not in touchpoints_by_customer:
+                touchpoints_by_customer[tp.customer_id] = []
+            touchpoints_by_customer[tp.customer_id].append(tp)
+
+        lead_attribution = {}
+        window_delta = dt.timedelta(days=attribution_window_days)
+
+        for lead in leads:
+            if not lead.email_hashed:
+                lead_attribution[lead.id] = "ORGANIC"
+                continue
+
+            # We match touchpoints using customer_id (email_hashed is mapped to customer_id in sGTM!)
+            customer_tps = touchpoints_by_customer.get(lead.email_hashed, [])
+            lead_time = lead.placed_at
+
+            valid_tps = [
+                tp for tp in customer_tps
+                if tp.occurred_at <= lead_time and tp.occurred_at >= (lead_time - window_delta)
+            ]
+
+            if attribution_model == "last_touch":
+                valid_tps.sort(key=lambda x: x.occurred_at, reverse=True)
+
+            if valid_tps and valid_tps[0].campaign_id:
+                lead_attribution[lead.id] = valid_tps[0].campaign_id
+            else:
+                lead_attribution[lead.id] = "ORGANIC"
+
+        # Aggregate breakdowns by campaign (deal value of closed_won leads)
+        campaign_breakdowns = {}
+        for lead in leads:
+            campaign_id = lead_attribution.get(lead.id, "ORGANIC")
+            if campaign_id not in campaign_breakdowns:
+                campaign_breakdowns[campaign_id] = {
+                    "gross_revenue_minor": 0,
+                    "discount_minor": 0,
+                    "cogs_minor": 0,
+                    "fulfillment_minor": 0,
+                    "marketplace_fee_minor": 0,
+                    "refunds_minor": 0,
+                    "contribution_margin_minor": 0, # Net deal profit
+                    "estimated_cogs": False
+                }
+            
+            if lead.status == "closed_won":
+                val = lead.deal_value_minor or 0
+                cur = campaign_breakdowns[campaign_id]
+                cur["gross_revenue_minor"] += val
+                cur["contribution_margin_minor"] += val # Net profit is the deal value for service brands
+
+        # Aggregate Spend, clicks, and generate report
+        campaign_spend = {}
+        for sf in spend_facts:
+            campaign_spend[sf.campaign_id] = campaign_spend.get(sf.campaign_id, 0) + sf.amount_minor
+
+        campaign_clicks = {}
+        for tp in touchpoints:
+            if tp.type == "click":
+                camp_id = tp.campaign_id or "ORGANIC"
+                campaign_clicks[camp_id] = campaign_clicks.get(camp_id, 0) + 1
+
+        campaign_leads_count = {}
+        for lead_id, camp_id in lead_attribution.items():
+            campaign_leads_count[camp_id] = campaign_leads_count.get(camp_id, 0) + 1
+
+        reports = []
+        for c in campaigns:
+            spend = campaign_spend.get(c.id, 0)
+            bd = campaign_breakdowns.get(c.id, {
+                "gross_revenue_minor": 0,
+                "discount_minor": 0,
+                "cogs_minor": 0,
+                "fulfillment_minor": 0,
+                "marketplace_fee_minor": 0,
+                "refunds_minor": 0,
+                "contribution_margin_minor": 0,
+                "estimated_cogs": False
+            })
+            poas = round(bd["contribution_margin_minor"] / spend, 2) if spend > 0 else None
+            roas = round(bd["gross_revenue_minor"] / spend, 2) if spend > 0 else None
+            ipoas = round(poas * alpha_inc, 2) if poas is not None else None
+            clicks = campaign_clicks.get(c.id, 0)
+            leads_count = campaign_leads_count.get(c.id, 0)
+
+            reports.append({
+                "campaign_id": c.id,
+                "campaign_name": c.name,
+                "platform": c.platform,
+                "status": c.status,
+                "spend_minor": spend,
+                "contribution_margin_minor": bd["contribution_margin_minor"],
+                "poas": poas,
+                "roas": roas,
+                "ipoas": ipoas,
+                "alpha_inc": alpha_inc,
+                "breakdown": {
+                    **bd,
+                    "spend_minor": spend
+                },
+                "clicks": clicks,
+                "orders": leads_count # Map leads to "orders" in report to maintain identical schema!
+            })
+
+        organic_bd = campaign_breakdowns.get("ORGANIC")
+        if organic_bd and (organic_bd["contribution_margin_minor"] > 0 or organic_bd["gross_revenue_minor"] > 0):
+            reports.append({
+                "campaign_id": "ORGANIC",
+                "campaign_name": "Organic Traffic (Unattributed)",
+                "platform": "organic",
+                "status": "active",
+                "spend_minor": 0,
+                "contribution_margin_minor": organic_bd["contribution_margin_minor"],
+                "poas": None,
+                "roas": None,
+                "ipoas": None,
+                "alpha_inc": alpha_inc,
+                "breakdown": {
+                    **organic_bd,
+                    "spend_minor": 0
+                },
+                "clicks": campaign_clicks.get("ORGANIC", 0),
+                "orders": campaign_leads_count.get("ORGANIC", 0)
+            })
+
+        def sort_key(report):
+            is_organic = 0 if report["campaign_id"] == "ORGANIC" else 1
+            poas_val = report["poas"] if report["poas"] is not None else -1e9
+            spend_val = report["spend_minor"]
+            return (is_organic, poas_val, -spend_val)
+
+        reports.sort(key=sort_key)
+        return reports
 
     # 1. Fetch all relevant tables
     orders_q = await s.execute(select(Order).where(Order.tenant_id == tenant_id, Order.brand_id == brand_id))

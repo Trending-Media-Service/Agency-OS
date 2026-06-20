@@ -19,6 +19,46 @@ class GrowAdapter(Adapter):
         normalized = intent.strip().lower()
         words = normalized.split()
 
+        if "optimize" in words and "audience" in words:
+            audience_id = "251066626" # default fallback
+            for w in words:
+                if w.isdigit() and len(w) > 5:
+                    audience_id = w
+                    break
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.pmax.audience_signal_update",
+                    params={
+                        "campaign_names": ["Sales-Performance_(SK) (13-4-26)", "Ableys_Catch all_Dec 16"],
+                        "new_audience_id": audience_id,
+                        "provider": "google-ads",
+                        "requires_consent_category": "pii_upload"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if "clean" in words and "keywords" in words:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.search.keyword_cleanup",
+                    params={
+                        "campaign_name": "Ableys_Brand Search_May 12th",
+                        "brand_terms": ["ableys", "abley's"],
+                        "provider": "google-ads"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
         if "connect" in words and ("google" in words or "google-ads" in words or "google_ads" in words):
             credential = next((w for w in words if w.startswith("secret:")), "secret:google-ads-token")
             if credential.startswith("secret:"):
@@ -249,6 +289,7 @@ class GrowAdapter(Adapter):
                     cost_estimate=Money(amount_minor=budget_minor, currency="INR"), # cost is the budget
                 )
             ]
+
         return []
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
@@ -523,6 +564,30 @@ class GrowAdapter(Adapter):
         elif op.action == "grow.alert.dispatch":
             logger.info(f"ALERT DISPATCHED: {op.params.get('message')}")
             return ExecResult(ok=True, detail={"message": "Alert dispatched"})
+
+        elif op.action == "grow.pmax.audience_signal_update":
+            campaign_names = op.params.get("campaign_names")
+            new_audience_id = op.params.get("new_audience_id")
+            
+            ok = await client.swap_pmax_audience(campaign_names, new_audience_id)
+            if ok:
+                return ExecResult(ok=True, detail={"message": f"PMax campaigns updated with Audience {new_audience_id}"})
+            return ExecResult(ok=False, detail={"error": "Failed to swap PMax audience signals"})
+
+        elif op.action == "grow.search.keyword_cleanup":
+            campaign_name = op.params.get("campaign_name")
+            brand_terms = op.params.get("brand_terms")
+            
+            ok, paused_resources = await client.clean_search_keywords(campaign_name, brand_terms)
+            if ok:
+                return ExecResult(
+                    ok=True, 
+                    detail={
+                        "message": f"Generic keywords paused in campaign {campaign_name}",
+                        "paused_keyword_resources": paused_resources
+                    }
+                )
+            return ExecResult(ok=False, detail={"error": "Failed to complete keyword cleanup"})
             
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
@@ -770,4 +835,24 @@ class GrowAdapter(Adapter):
                     parent_op_id=op.id
                 )
             ]
+
+        if op.action == "grow.search.keyword_cleanup":
+            paused_resources = op.params.get("paused_keyword_resources", [])
+            if not paused_resources:
+                return []
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="grow.search.keyword_restore",
+                    params={
+                        "paused_resources": paused_resources,
+                        "provider": "google-ads"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+
         return []
