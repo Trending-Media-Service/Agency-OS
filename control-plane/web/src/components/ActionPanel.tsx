@@ -14,6 +14,7 @@ type LooseCall = (path: string, method: string, body?: unknown) => Promise<unkno
 
 interface ToolSchema {
   name: string;
+  title?: string;
   description?: string;
   domain?: string;
   parameters?: {
@@ -134,7 +135,7 @@ export function ActionPanel() {
                 title={t.description}
                 className="w-full text-left px-3 py-2 rounded border border-zinc-800 bg-zinc-950 hover:border-zinc-700 hover:bg-zinc-900/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <div className="text-[11px] text-zinc-200 font-medium">{titleCase(t.name)}</div>
+                <div className="text-[11px] text-zinc-200 font-medium">{t.title || titleCase(t.name)}</div>
                 {t.description && <div className="text-[9px] text-zinc-500 truncate">{t.description}</div>}
               </button>
             ))}
@@ -174,7 +175,7 @@ export function ActionPanel() {
           <div className="bg-zinc-950 border border-zinc-900 rounded-lg p-6 max-w-sm w-full space-y-4 shadow-xl">
             <div className="flex justify-between items-start">
               <div className="space-y-1">
-                <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{titleCase(selected.name)}</h3>
+                <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{selected.title || titleCase(selected.name)}</h3>
                 {selected.description && <p className="text-[10px] text-zinc-500">{selected.description}</p>}
               </div>
               <button onClick={() => setSelected(null)} aria-label="Close" className="text-zinc-500 hover:text-zinc-300">

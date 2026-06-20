@@ -86,6 +86,8 @@ registry.register_tool(
     name="grow_bid_adjust",
     schema={
         "name": "grow_bid_adjust",
+        "title": "Adjust Campaign Bid",
+        "domain": "grow",
         "description": "Adjust the bidding price for an active ad campaign.",
         "parameters": {
             "type": "OBJECT",
@@ -104,6 +106,8 @@ registry.register_tool(
     name="grow_budget_reallocate",
     schema={
         "name": "grow_budget_reallocate",
+        "title": "Reallocate Campaign Budget",
+        "domain": "grow",
         "description": "Reallocate advertising budget from one campaign to another.",
         "parameters": {
             "type": "OBJECT",
@@ -123,6 +127,8 @@ registry.register_tool(
     name="grow_campaign_pause",
     schema={
         "name": "grow_campaign_pause",
+        "title": "Pause Ad Campaign",
+        "domain": "grow",
         "description": "Pause an active ad campaign.",
         "parameters": {
             "type": "OBJECT",
@@ -182,6 +188,7 @@ registry.register_tool(
     name="provision_web_host",
     schema={
         "name": "provision_web_host",
+        "title": "Provision Web Host",
         "description": "Provision a Cloud Run web host for a domain.",
         "domain": "provision",
         "parameters": {
@@ -197,6 +204,7 @@ registry.register_tool(
     name="manage_shopify_connect",
     schema={
         "name": "manage_shopify_connect",
+        "title": "Connect Shopify Store",
         "description": "Connect a Shopify store (creates a governed Connection).",
         "domain": "manage",
         "parameters": {
@@ -215,6 +223,7 @@ registry.register_tool(
     name="manage_diagnostics",
     schema={
         "name": "manage_diagnostics",
+        "title": "Run Diagnostics",
         "description": "Run diagnostics on the brand's Cloud Run logs.",
         "domain": "manage",
         "parameters": {"type": "OBJECT", "properties": {}, "required": []},
@@ -254,6 +263,7 @@ registry.register_tool(
     name="connection_rotate_secret",
     schema={
         "name": "connection_rotate_secret",
+        "title": "Rotate Connection Secret",
         "description": "Rotate the credentials and configuration of an existing Connection.",
         "domain": "manage",
         "parameters": {
@@ -276,6 +286,7 @@ registry.register_tool(
     name="presence_citation_audit",
     schema={
         "name": "presence_citation_audit",
+        "title": "Run Citation Audit",
         "description": "Run an SEO citation/competitor audit for the brand.",
         "domain": "presence",
         "parameters": {
@@ -345,6 +356,7 @@ registry.register_tool(
     name="grow_google_ads_connect",
     schema={
         "name": "grow_google_ads_connect",
+        "title": "Connect Google Ads",
         "description": "Connect a Google Ads account.",
         "domain": "grow",
         "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
@@ -356,6 +368,7 @@ registry.register_tool(
     name="grow_meta_connect",
     schema={
         "name": "grow_meta_connect",
+        "title": "Connect Meta Ads",
         "description": "Connect a Meta (Facebook/Instagram) Ads account.",
         "domain": "grow",
         "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
@@ -367,6 +380,7 @@ registry.register_tool(
     name="presence_google_connect",
     schema={
         "name": "presence_google_connect",
+        "title": "Connect Google Search Console",
         "description": "Connect Google Search Console & Merchant Center.",
         "domain": "presence",
         "parameters": {"type": "OBJECT", "properties": {"secret_ref": _SECRET_REF_PROP}, "required": ["secret_ref"]},
@@ -378,6 +392,7 @@ registry.register_tool(
     name="presence_wordpress_connect",
     schema={
         "name": "presence_wordpress_connect",
+        "title": "Connect WordPress Site",
         "description": "Connect a WordPress site.",
         "domain": "presence",
         "parameters": {
@@ -393,6 +408,7 @@ registry.register_tool(
     name="presence_web_connect",
     schema={
         "name": "presence_web_connect",
+        "title": "Connect Website",
         "description": "Connect an existing website / headless app.",
         "domain": "presence",
         "parameters": {

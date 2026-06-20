@@ -281,8 +281,13 @@ async def client(db_engine):
     mainmod.app.dependency_overrides[get_worker_db] = override_get_db
     mainmod.app.dependency_overrides[get_worker_session_maker] = override_get_worker_session_maker
     mainmod.app.dependency_overrides[mainmod.verify_operator_auth] = lambda: None
+    mainmod.app.dependency_overrides[mainmod.resolved_operator_role] = lambda: "OPERATOR_AUTHENTICATED"
+    mainmod.app.state.db_session_maker = async_session
+    mainmod.app.state.bypass_tenant_validation = True
     async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
         yield ac
+    mainmod.app.state.db_session_maker = mainmod.AsyncSessionLocal
+    mainmod.app.state.bypass_tenant_validation = False
     mainmod.app.dependency_overrides.clear()
     SecretManagerClient.clear()
     GcsClient.clear()
@@ -294,6 +299,41 @@ def reset_rate_limiter():
     from app.middleware import active_rate_limiter
     if active_rate_limiter is not None:
         active_rate_limiter.buckets.clear()
+
+
+@pytest.fixture(autouse=True)
+def sandbox_mock_files(tmp_path, monkeypatch):
+    """Isolates mock secrets, marketing campaigns, storage, and terraform plans for each test to prevent state pollution."""
+    secrets_file = tmp_path / "mock_secrets.json"
+    campaigns_file = tmp_path / "mock_marketing_campaigns.json"
+    storage_file = tmp_path / "mock_storage.json"
+    tfplans_dir = tmp_path / "aos-tfplans"
+    tfplans_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("AOS_MOCK_SECRETS_FILE", str(secrets_file))
+    monkeypatch.setenv("AOS_MOCK_CAMPAIGNS_FILE", str(campaigns_file))
+    monkeypatch.setenv("AOS_MOCK_STORAGE_FILE", str(storage_file))
+    monkeypatch.setenv("TFPLAN_DIR", str(tfplans_dir))
+    
+    import sys
+    if "app.adapters.provision" in sys.modules:
+        monkeypatch.setattr("app.adapters.provision.TFPLAN_DIR", str(tfplans_dir))
+    if "app.services.storage" in sys.modules:
+        monkeypatch.setattr("app.services.storage.MOCK_STORAGE_FILE", str(storage_file))
+
+
+@pytest.fixture(autouse=True)
+def mock_urlopen_globally():
+    """Globally mocks urllib.request.urlopen for staging URL HTTP checks in tests."""
+    from unittest.mock import patch, MagicMock
+    
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.getcode.return_value = 200
+    mock_response.__enter__.return_value = mock_response
+    
+    with patch("urllib.request.urlopen", return_value=mock_response) as mock_patch:
+        yield mock_patch
 
 
 @pytest.fixture

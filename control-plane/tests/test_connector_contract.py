@@ -154,3 +154,38 @@ async def test_connector_secret_hygiene_log_leak_negative(caplog, session, mock_
         
         # This assertion should FAIL because the token was logged!
         assert raw_token not in caplog.text
+
+
+def test_tool_schemas_have_titles_and_domains():
+    """Test 5: Verify that all registered tools have clean titles and domains (F-6)."""
+    from app.kernel.tools import registry
+    
+    schemas = registry.get_schemas()
+    assert len(schemas) > 0
+    
+    for schema in schemas:
+        name = schema["name"]
+        assert "title" in schema, f"Tool '{name}' must have a 'title' field in its schema"
+        assert isinstance(schema["title"], str) and schema["title"].strip() != "", f"Tool '{name}' title must be a non-empty string"
+        
+        assert "domain" in schema, f"Tool '{name}' must have a 'domain' field in its schema"
+        assert isinstance(schema["domain"], str) and schema["domain"].strip() != "", f"Tool '{name}' domain must be a non-empty string"
+
+
+def test_naming_invariants():
+    """Test 6: Verify strict naming separation between connectors and lifecycle tools (F-4, F-5)."""
+    from app.kernel.tools import registry
+    
+    schemas = registry.get_schemas()
+    
+    for schema in schemas:
+        name = schema["name"]
+        
+        # 1. Connectors must end with _connect
+        if name.endswith("_connect"):
+            # Ensure they represent true provider connections and don't mix conventions
+            assert not name.startswith("connection_"), f"Connector '{name}' cannot start with 'connection_' prefix"
+            
+        # 2. Administrative lifecycle tools must start with connection_ and NOT end with _connect
+        if name.startswith("connection_"):
+            assert not name.endswith("_connect"), f"Lifecycle tool '{name}' cannot end with '_connect' suffix"

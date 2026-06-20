@@ -13,6 +13,7 @@ type LooseCall = (path: string, method: string, body?: unknown) => Promise<unkno
 
 interface ToolSchema {
   name: string;
+  title?: string;
   description?: string;
   parameters?: { properties?: Record<string, { type?: string; description?: string }>; required?: string[] };
 }
@@ -60,7 +61,7 @@ export default function ConnectionsPage() {
 
   // Only the connect tools belong in the directory (operations live in the Action Panel).
   const connectors = useMemo(() => {
-    const all = (catalog?.actions ?? []).filter((t) => CONNECTOR_META[t.name] || t.name.includes("connect"));
+    const all = (catalog?.actions ?? []).filter((t) => CONNECTOR_META[t.name] || t.name.endsWith("_connect"));
     const q = search.trim().toLowerCase();
     return all.filter((t) => {
       const meta = CONNECTOR_META[t.name];
@@ -129,7 +130,7 @@ export default function ConnectionsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {grouped[category].map((t) => {
               const meta = CONNECTOR_META[t.name];
-              const label = meta?.label ?? t.name;
+              const label = meta?.label ?? t.title ?? t.name;
               const connected = meta ? connectedProviders.has(meta.provider) : false;
               return (
                 <div key={t.name} className="border border-zinc-800 rounded-lg bg-zinc-950 p-4 flex items-start justify-between gap-3">

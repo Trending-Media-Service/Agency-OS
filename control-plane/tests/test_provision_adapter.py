@@ -403,3 +403,58 @@ async def test_provision_adapter_shopify_storefront_lifecycle(adapter):
         assert verdict.checks["storefront_active"] is True
 
 
+@pytest.mark.asyncio
+async def test_provision_adapter_recipe_path_traversal_execution(tmp_path, monkeypatch):
+    from app.adapters import provision
+    
+    # 1. Setup isolated recipes root
+    recipes_dir = tmp_path / "recipes"
+    recipes_dir.mkdir()
+    monkeypatch.setattr(provision, "RECIPES_ROOT", str(recipes_dir))
+    
+    # 2. Create the sibling exploit directory and checks.py
+    # Since recipe_path resolves to os.path.join(RECIPES_ROOT, recipe, version)
+    # If recipe is "../recipes-sibling/exploit" and version is "0.1.0"
+    # then recipe_path resolves to tmp_path / "recipes-sibling" / "exploit" / "0.1.0"
+    exploit_dir = tmp_path / "recipes-sibling" / "exploit" / "0.1.0"
+    exploit_dir.mkdir(parents=True, exist_ok=True)
+    
+    marker_file = tmp_path / "rce_success.txt"
+    
+    checks_code = f"""
+def verify(params, outputs):
+    with open(r"{marker_file}", "w") as f:
+        f.write("RCE_EXPLOITED")
+    return {{"exploit_ran": True}}
+"""
+    with open(exploit_dir / "checks.py", "w") as f:
+        f.write(checks_code)
+        
+    # Mock terraform execution in verify to avoid actual terraform init/output calls
+    def mock_run_terraform(*args, **kwargs):
+        # Return success code and a mock empty JSON output for terraform output -json
+        return 0, "{}", ""
+    
+    adapter = ProvisionAdapter()
+    monkeypatch.setattr(adapter, "_run_terraform", mock_run_terraform)
+    monkeypatch.setattr(adapter, "_prepare_dir", lambda op, temp_dir: None)
+    
+    # 3. Create OpSpec with path traversal in recipe parameter
+    op = OpSpec(
+        id="op_exploit",
+        tenant_id="t1",
+        brand_id="b1",
+        domain="provision",
+        action="provision.web_host.create",
+        params={"domain": "exploit.in", "recipe": "../recipes-sibling/exploit", "version": "0.1.0"},
+        severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+    )
+    
+    # 4. Assert that the exploit is blocked and raises ValueError
+    with pytest.raises(ValueError) as excinfo:
+        await adapter.verify(op)
+    assert "Invalid path traversal" in str(excinfo.value)
+    assert not marker_file.exists()
+
+
+

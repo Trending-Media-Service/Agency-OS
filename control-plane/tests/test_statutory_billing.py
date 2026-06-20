@@ -9,7 +9,10 @@ from app.adapters.provision import ProvisionAdapter
 
 @pytest.fixture
 def prov_adapter():
-    return ProvisionAdapter()
+    from app.kernel import loop
+    adapter = ProvisionAdapter()
+    loop.register(adapter)
+    return adapter
 
 @pytest.mark.asyncio
 async def test_statutory_region_lock_violation(prov_adapter):
