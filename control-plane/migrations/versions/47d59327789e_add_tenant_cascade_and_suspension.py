@@ -30,12 +30,22 @@ def upgrade() -> None:
         batch_op.create_foreign_key('fk_brand_objectives_tenant_id', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
     with op.batch_alter_table('brand_properties', schema=None) as batch_op:
         batch_op.create_foreign_key('fk_brand_properties_tenant_id', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
-    naming_convention = {
-        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    }
-    with op.batch_alter_table('brands', schema=None, naming_convention=naming_convention) as batch_op:
-        batch_op.drop_constraint('fk_brands_tenant_id_tenants', type_='foreignkey')
-        batch_op.create_foreign_key('fk_brands_tenant_id', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
+    # Postgres names the implicit FK constraint brands_tenant_id_fkey or fk_brands_tenant_id.
+    # We drop it robustly if it exists before creating the new restricted FK.
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        op.execute("ALTER TABLE brands DROP CONSTRAINT IF EXISTS brands_tenant_id_fkey")
+        op.execute("ALTER TABLE brands DROP CONSTRAINT IF EXISTS fk_brands_tenant_id")
+        op.create_foreign_key('fk_brands_tenant_id', 'brands', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
+    else:
+        # Fallback for SQLite and other environments
+        try:
+            with op.batch_alter_table('brands', schema=None) as batch_op:
+                batch_op.drop_constraint('fk_brands_tenant_id_tenants', type_='foreignkey')
+        except Exception:
+            pass
+        with op.batch_alter_table('brands', schema=None) as batch_op:
+            batch_op.create_foreign_key('fk_brands_tenant_id', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
     with op.batch_alter_table('cadences', schema=None) as batch_op:
         batch_op.create_foreign_key('fk_cadences_tenant_id', 'tenants', ['tenant_id'], ['id'], ondelete='RESTRICT')
     with op.batch_alter_table('campaigns', schema=None) as batch_op:
