@@ -495,7 +495,7 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                         detail={
                             "message": f"Database backup created locally (degraded mode: GCS upload failed). Fallback path: {fallback_file}",
                             "storage_status": "degraded",
-                            "backup_file": backup_file,
+                            "backup_file": f"file://{fallback_file}", # FIXED FALLBACK LOCAL URL
                             "fallback_file": fallback_file,
                             "error": str(e)
                         }
