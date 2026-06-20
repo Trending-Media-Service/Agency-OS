@@ -44,12 +44,16 @@ async def send_approval_card(op: OpRow, session: Optional[AsyncSession] = None) 
                     delta = v.get("delta", "n/a")
                     violations_str += f"\n• *Rule:* `{rule_id}` breached.\n  - *Limit:* {limit}\n  - *Attempted:* {attempted}\n  - *Delta:* {delta}\n"
         
+        # NOTE: keep the fallback literal out of the f-string expression below —
+        # a backslash inside an f-string '{...}' is a SyntaxError on Python 3.11
+        # (only allowed from 3.12 / PEP 701), and 3.11 is our documented floor.
+        violations_block = violations_str or "\n• Unknown policy violation."
         payload = {
             "messaging_product": "whatsapp",
             "to": WHATSAPP_APPROVER_PHONE,
             "type": "text",
             "text": {
-                "body": f"🛑 *Operation Blocked by Safety Guardrails*\n\n*Action:* {op.action}\n*ID:* `{op.id}`\n\n*Violations:*{violations_str or '\n• Unknown policy violation.'}"
+                "body": f"🛑 *Operation Blocked by Safety Guardrails*\n\n*Action:* {op.action}\n*ID:* `{op.id}`\n\n*Violations:*{violations_block}"
             }
         }
     elif op.action == "grow.alert.dispatch":
