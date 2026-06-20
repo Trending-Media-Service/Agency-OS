@@ -166,7 +166,8 @@ def mock_terraform_cli():
                     domain = vars_dict.get("domain") or vars_dict.get("custom_domain", "example.in")
                     outputs = {
                         "service_url": {"type": "string", "value": f"https://web-{domain}"},
-                        "lb_ip": {"type": "string", "value": "34.120.15.22"}
+                        "lb_ip": {"type": "string", "value": "34.120.15.22"},
+                        "dns_zone_name_servers": {"type": "list", "value": ["ns-cloud-a1.googledomains.com.", "ns-cloud-a2.googledomains.com."]}
                     }
                 elif recipe == "sgtm-capi":
                     outputs = {
