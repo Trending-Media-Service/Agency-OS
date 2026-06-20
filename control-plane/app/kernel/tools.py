@@ -143,6 +143,85 @@ registry.register_tool(
 )
 
 
+def _grow_value_engine_optimize_handler(
+    tenant_id: str,
+    brand_id: str,
+    campaign_id: str,
+    posture: str,
+    macro_value_minor: int,
+    micro_conversions: list[dict[str, Any]]
+) -> list[OpSpec]:
+    # Calculate optimized value V_opt using the macro-micro mapping formula:
+    # V_opt = V_macro + sum( v_micro_i * (1 - d_i) )
+    micro_contribution = 0.0
+    for step in micro_conversions:
+        val = step.get("value_minor", 0)
+        dropoff = step.get("dropoff_rate", 0.0)
+        micro_contribution += val * (1.0 - dropoff)
+        
+    v_opt_minor = int(macro_value_minor + micro_contribution)
+    
+    # Posture-based target ROAS adjustment
+    # Conservative: 110% baseline (protect margins), Aggressive: 85% baseline (maximize scale)
+    roas_multiplier = 1.0
+    if posture.lower() == "conservative":
+        roas_multiplier = 1.10
+    elif posture.lower() == "aggressive":
+        roas_multiplier = 0.85
+        
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            action="grow.value_bidding.optimize",
+            params={
+                "campaign_id": campaign_id,
+                "posture": posture,
+                "macro_value_minor": macro_value_minor,
+                "v_opt_minor": v_opt_minor,
+                "roas_multiplier": roas_multiplier,
+                "micro_conversions_audited": len(micro_conversions)
+            },
+            severity=Severity(impact=3, reversibility=Reversibility.COMPENSATABLE)
+        )
+    ]
+
+
+def _presence_consent_mode_audit_handler(tenant_id: str, brand_id: str, url: str) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="presence",
+            action="presence.consent_mode.audit",
+            params={
+                "url": url,
+                "audit_mode": "consent-v2-verification",
+                "required_regions": ["EEA", "UK"]
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE)
+        )
+    ]
+
+
+def _grow_meridian_mmm_audit_handler(tenant_id: str, brand_id: str, lookback_days: int = 90) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            action="grow.meridian_mmm.audit",
+            params={
+                "lookback_days": lookback_days,
+                "channels": ["search", "pmax", "meta-ads", "organic"],
+                "report_format": "cfo-ready-pdf"
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE)
+        )
+    ]
+
+
 # ---------------------------------------------------------------- structured operator-action tools
 # These back the console's explicit Action Panel (no free-text parsing). Each handler
 # builds the same OpSpec an adapter.plan() would, from structured params.
@@ -448,4 +527,79 @@ def parse_chat_to_tool_call(text: str) -> Optional[tuple[str, dict]]:
         return "grow_campaign_pause", {"brand_id": brand_id, "campaign_id": camp_id}
 
     return None
+
+
+# ---------------------------------------------------------------- premium marketing tool registrations
+
+registry.register_tool(
+    name="grow_value_engine_optimize",
+    schema={
+        "name": "grow_value_engine_optimize",
+        "title": "Optimize Bidding Value Engine",
+        "domain": "grow",
+        "description": "Optimize Google Ads smart bidding using macro/micro conversion value mapping.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "campaign_id": {"type": "STRING"},
+                "posture": {"type": "STRING", "description": "Strategic risk posture: conservative | balanced | aggressive"},
+                "macro_value_minor": {"type": "INTEGER", "description": "Baseline macro-conversion value in minor units"},
+                "micro_conversions": {
+                    "type": "ARRAY",
+                    "description": "List of audited micro-conversion funnel steps",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "name": {"type": "STRING", "description": "Step name, e.g. add_to_cart"},
+                            "value_minor": {"type": "INTEGER", "description": "Assigned micro-value in minor units"},
+                            "dropoff_rate": {"type": "NUMBER", "description": "funnel drop-off rate (0.0 to 1.0)"}
+                        },
+                        "required": ["name", "value_minor", "dropoff_rate"]
+                    }
+                }
+            },
+            "required": ["brand_id", "campaign_id", "posture", "macro_value_minor", "micro_conversions"]
+        }
+    },
+    handler=_grow_value_engine_optimize_handler
+)
+
+registry.register_tool(
+    name="presence_consent_mode_audit",
+    schema={
+        "name": "presence_consent_mode_audit",
+        "title": "Audit Consent Mode v2",
+        "domain": "presence",
+        "description": "Run an automated diagnostic audit to verify Consent Mode v2 and tag health.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "url": {"type": "STRING", "description": "Storefront URL to crawl and audit"}
+            },
+            "required": ["brand_id", "url"]
+        }
+    },
+    handler=_presence_consent_mode_audit_handler
+)
+
+registry.register_tool(
+    name="grow_meridian_mmm_audit",
+    schema={
+        "name": "grow_meridian_mmm_audit",
+        "title": "Run Meridian MMM Audit",
+        "domain": "grow",
+        "description": "Generate a CFO-ready Meridian Marketing Mix Model incrementality and budget defense report.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "lookback_days": {"type": "INTEGER", "description": "Days of historic media data to ingest (default: 90)"}
+            },
+            "required": ["brand_id"]
+        }
+    },
+    handler=_grow_meridian_mmm_audit_handler
+)
 
