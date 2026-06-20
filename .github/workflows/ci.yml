@@ -33,14 +33,14 @@ jobs:
           pip install -r control-plane/requirements.txt
       - name: Security audit (pip-audit)
         run: pip-audit -r control-plane/requirements.txt
-      - name: Kernel test suite (3.11)
+      - name: Kernel test suite (3.11 floor)
         run: cd control-plane && python -m pytest
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install (3.12)
         run: pip install -r control-plane/requirements.txt
-      - name: Kernel test suite (3.12)
+      - name: Kernel test suite
         run: cd control-plane && python -m pytest
       - name: Invariant checks
         run: |
