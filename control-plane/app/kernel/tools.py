@@ -222,6 +222,74 @@ def _grow_meridian_mmm_audit_handler(tenant_id: str, brand_id: str, lookback_day
     ]
 
 
+def _manage_merchant_feed_shield_handler(tenant_id: str, brand_id: str, merchant_id: int) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="manage",
+            action="manage.merchant_center.scan",
+            params={
+                "merchant_id": merchant_id,
+                "shield_active": True,
+                "scan_types": ["policy_violations", "item_disapprovals"]
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE)
+        )
+    ]
+
+
+def _grow_programmatic_dv360_connect_handler(tenant_id: str, brand_id: str, advertiser_id: str, secret_ref: str) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            action="grow.dv360.connect",
+            params={
+                "advertiser_id": advertiser_id,
+                "secret_ref": secret_ref,
+                "sync_audiences": ["high_intent_search", "custom_segments"]
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+        )
+    ]
+
+
+def _grow_ai_readiness_audit_handler(tenant_id: str, brand_id: str, campaign_id: str) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            action="grow.ai_readiness.audit",
+            params={
+                "campaign_id": campaign_id,
+                "checks": ["match_type_cleanup", "duplicate_keywords", "budget_caps"],
+                "target_engine": "broad_match_pmax"
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE)
+        )
+    ]
+
+
+def _grow_youtube_creator_connect_handler(tenant_id: str, brand_id: str, channel_id: str) -> list[OpSpec]:
+    return [
+        OpSpec(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            domain="grow",
+            action="grow.youtube_creator.connect",
+            params={
+                "channel_id": channel_id,
+                "amplification_mode": "shorts_ctv_bidding",
+                "sync_creator_analytics": True
+            },
+            severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+        )
+    ]
+
+
 # ---------------------------------------------------------------- structured operator-action tools
 # These back the console's explicit Action Panel (no free-text parsing). Each handler
 # builds the same OpSpec an adapter.plan() would, from structured params.
@@ -601,5 +669,85 @@ registry.register_tool(
         }
     },
     handler=_grow_meridian_mmm_audit_handler
+)
+
+
+# ---------------------------------------------------------------- premium marketing tool registrations (Sprint 2)
+
+registry.register_tool(
+    name="manage_merchant_feed_shield",
+    schema={
+        "name": "manage_merchant_feed_shield",
+        "title": "Merchant Feed Warning Shield",
+        "domain": "manage",
+        "description": "Scan multi-account Merchant Center feeds for policy issues to proactively prevent ad account suspensions.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "merchant_id": {"type": "INTEGER", "description": "Google Merchant Center Account ID"}
+            },
+            "required": ["brand_id", "merchant_id"]
+        }
+    },
+    handler=_manage_merchant_feed_shield_handler
+)
+
+registry.register_tool(
+    name="grow_programmatic_dv360_connect",
+    schema={
+        "name": "grow_programmatic_dv360_connect",
+        "title": "Connect DV360 Programmatic Media",
+        "domain": "grow",
+        "description": "Connect a DV360 advertiser profile to synchronize high-intent custom segments.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "advertiser_id": {"type": "STRING", "description": "DV360 Advertiser ID"},
+                "secret_ref": {"type": "STRING", "description": "Secret Manager secret name containing DV360 OAuth tokens"}
+            },
+            "required": ["brand_id", "advertiser_id", "secret_ref"]
+        }
+    },
+    handler=_grow_programmatic_dv360_connect_handler
+)
+
+registry.register_tool(
+    name="grow_ai_readiness_audit",
+    schema={
+        "name": "grow_ai_readiness_audit",
+        "title": "Audit Campaign AI-Readiness",
+        "domain": "grow",
+        "description": "Audit connected search campaigns, clean match types, and consolidate into AI-ready assets.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "campaign_id": {"type": "STRING", "description": "Google Ads Campaign ID to audit"}
+            },
+            "required": ["brand_id", "campaign_id"]
+        }
+    },
+    handler=_grow_ai_readiness_audit_handler
+)
+
+registry.register_tool(
+    name="grow_youtube_creator_connect",
+    schema={
+        "name": "grow_youtube_creator_connect",
+        "title": "Connect YouTube Creator Channel",
+        "domain": "grow",
+        "description": "Connect a YouTube creator channel and configure CTV/Shorts bidding guidelines.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "channel_id": {"type": "STRING", "description": "YouTube Channel ID (e.g. UC...)"}
+            },
+            "required": ["brand_id", "channel_id"]
+        }
+    },
+    handler=_grow_youtube_creator_connect_handler
 )
 
