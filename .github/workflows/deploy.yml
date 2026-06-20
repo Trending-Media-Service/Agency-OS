@@ -13,6 +13,7 @@ env:
   FRONTEND_SERVICE: agency-os-web
   ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane
   WEB_ARTIFACT_REGISTRY: asia-south1-docker.pkg.dev/aos-control-plane-tmg/agency-os/control-plane-web
+  DATABASE_URL_SECRET: aos-database-url
   CLOUDSQL_INSTANCE: aos-control-plane-tmg:asia-south1:aos-db
   STATE_BUCKET: aos-tfstate-tmg
   OUTBOX_QUEUE: aos-outbox
@@ -94,7 +95,7 @@ jobs:
             --region "${REGION}" \
             --project "${PROJECT_ID}" \
             --service-account "${BACKEND_RUNTIME_SA}" \
-            --set-secrets="DATABASE_URL=aos-database-url:latest" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest" \
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --command=python3 \
             --args=/app/migrate.py \
@@ -145,7 +146,7 @@ jobs:
             --no-traffic \
             --tag=canary \
             --set-env-vars="^###^ALLOWED_ORIGINS=${{ steps.cors.outputs.allowed_origins }}###ENV=production###GCP_PROJECT=${PROJECT_ID}###GCP_LOCATION=${REGION}###AOS_STATE_BUCKET=${STATE_BUCKET}###OUTBOX_QUEUE_NAME=${OUTBOX_QUEUE}###APP_URL=${APP_URL}###AOS_WORKER_SERVICE_ACCOUNT=${{ env.WORKER_SA }}" \
-            --set-secrets="DATABASE_URL=aos-database-url:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --memory 2Gi
 

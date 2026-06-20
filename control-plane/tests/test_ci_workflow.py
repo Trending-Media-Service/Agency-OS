@@ -42,7 +42,11 @@ def test_github_actions_workflow_syntax_and_security():
         "A step must deploy to Cloud Run via `gcloud run services update` (or `gcloud run deploy`)!"
     assert "gcloud secrets versions access" not in run_blocks, \
         "The deploy workflow must not read production secret payloads directly on the GitHub runner!"
-    assert "gcloud run jobs deploy" in run_blocks and "gcloud run jobs execute" in run_blocks, \
+    assert 'gcloud run jobs deploy "${MIGRATION_JOB}"' in run_blocks, \
+        "Database migrations must deploy a one-off Cloud Run job!"
+    assert 'gcloud run jobs execute "${MIGRATION_JOB}"' in run_blocks, \
+        "Database migrations must execute the same one-off Cloud Run job!"
+    assert run_blocks.index('gcloud run jobs deploy "${MIGRATION_JOB}"') < run_blocks.index('gcloud run jobs execute "${MIGRATION_JOB}"'), \
         "Database migrations must run inside a one-off Cloud Run job that uses the service's secret bindings."
 
 
