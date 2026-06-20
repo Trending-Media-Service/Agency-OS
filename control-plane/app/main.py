@@ -336,7 +336,7 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)
     await s.flush()
     
     from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE.add(t.id)
+    VALID_TENANTS_CACHE[t.id] = True
     
     return {"tenant_id": t.id, "brand_id": b.id}
 
@@ -363,6 +363,60 @@ async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
 
     res = await s.execute(stmt)
     return [dict(row) for row in res.mappings().all()]
+
+
+class TenantUpdateIn(BaseModel):
+    is_active: bool
+
+
+class TenantOut(BaseModel):
+    id: str
+    name: str
+    hosting_tier: str
+    gcp_project: str | None = None
+    is_active: bool
+    created_at: dt.datetime
+
+
+@app.patch("/tenants/{tenant_id}", response_model=TenantOut, dependencies=[Depends(verify_operator_auth)])
+async def update_tenant_status(
+    tenant_id: str,
+    body: TenantUpdateIn,
+    s: AsyncSession = Depends(get_worker_db)
+):
+    tenant = await s.get(Tenant, tenant_id)
+    
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    tenant.is_active = body.is_active
+    await s.commit()
+    
+    # Update the gateway memory cache
+    from app.middleware import VALID_TENANTS_CACHE
+    VALID_TENANTS_CACHE[tenant_id] = body.is_active
+    
+    return tenant
+
+
+@app.delete("/tenants/{tenant_id}", status_code=204, dependencies=[Depends(verify_operator_auth)])
+async def delete_tenant(
+    tenant_id: str,
+    s: AsyncSession = Depends(get_worker_db)
+):
+    tenant = await s.get(Tenant, tenant_id)
+    
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    await s.delete(tenant)
+    await s.commit()
+    
+    # Evict the tenant from the gateway memory cache
+    from app.middleware import VALID_TENANTS_CACHE
+    VALID_TENANTS_CACHE.pop(tenant_id, None)
+    
+    return Response(status_code=204)
 
 
 class BrandPortfolioItem(BaseModel):
