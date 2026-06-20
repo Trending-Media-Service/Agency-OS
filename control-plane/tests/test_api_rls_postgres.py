@@ -141,6 +141,17 @@ async def rls_api_client(setup_postgres_schema, monkeypatch):
     monkeypatch.setattr(dbmod, "engine", app_engine)
     monkeypatch.setattr(dbmod, "worker_engine", worker_engine)
 
+    # Save original conftest overrides
+    orig_get_db = mainmod.app.dependency_overrides.get(get_db)
+    orig_get_worker_db = mainmod.app.dependency_overrides.get(get_worker_db)
+    orig_get_worker_session_maker = mainmod.app.dependency_overrides.get(get_worker_session_maker)
+
+    # Remove conftest overrides to force FastAPI to resolve real get_db / get_worker_db
+    # which will use our monkeypatched Postgres session makers!
+    mainmod.app.dependency_overrides.pop(get_db, None)
+    mainmod.app.dependency_overrides.pop(get_worker_db, None)
+    mainmod.app.dependency_overrides.pop(get_worker_session_maker, None)
+
     # SQL Spying on the RLS engine
     from sqlalchemy import event
     sql_statements = []
@@ -149,12 +160,21 @@ async def rls_api_client(setup_postgres_schema, monkeypatch):
     def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
         sql_statements.append(statement)
 
-    async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
-        ac.sql_statements = sql_statements  # Attach spy log to client
-        yield ac
+    try:
+        async with AsyncClient(transport=ASGITransport(app=mainmod.app), base_url="http://test") as ac:
+            ac.sql_statements = sql_statements  # Attach spy log to client
+            yield ac
+    finally:
+        # Restore conftest overrides to prevent test pollution in other suites
+        if orig_get_db:
+            mainmod.app.dependency_overrides[get_db] = orig_get_db
+        if orig_get_worker_db:
+            mainmod.app.dependency_overrides[get_worker_db] = orig_get_worker_db
+        if orig_get_worker_session_maker:
+            mainmod.app.dependency_overrides[get_worker_session_maker] = orig_get_worker_session_maker
 
-    await app_engine.dispose()
-    await worker_engine.dispose()
+        await app_engine.dispose()
+        await worker_engine.dispose()
 
 
 async def test_postgres_api_onboarding_and_rls_isolation(rls_api_client):

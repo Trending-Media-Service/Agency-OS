@@ -10,7 +10,7 @@
 | # | Name | Scope | Dependencies | Status |
 |---|---|---|---|---|
 | 1 | PR Monitoring & Merging (R1) | Resolve TypeScript/linter build errors on PR #182 and PR #183, pass remote CI checks, squash-merge both PRs into `main`, and cleanly restore stashed changes. | None | **DONE** |
-| 2 | Resolve Issue #119 - Test Hygiene & Hardening (R2) | Implement 100% sandboxed test execution for recipe promotion (Issue #119) and remediate all 5 security/integrity audit findings (sibling prefix bypass, secret leak in logs, non-governed writes in `sense.py`, whitelist cheating in `test_no_silent_writes.py`). | None | **IN_PROGRESS** |
+| 2 | Resolve Issue #119 - Test Hygiene & Hardening (R2) | Implement 100% sandboxed test execution for recipe promotion (Issue #119) and remediate all 5 security/integrity audit findings (sibling prefix bypass, secret leak in logs, non-governed writes in `sense.py`, whitelist cheating in `test_no_silent_writes.py`). | None | **DONE** |
 
 ## Interface Contracts
 ### /recipes/promote Endpoint ↔ Version Control
