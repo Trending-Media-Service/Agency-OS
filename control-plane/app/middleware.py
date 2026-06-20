@@ -5,6 +5,10 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uuid
 
+from app.database import AsyncSessionLocal
+from app.models import Tenant
+from sqlalchemy import select
+
 
 class TraceMiddleware(BaseHTTPMiddleware):
   """Generates or propagates trace IDs to coordinate logs and telemetry across service hops."""
@@ -36,6 +40,10 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
 
 
+# Thread-safe memory cache of verified tenant IDs to ensure zero-latency fast-paths
+VALID_TENANTS_CACHE: set[str] = set()
+
+
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
   """Parses and asserts valid tenant headers across all endpoint executions,
   populating async-safe storage boundaries to prevent database leaks.
@@ -54,6 +62,36 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
           status_code=status.HTTP_401_UNAUTHORIZED,
           content={"detail": "X-Tenant-ID header is missing."},
       )
+
+    # --- SECURE TENANT VALIDATION ---
+    bypass_validation = getattr(request.app.state, "bypass_tenant_validation", False)
+    # 1. Fast path: check local memory cache
+    if not bypass_validation and tenant_id not in VALID_TENANTS_CACHE:
+      # 2. Slow path: check database
+      try:
+        session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
+        async with session_maker() as session:
+          stmt = select(Tenant.id).where(Tenant.id == tenant_id)
+          res = await session.execute(stmt)
+          db_tenant_id = res.scalar()
+          
+          if not db_tenant_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Unauthorized: Tenant not registered."},
+            )
+          
+          # Cache the verified tenant ID for future fast-paths
+          VALID_TENANTS_CACHE.add(tenant_id)
+      except Exception as e:
+        # Safeguard: If DB query fails, log and block the request (fail closed)
+        import logging
+        logger = logging.getLogger("app.middleware")
+        logger.error(f"Database error during tenant validation for {tenant_id}: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error during tenant verification."},
+        )
 
     # Set tenant identification safely across the current thread-safe context
     token = tenant_context.set(tenant_id)

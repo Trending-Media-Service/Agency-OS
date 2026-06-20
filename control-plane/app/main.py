@@ -1,6 +1,7 @@
 import logging
 import os
 import datetime as dt
+import subprocess
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response, Request
 from pydantic import BaseModel, Field
@@ -9,7 +10,7 @@ from sqlalchemy import select, text
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context
+from app.database import get_db, get_worker_db, get_worker_session_maker, tenant_context, AsyncSessionLocal
 from app.tasks import enqueue_drain
 from app.middleware import TenantIsolationMiddleware, TraceMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware, MetricsMiddleware
 from app.observability import setup_logging
@@ -81,6 +82,17 @@ logger = logging.getLogger(__name__)
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
+app.state.db_session_maker = AsyncSessionLocal
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors(), "message": "Validation error"}
+    )
 
 
 # The operator/brand console (control-plane/web) is served from a separate
@@ -148,6 +160,19 @@ async def verify_operator_auth(authorization: str | None = Header(default=None))
     token = authorization[7:]
     if not hmac.compare_digest(token, OPERATOR_TOKEN):
         raise HTTPException(403, "Forbidden: Invalid operator token")
+
+
+async def resolved_operator_role(authorization: str | None = Header(default=None)) -> str | None:
+    """Resolves the operator's role if authenticated, else returns None."""
+    if not authorization:
+        return None
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing or invalid Authorization header")
+    token = authorization[7:]
+    import hmac
+    if not hmac.compare_digest(token, OPERATOR_TOKEN):
+        raise HTTPException(403, "Forbidden: Invalid operator token")
+    return "OPERATOR_AUTHENTICATED"
 
 
 @app.get("/healthz")
@@ -219,10 +244,19 @@ async def metrics_endpoint(s: AsyncSession = Depends(get_worker_db)):
 
 
 
+def validate_id(id_val: str, name: str = "ID") -> str:
+    if not id_val:
+        raise HTTPException(400, f"{name} is required")
+    import re
+    if not re.match(r"\A[a-zA-Z0-9_-]+\Z", id_val):
+        raise HTTPException(400, f"Invalid characters or path traversal in {name}")
+    return id_val
+
+
 def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
     if not x_tenant_id:
         raise HTTPException(401, "X-Tenant-Id header required")
-    return x_tenant_id
+    return validate_id(x_tenant_id, "tenant_id")
 
 
 class TenantIn(BaseModel):
@@ -300,6 +334,9 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)
     b = Brand(tenant_id=t.id, name=body.brand_name)
     s.add(b)
     await s.flush()
+    
+    from app.middleware import VALID_TENANTS_CACHE
+    VALID_TENANTS_CACHE.add(t.id)
     
     return {"tenant_id": t.id, "brand_id": b.id}
 
@@ -434,6 +471,7 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
                worker_session_maker = Depends(get_worker_session_maker),
                tid: str = Depends(tenant_id)):
     """Conversational intent routing endpoint. Translates text to structured adapter intents."""
+    validate_id(body.brand_id, "brand_id")
     from app.kernel.tools import registry as tool_registry, parse_chat_to_tool_call
     tool_match = parse_chat_to_tool_call(body.text)
     if tool_match:
@@ -587,6 +625,7 @@ async def submit_intent(body: IntentIn, background_tasks: BackgroundTasks,
                         s: AsyncSession = Depends(get_db),
                         worker_session_maker = Depends(get_worker_session_maker),
                         tid: str = Depends(tenant_id)):
+    validate_id(body.brand_id, "brand_id")
     from app.kernel.loop import is_domain_disabled
     if is_domain_disabled(body.domain):
         raise HTTPException(400, f"Domain {body.domain!r} is disabled via kill-switch")
@@ -652,6 +691,7 @@ async def actions_catalog(tid: str = Depends(tenant_id)):
 
 @app.post("/actions")
 async def submit_action(body: ActionIn, background_tasks: BackgroundTasks,
+                        _ = Depends(verify_operator_auth),
                         s: AsyncSession = Depends(get_db),
                         worker_session_maker = Depends(get_worker_session_maker),
                         tid: str = Depends(tenant_id)):
@@ -659,6 +699,7 @@ async def submit_action(body: ActionIn, background_tasks: BackgroundTasks,
     chosen tool + params through the tool registry, then propose -> preview_and_gate ->
     drain. Gates and approval are unchanged (auto-approve within policy, else the Op
     waits in the queue / WhatsApp)."""
+    validate_id(body.brand_id, "brand_id")
     from app.kernel.tools import registry as tool_registry
     tool = tool_registry.get_tool(body.tool)
     if not tool:
@@ -705,14 +746,21 @@ class DecisionIn(BaseModel):
 
 @app.post("/ops/{op_id}/decision")
 async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks,
+                 operator_status: str | None = Depends(resolved_operator_role),
                  s: AsyncSession = Depends(get_db),
                  worker_session_maker = Depends(get_worker_session_maker),
                  tid: str = Depends(tenant_id)):
     row = await s.get(OpRow, op_id)
     if not row or row.tenant_id != tid:
         raise HTTPException(404, "op not found for tenant")
+
+    # Resolve secure role provenance via Dual-Auth Role Routing
+    resolved_role = "CLIENT"
+    if operator_status == "OPERATOR_AUTHENTICATED":
+        resolved_role = body.role
+
     try:
-        await loop.decide(s, row, decision=body.decision, actor=body.actor, role=body.role,
+        await loop.decide(s, row, decision=body.decision, actor=body.actor, role=resolved_role,
                     surface=body.surface, reason=body.reason)
         await s.commit()
     except loop.RBACError as e:
@@ -758,6 +806,8 @@ async def list_ops(
     s: AsyncSession = Depends(get_db),
     tid: str = Depends(tenant_id)
 ):
+    if brand_id:
+        validate_id(brand_id, "brand_id")
     stmt = select(OpRow).where(OpRow.tenant_id == tid)
     if state:
         stmt = stmt.where(OpRow.state == state)
@@ -822,6 +872,7 @@ async def oauth_authorize(
     redirect_uri: str,
     tid: str = Depends(tenant_id)
 ):
+    validate_id(brand_id, "brand_id")
     from app.services.oauth import generate_oauth_state, validate_redirect_uri
     from fastapi.responses import RedirectResponse
     import urllib.parse as urlparse
@@ -879,8 +930,8 @@ async def oauth_callback(
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    tenant_id = payload["tenant_id"]
-    brand_id = payload["brand_id"]
+    tenant_id = validate_id(payload["tenant_id"], "tenant_id")
+    brand_id = validate_id(payload["brand_id"], "brand_id")
     provider = payload.get("provider", "shopify")
     redirect_uri = payload.get("redirect_uri")
 
@@ -1196,10 +1247,23 @@ class RecipePromoteIn(BaseModel):
 async def promote_recipe(body: RecipePromoteIn):
     """Promotes an experimental recipe to the production catalog and commits it to version control."""
     import shutil
-    import subprocess
 
-    experimental_path = os.path.join(RECIPES_ROOT, "experimental", body.recipe_name, body.version)
-    production_path = os.path.join(RECIPES_ROOT, body.recipe_name, body.version)
+    # Enforce strict regex character whitelist on recipe_name and version to block path traversal
+    import re
+    if not re.match(r"\A[a-zA-Z0-9_-]+\Z", body.recipe_name):
+        raise HTTPException(status_code=400, detail="Invalid path traversal in recipe name or version")
+    if not re.match(r"\A[a-zA-Z0-9_.-]+\Z", body.version):
+        raise HTTPException(status_code=400, detail="Invalid path traversal in recipe name or version")
+
+    recipes_root_abs = os.path.abspath(RECIPES_ROOT)
+    recipes_root_prefix = recipes_root_abs + os.path.sep
+    experimental_path = os.path.abspath(os.path.join(recipes_root_abs, "experimental", body.recipe_name, body.version))
+    production_path = os.path.abspath(os.path.join(recipes_root_abs, body.recipe_name, body.version))
+
+    if not experimental_path.startswith(recipes_root_prefix):
+        raise HTTPException(status_code=400, detail="Invalid path traversal in recipe name or version")
+    if not production_path.startswith(recipes_root_prefix):
+        raise HTTPException(status_code=400, detail="Invalid path traversal in recipe name or version")
 
     if not os.path.exists(experimental_path):
         raise HTTPException(404, f"experimental recipe {body.recipe_name} v{body.version} not found")
@@ -1641,12 +1705,39 @@ class RecommendationOut(BaseModel):
     reversibility: str
     cost_minor: int
 
+class BrandPropertyOut(BaseModel):
+    id: str
+    type: str
+    provider: str
+    connection_ref: str | None = None
+    status: str
+    last_checked: dt.datetime | None = None
+    findings: dict
+
+@app.get("/brands/{brand_id}/graph", response_model=list[BrandPropertyOut])
+async def get_brand_graph(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    """Returns the current Brand Graph properties from the database without mutating state."""
+    validate_id(brand_id, "brand_id")
+    from app.models import BrandProperty, Brand
+    
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+        
+    # Query and return all properties for this brand
+    stmt = select(BrandProperty).where(BrandProperty.brand_id == brand_id).order_by(BrandProperty.type)
+    res = await s.execute(stmt)
+    properties = res.scalars().all()
+    return properties
+
+
 @app.get("/brands/{brand_id}/objective")
 async def get_brand_objective(
     brand_id: str,
     s: AsyncSession = Depends(get_db),
     tid: str = Depends(tenant_id)
 ):
+    validate_id(brand_id, "brand_id")
     brand = await s.get(Brand, brand_id)
     if not brand or brand.tenant_id != tid:
         raise HTTPException(404, "Brand not found")
@@ -1664,6 +1755,7 @@ async def set_brand_objective(
     s: AsyncSession = Depends(get_db),
     tid: str = Depends(tenant_id)
 ):
+    validate_id(brand_id, "brand_id")
     if body.objective not in ("footprint", "growth", "retention"):
         raise HTTPException(400, "Invalid objective value. Must be footprint, growth, or retention.")
         
@@ -1775,6 +1867,7 @@ async def whatsapp_webhook(
 @app.get("/brands/{brand_id}/status")
 async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
     """Fetches Shopify connection status and metrics for a brand."""
+    validate_id(brand_id, "brand_id")
     brand = await s.get(Brand, brand_id)
     if not brand or brand.tenant_id != tid:
         raise HTTPException(404, "Brand not found")
@@ -1806,8 +1899,35 @@ async def get_brand_status(brand_id: str, s: AsyncSession = Depends(get_db), tid
         "metrics": metrics
     }
 
+
+@app.post("/brands/{brand_id}/sense")
+async def trigger_brand_sense(
+    brand_id: str,
+    background_tasks: BackgroundTasks,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id),
+    worker_session_maker = Depends(get_worker_session_maker)
+):
+    """Triggers a comprehensive brand sensing task via the microkernel."""
+    validate_id(brand_id, "brand_id")
+    brand = await s.get(Brand, brand_id)
+    if not brand or brand.tenant_id != tid:
+        raise HTTPException(404, "Brand not found")
+        
+    from app.tasks.sense import run_brand_sense
+    
+    async def _run_sense():
+        async with worker_session_maker() as session:
+            async with session.begin():
+                await run_brand_sense(session, tid, brand_id)
+                
+    background_tasks.add_task(_run_sense)
+    return {"status": "accepted"}
+
+
 @app.get("/brands/{brand_id}/poas")
 async def get_brand_poas(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    validate_id(brand_id, "brand_id")
     brand = await s.get(Brand, brand_id)
     if not brand or brand.tenant_id != tid:
         raise HTTPException(404, "Brand not found")
@@ -1818,6 +1938,7 @@ async def get_brand_poas(brand_id: str, s: AsyncSession = Depends(get_db), tid: 
 
 @app.get("/brands/{brand_id}/performance-score")
 async def get_brand_performance_score(brand_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    validate_id(brand_id, "brand_id")
     brand = await s.get(Brand, brand_id)
     if not brand or brand.tenant_id != tid:
         raise HTTPException(404, "Brand not found")
@@ -1837,6 +1958,7 @@ async def brand_performance(
     tid: str = Depends(tenant_id)
 ):
     """Computes the composite Brand Performance Score. Advisory only; read-only."""
+    validate_id(brand_id, "brand_id")
     brand = await s.get(Brand, brand_id)
     if not brand or brand.tenant_id != tid:
         raise HTTPException(404, "Brand not found for tenant")

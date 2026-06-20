@@ -4,6 +4,23 @@ from app.adapters.manage import ManageAdapter
 from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
 from app.models import Connection
 
+@pytest.fixture(autouse=True)
+def mock_datetime_now(monkeypatch):
+    import datetime
+    
+    class MockDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.datetime(2026, 6, 20, 0, 0, 0, tzinfo=datetime.timezone.utc)
+            
+    class MockDatetimeModule:
+        def __getattr__(self, name):
+            if name == "datetime":
+                return MockDatetime
+            return getattr(datetime, name)
+            
+    monkeypatch.setattr("app.adapters.manage.datetime", MockDatetimeModule())
+
 @pytest.fixture
 def adapter():
     return ManageAdapter()
@@ -173,6 +190,8 @@ async def test_manage_adapter_backup_execute(adapter, backup_op):
 
 @pytest.mark.asyncio
 async def test_manage_adapter_backup_verify(adapter, backup_op):
+    # Execute backup first in this test's isolated GCS mock environment
+    await adapter.execute(backup_op, "idem_backup_verify_prep")
     verdict = await adapter.verify(backup_op)
     assert verdict.ok is True
     assert verdict.checks["file_exists"] is True
@@ -187,6 +206,8 @@ def test_manage_adapter_backup_compensate(adapter, backup_op):
 
 
 async def test_manage_adapter_backup_execute_delete(adapter, backup_op):
+    # Execute backup first in this test's isolated GCS mock environment
+    await adapter.execute(backup_op, "idem_backup_delete_prep")
     compensations = adapter.compensate(backup_op)
     delete_op = compensations[0]
     res = await adapter.execute(delete_op, "idem_delete_123")

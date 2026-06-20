@@ -108,7 +108,13 @@ class BuildAgentHarness:
                 action = edit.get("action")
                 content = edit.get("content")
                 
-                target_path = os.path.join(self.repo_path, path)
+                target_path = os.path.abspath(os.path.join(self.repo_path, path))
+                # Strict absolute path containment verification to prevent path traversal
+                repo_path_real = os.path.realpath(self.repo_path)
+                target_path_real = os.path.realpath(target_path)
+                if os.path.commonpath([repo_path_real, target_path_real]) != repo_path_real:
+                    raise ValueError(f"Path traversal detected: {path} resolves outside of repository root")
+                
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
                 
                 if action == "delete":

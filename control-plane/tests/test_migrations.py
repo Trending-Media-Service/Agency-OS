@@ -11,7 +11,8 @@ import shutil
 @pytest.mark.asyncio
 async def test_alembic_migration_roundtrip(db_file):
     engine = create_async_engine(db_file)
-    alembic_cfg = Config("alembic.ini")
+    ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../alembic.ini"))
+    alembic_cfg = Config(ini_path)
     
     def run_upgrade(connection):
         alembic_cfg.attributes['connection'] = connection
@@ -69,7 +70,8 @@ async def test_schema_parity_metadata_vs_alembic():
         await conn.run_sync(Base.metadata.create_all)
         
     # 2. Bootstrap alembic DB
-    alembic_cfg = Config("alembic.ini")
+    ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../alembic.ini"))
+    alembic_cfg = Config(ini_path)
     def run_upgrade(connection):
         alembic_cfg.attributes['connection'] = connection
         command.upgrade(alembic_cfg, "head")

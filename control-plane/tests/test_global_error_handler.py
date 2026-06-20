@@ -43,6 +43,9 @@ async def test_global_exception_handler():
     test_logger.addHandler(handler)
 
     
+    # Ensure tenant validation is bypassed for this manual client setup
+    app.state.bypass_tenant_validation = True
+    
     try:
         # We MUST set raise_app_exceptions=False so that the AsyncClient returns the 500 response
         # sent by the ServerErrorMiddleware instead of crashing the test with the re-raised RuntimeError!
@@ -64,6 +67,8 @@ async def test_global_exception_handler():
         assert record.exc_info is not None  # Verifies that exception details/traceback are attached!
         
     finally:
+        # Restore bypass to default state
+        app.state.bypass_tenant_validation = False
         # Restore the logger's original level, disabled state, and remove the handler to prevent pollution
         test_logger.removeHandler(handler)
         test_logger.setLevel(original_level)

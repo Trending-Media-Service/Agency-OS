@@ -6,7 +6,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # File path for the local persistent mock in development
-MOCK_STORAGE_FILE = os.path.join(os.path.dirname(__file__), "../../scratch/mock_storage.json")
+MOCK_STORAGE_FILE = os.getenv("AOS_MOCK_STORAGE_FILE") or os.path.join(os.path.dirname(__file__), "../../scratch/mock_storage.json")
 
 class GcsClient:
     """Wrapper for Google Cloud Storage, falling back to a local persistent JSON mock in development/testing."""
