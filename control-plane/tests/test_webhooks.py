@@ -186,13 +186,9 @@ async def test_shopify_webhook_uses_tenant_gcp_project_for_secrets(client, db_en
     
     async with async_session() as s:
         async with s.begin():
-            tenant = Tenant(
-                id="tenant-webhook-test",
-                name="Webhook Test Tenant",
-                hosting_tier="dedicated",
-                gcp_project=dedicated_project
-            )
-            s.add(tenant)
+            tenant = await s.get(Tenant, "tenant-webhook-test")
+            tenant.hosting_tier = "dedicated"
+            tenant.gcp_project = dedicated_project
             
             stmt_c = select(Connection).where(Connection.tenant_id == "tenant-webhook-test", Connection.provider == "shopify")
             res_c = await s.execute(stmt_c)
