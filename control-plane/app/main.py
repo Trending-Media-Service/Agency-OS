@@ -1440,6 +1440,28 @@ async def refresh_tokens_task(s: AsyncSession = Depends(get_worker_db)):
     return {"status": "ok", "message": "Token rotation completed"}
 
 
+@app.post("/tasks/drift-detect", dependencies=[Depends(verify_worker_auth)])
+async def drift_detect_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to run periodic configuration drift detection sweeps across all tenants.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.drift import run_drift_detection_sweep
+    await run_drift_detection_sweep(s)
+    return {"status": "ok", "message": "Drift detection sweep completed"}
+
+
+@app.post("/tasks/run-diagnostics", dependencies=[Depends(verify_worker_auth)])
+async def run_diagnostics_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to run periodic diagnostics log sweeps across all tenants.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.diagnostics import run_diagnostics_sweep
+    await run_diagnostics_sweep(s)
+    return {"status": "ok", "message": "Diagnostics logs sweep completed"}
+
+
 @app.post("/tasks/check-graduations", dependencies=[Depends(verify_worker_auth)])
 async def check_graduations_task(s: AsyncSession = Depends(get_worker_db)):
     """Background task to check for shared tenants exceeding revenue threshold and propose graduation.

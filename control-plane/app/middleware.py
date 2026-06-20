@@ -56,7 +56,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     # Bypass validation strictly on public or operator-scoped paths
     if (request.url.path.startswith("/webhooks/plugins/") or 
         request.url.path.startswith("/tenants") or 
-        request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/connections/oauth/callback"]):
+        request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/tasks/drift-detect", "/tasks/run-diagnostics", "/connections/oauth/callback"]):
       return await call_next(request)
 
     if not tenant_id:
