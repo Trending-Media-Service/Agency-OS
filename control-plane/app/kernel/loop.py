@@ -594,6 +594,9 @@ async def drain_once(s: AsyncSession, *, now: Optional[dt.datetime] = None, max_
                 # Reset Circuit Breaker failures on success
                 await record_success(s, row.tenant_id, row.brand_id, row.domain)
         except Exception as exc:  # noqa: BLE001 — park, never crash the drain
+            import traceback
+            print(f"[DRAIN ERROR] {exc}", flush=True)
+            traceback.print_exc()
             op_id = row.id if row else item.op_id
             tenant_id = row.tenant_id if row else item.tenant_id
             logger.exception(f"Drain execution error on op {op_id}")
@@ -838,10 +841,10 @@ class DemoProvisionAdapter:
                      f"+ budget alert\n+ service account"),
             detail={"resources": 5})
 
-    def execute(self, op: OpSpec, idem_key: str) -> ExecResult:
+    async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         return ExecResult(ok=True, detail={"applied": 5, "idem_key": idem_key})
 
-    def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
+    async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         return VerifyResult(ok=True, checks={"dns_resolves": True, "cert_issued": True,
                                              "http_200": True})
 

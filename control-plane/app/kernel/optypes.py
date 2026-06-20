@@ -109,6 +109,13 @@ class OpSpec:
     depends_on: Optional[list[str]] = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
+    def __post_init__(self):
+        import re
+        if not re.match(r"\A[a-zA-Z0-9_-]+\Z", self.tenant_id):
+            raise ValueError("Invalid tenant_id format")
+        if not re.match(r"\A[a-zA-Z0-9_-]+\Z", self.brand_id):
+            raise ValueError("Invalid brand_id format")
+
     @property
     def idem_key(self) -> str:
         return self.id  # one Op == one idempotency key (§4.2)

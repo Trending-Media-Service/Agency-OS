@@ -55,15 +55,17 @@ def get_marketing_client(provider: str, token: Optional[str] = None, config: Opt
     raise ValueError(f"Unsupported marketing provider: {provider}")
 
 
+def _get_campaigns_file() -> str:
+    return os.getenv("AOS_MOCK_CAMPAIGNS_FILE") or os.path.join(os.path.dirname(__file__), "../../scratch/mock_marketing_campaigns.json")
+
 class MockMarketingClient:
-    # Persistent storage file in the workspace scratch directory
-    _file_path = os.path.join(os.path.dirname(__file__), "../../scratch/mock_marketing_campaigns.json")
 
     @classmethod
     def _load(cls) -> dict:
-        if os.path.exists(cls._file_path):
+        campaigns_file = _get_campaigns_file()
+        if os.path.exists(campaigns_file):
             try:
-                with open(cls._file_path, "r") as f:
+                with open(campaigns_file, "r") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load mock campaigns: {e}")
@@ -72,18 +74,20 @@ class MockMarketingClient:
 
     @classmethod
     def _save(cls, data: dict):
-        os.makedirs(os.path.dirname(cls._file_path), exist_ok=True)
+        campaigns_file = _get_campaigns_file()
+        os.makedirs(os.path.dirname(campaigns_file), exist_ok=True)
         try:
-            with open(cls._file_path, "w") as f:
+            with open(campaigns_file, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save mock campaigns: {e}")
 
     @classmethod
     def clear(cls):
-        if os.path.exists(cls._file_path):
+        campaigns_file = _get_campaigns_file()
+        if os.path.exists(campaigns_file):
             try:
-                os.remove(cls._file_path)
+                os.remove(campaigns_file)
             except Exception:
                 pass
 

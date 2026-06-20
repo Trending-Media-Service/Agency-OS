@@ -296,11 +296,41 @@ class ProvisionAdapter(Adapter):
             cost_estimate=Money(amount_minor=250_000, currency="INR"),
         )]
 
+    def _get_recipe_path(self, op: OpSpec) -> str:
+        recipe = op.params.get("recipe", "web-host")
+        version = op.params.get("version", "0.1.0")
+        
+        import re
+        if not re.match(r"\A[a-zA-Z0-9_-]+\Z", op.tenant_id):
+            raise ValueError("Invalid path traversal in tenant name or brand name")
+        if not re.match(r"\A[a-zA-Z0-9_-]+\Z", op.brand_id):
+            raise ValueError("Invalid path traversal in tenant name or brand name")
+        if not re.match(r"\A[a-zA-Z0-9_-]+\Z", recipe):
+            raise ValueError("Invalid path traversal in recipe name or version")
+        if not re.match(r"\A[a-zA-Z0-9_.-]+\Z", version):
+            raise ValueError("Invalid path traversal in recipe name or version")
+            
+        recipes_root_abs = os.path.abspath(RECIPES_ROOT)
+        recipes_root_prefix = recipes_root_abs + os.path.sep
+        
+        recipe_path = os.path.abspath(os.path.join(recipes_root_abs, recipe, version))
+        
+        if not recipe_path.startswith(recipes_root_prefix):
+            raise ValueError("Invalid path traversal in recipe name or version")
+            
+        return recipe_path
+
     def preview(self, op: OpSpec) -> PreviewArtifact:
         """Runs terraform init & plan and returns the plan output."""
         if op.action == "provision.brand_bootstrap.create":
             summary = op.params.get("preview_summary", "Brand bootstrap sequential saga")
             return PreviewArtifact(kind="saga_preview", summary=summary, detail={})
+
+        # Validate recipe path to prevent traversal
+        try:
+            self._get_recipe_path(op)
+        except ValueError as e:
+            return PreviewArtifact(kind="terraform_plan_error", summary=f"Invalid path traversal: {e}", detail={})
 
         action_parts = op.action.split(".")
         verb = action_parts[-1]
@@ -402,12 +432,12 @@ class ProvisionAdapter(Adapter):
                 costs.append(CostSpec(kind="api_call", amount_minor=150, currency="INR", meta={"service": "gcp_iam", "action": "service_account_create"}))
                 
                 # Parse recipe cost estimate
-                recipe = op.params.get("recipe", "web-host")
-                version = op.params.get("version", "0.1.0")
-                recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
+                recipe_path = self._get_recipe_path(op)
                 yaml_file = os.path.join(recipe_path, "recipe.yaml")
                 if os.path.exists(yaml_file):
                     try:
+                        recipe = op.params.get("recipe", "web-host")
+                        version = op.params.get("version", "0.1.0")
                         with open(yaml_file, "r") as f:
                             recipe_meta = yaml.safe_load(f)
                             cost_est = recipe_meta.get("cost_estimate_monthly")
@@ -430,12 +460,12 @@ class ProvisionAdapter(Adapter):
         if verb == "destroy":
             return VerifyResult(ok=True, checks={"destroyed": True})
 
-        recipe = op.params.get("recipe", "web-host")
-        version = op.params.get("version", "0.1.0")
-        recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
+        recipe_path = self._get_recipe_path(op)
         checks_file = os.path.join(recipe_path, "checks.py")
 
         if not os.path.exists(checks_file):
+            recipe = op.params.get("recipe", "web-host")
+            version = op.params.get("version", "0.1.0")
             logger.info(f"No checks.py found for recipe {recipe} {version}. Assuming OK.")
             return VerifyResult(ok=True, checks={})
 
@@ -498,8 +528,7 @@ class ProvisionAdapter(Adapter):
     def _prepare_dir(self, op: OpSpec, temp_dir: str):
         """Copies recipe files and writes backend.tf & variables."""
         recipe = op.params.get("recipe", "web-host")
-        version = op.params.get("version", "0.1.0")
-        recipe_path = os.path.join(RECIPES_ROOT, recipe, version)
+        recipe_path = self._get_recipe_path(op)
         
         if not os.path.exists(recipe_path):
             raise FileNotFoundError(f"Recipe path not found: {recipe_path}")

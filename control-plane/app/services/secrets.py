@@ -4,8 +4,8 @@ import json
 
 logger = logging.getLogger(__name__)
 
-# File path for the local persistent mock in development
-MOCK_SECRETS_FILE = os.path.join(os.path.dirname(__file__), "../../scratch/mock_secrets.json")
+def _get_secrets_file() -> str:
+    return os.getenv("AOS_MOCK_SECRETS_FILE") or os.path.join(os.path.dirname(__file__), "../../scratch/mock_secrets.json")
 
 class SecretManagerClient:
     """Wrapper for Google Cloud Secret Manager, falling back to a local persistent JSON mock in development."""
@@ -26,9 +26,10 @@ class SecretManagerClient:
                 logger.error(f"Failed to initialize real Secret Manager client: {e}. Falling back to local JSON mock.")
 
     def _load_mock_secrets(self) -> dict:
-        if os.path.exists(MOCK_SECRETS_FILE):
+        secrets_file = _get_secrets_file()
+        if os.path.exists(secrets_file):
             try:
-                with open(MOCK_SECRETS_FILE, "r") as f:
+                with open(secrets_file, "r") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load mock secrets: {e}")
@@ -36,9 +37,10 @@ class SecretManagerClient:
         return {}
 
     def _save_mock_secrets(self, data: dict):
-        os.makedirs(os.path.dirname(MOCK_SECRETS_FILE), exist_ok=True)
+        secrets_file = _get_secrets_file()
+        os.makedirs(os.path.dirname(secrets_file), exist_ok=True)
         try:
-            with open(MOCK_SECRETS_FILE, "w") as f:
+            with open(secrets_file, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save mock secrets: {e}")
@@ -46,9 +48,10 @@ class SecretManagerClient:
     @classmethod
     def clear(cls):
         """Clears all mock secrets in the local registry."""
-        if os.path.exists(MOCK_SECRETS_FILE):
+        secrets_file = _get_secrets_file()
+        if os.path.exists(secrets_file):
             try:
-                os.remove(MOCK_SECRETS_FILE)
+                os.remove(secrets_file)
             except Exception:
                 pass
 
@@ -96,6 +99,9 @@ class SecretManagerClient:
         ref = f"projects/{self.project_id}/secrets/{secret_id}/versions/latest"
         secrets[ref] = value
         self._save_mock_secrets(secrets)
+        logger.info(f"[DEBUG WRITE] Path: {os.path.abspath(_get_secrets_file())}")
+        logger.info(f"[DEBUG WRITE] Wrote ref: {ref} -> ***")
+        logger.info(f"[DEBUG WRITE] Current store keys: {list(secrets.keys())}")
         logger.info(f"Mock wrote secret {secret_id} to local registry: {ref}")
         return ref
 
@@ -111,6 +117,9 @@ class SecretManagerClient:
 
         # Local JSON Mock Read
         secrets = self._load_mock_secrets()
+        logger.info(f"[DEBUG READ] Path: {os.path.abspath(_get_secrets_file())}")
+        logger.info(f"[DEBUG READ] Target ref: {secret_ref}")
+        logger.info(f"[DEBUG READ] Current store keys: {list(secrets.keys())}")
         val = secrets.get(secret_ref)
         if val is None:
             # Try to resolve fuzzy match (e.g. without version)

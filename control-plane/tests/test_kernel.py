@@ -1004,50 +1004,184 @@ async def test_approval_latency_rollup_is_tenant_scoped(db_engine):
 
 
 @pytest.mark.asyncio
-async def test_recipe_promotion_endpoint(client):
-    import shutil
+async def test_recipe_promotion_endpoint(client, monkeypatch, tmp_path):
+    import subprocess
+    from unittest.mock import MagicMock
+
+    # Mock git subprocess run to prevent actual git commands
+    mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=b"Mocked Git Success", stderr=b""))
+    monkeypatch.setattr("app.main.subprocess.run", mock_run)
+    
+    # Redirect RECIPES_ROOT to isolated tmp_path
+    monkeypatch.setattr("app.main.RECIPES_ROOT", str(tmp_path))
 
     # 1. Setup mock experimental recipe folder
-    RECIPES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recipes"))
-    exp_path = os.path.join(RECIPES_ROOT, "experimental", "test-promo", "0.1.0")
-    prod_path = os.path.join(RECIPES_ROOT, "test-promo", "0.1.0")
+    exp_path = tmp_path / "experimental" / "test-promo" / "0.1.0"
+    prod_path = tmp_path / "test-promo" / "0.1.0"
 
-    os.makedirs(exp_path, exist_ok=True)
-    with open(os.path.join(exp_path, "recipe.yaml"), "w") as f:
+    exp_path.mkdir(parents=True, exist_ok=True)
+    with open(exp_path / "recipe.yaml", "w") as f:
         f.write("name: test-promo\nversion: 0.1.0")
-    with open(os.path.join(exp_path, "main.tf"), "w") as f:
+    with open(exp_path / "main.tf", "w") as f:
         f.write("output \"test\" { value = 1 }")
 
-    try:
-        # 2. Execute promotion
-        H = {"X-Tenant-Id": "t1"}
-        r = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo"})
-        assert r.status_code == 200, f"Promo failed: {r.status_code} - {r.text}"
-        data = r.json()
-        assert data["status"] == "promoted"
-        assert data["recipe_name"] == "test-promo"
+    # 2. Execute promotion
+    H = {"X-Tenant-Id": "t1"}
+    r = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo"})
+    assert r.status_code == 200, f"Promo failed: {r.status_code} - {r.text}"
+    data = r.json()
+    assert data["status"] == "promoted"
+    assert data["recipe_name"] == "test-promo"
 
-        # 3. Assert files copied
-        assert os.path.exists(os.path.join(prod_path, "recipe.yaml"))
-        assert os.path.exists(os.path.join(prod_path, "main.tf"))
+    # 3. Assert files copied
+    assert (prod_path / "recipe.yaml").exists()
+    assert (prod_path / "main.tf").exists()
 
-        # 4. Assert 404 for non-existent recipe promotion
-        r_404 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "missing-recipe"})
-        assert r_404.status_code == 404
+    # 4. Assert 404 for non-existent recipe promotion
+    r_404 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "missing-recipe"})
+    assert r_404.status_code == 404
 
-        # 5. Assert 400 for missing file promotion
-        exp_bad = os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad", "0.1.0")
-        os.makedirs(exp_bad, exist_ok=True)
-        with open(os.path.join(exp_bad, "recipe.yaml"), "w") as f:
-            f.write("bad recipe")
-        r_400 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo-bad"})
-        assert r_400.status_code == 400
+    # 5. Assert 400 for missing file promotion
+    exp_bad = tmp_path / "experimental" / "test-promo-bad" / "0.1.0"
+    exp_bad.mkdir(parents=True, exist_ok=True)
+    with open(exp_bad / "recipe.yaml", "w") as f:
+        f.write("bad recipe")
+    r_400 = await client.post("/recipes/promote", headers=H, json={"recipe_name": "test-promo-bad"})
+    assert r_400.status_code == 400
 
-    finally:
-        # Cleanup mock folders
-        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo"), ignore_errors=True)
-        shutil.rmtree(os.path.join(RECIPES_ROOT, "experimental", "test-promo-bad"), ignore_errors=True)
-        shutil.rmtree(os.path.join(RECIPES_ROOT, "test-promo"), ignore_errors=True)
+
+@pytest.mark.asyncio
+async def test_recipe_promotion_path_traversal_protection(client, monkeypatch, tmp_path):
+    import subprocess
+    from unittest.mock import MagicMock
+
+    # Mock git subprocess run to prevent actual git commands
+    mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=b"Mocked Git Success", stderr=b""))
+    monkeypatch.setattr("app.main.subprocess.run", mock_run)
+    
+    # Redirect RECIPES_ROOT to isolated tmp_path
+    monkeypatch.setattr("app.main.RECIPES_ROOT", str(tmp_path))
+
+    H = {"X-Tenant-Id": "t1"}
+
+    # 1. Attempt path traversal in recipe name (e.g., "../outside")
+    r1 = await client.post("/recipes/promote", headers=H, json={
+        "recipe_name": "../outside",
+        "version": "0.1.0"
+    })
+    assert r1.status_code == 400
+    assert "Invalid path traversal" in r1.json()["detail"]
+
+    # 2. Attempt path traversal in version (e.g., "../../outside")
+    r2 = await client.post("/recipes/promote", headers=H, json={
+        "recipe_name": "test-recipe",
+        "version": "../../outside"
+    })
+    assert r2.status_code == 400
+    assert "Invalid path traversal" in r2.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_recipe_promotion_sibling_directory_bypass(client, monkeypatch, tmp_path):
+    import subprocess
+    from unittest.mock import MagicMock
+
+    # Mock git subprocess run to prevent actual git commands
+    mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=b"Mocked Git Success", stderr=b""))
+    monkeypatch.setattr("app.main.subprocess.run", mock_run)
+    
+    # Redirect RECIPES_ROOT to isolated tmp_path / "recipes"
+    recipes_dir = tmp_path / "recipes"
+    recipes_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.main.RECIPES_ROOT", str(recipes_dir))
+
+    H = {"X-Tenant-Id": "t1"}
+
+    # Attempt sibling directory bypass in recipe name (starts with "recipes")
+    r = await client.post("/recipes/promote", headers=H, json={
+        "recipe_name": "../recipes-sibling/exploit",
+        "version": "0.1.0"
+    })
+    
+    assert r.status_code == 400
+    assert "Invalid path traversal" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_brand_sense_governed_task_and_endpoint(client, db_engine, mock_mcp_client):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from sqlalchemy import select
+    from app.models import Connection, Brand, Tenant, BrandProperty, OpRow, TrustSnapshot
+    
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        # Seed Tenant & Brand
+        tenant = Tenant(id="t1", name="Test Tenant", hosting_tier="shared")
+        brand = Brand(id="b1", tenant_id="t1", name="Test Brand")
+        s.add(tenant)
+        s.add(brand)
+        
+        # Seed TrustSnapshot for manage domain to be Tier 2 (autonomous)
+        s.add(TrustSnapshot(
+            tenant_id="t1", brand_id="b1", domain="manage", tier=2, score=95.0
+        ))
+        
+        # Seed Shopify and Google connections
+        s.add(Connection(
+            tenant_id="t1", brand_id="b1", provider="shopify",
+            credential="projects/mock-project/secrets/t1-b1-shopify-secret/versions/latest",
+            config={"shop_url": "test-store.myshopify.com"},
+            status="active"
+        ))
+        s.add(Connection(
+            tenant_id="t1", brand_id="b1", provider="google",
+            credential="projects/mock-project/secrets/t1-b1-google-secret/versions/latest",
+            config={},
+            status="active"
+        ))
+        await s.commit()
+
+        # Trigger the sense check task directly
+        from app.tasks.sense import run_brand_sense
+        await run_brand_sense(s, "t1", "b1")
+        await s.commit()
+        
+    H = {"X-Tenant-Id": "t1"}
+    # Call the GET brand graph endpoint (now read-only)
+    resp = await client.get("/brands/b1/graph", headers=H)
+    assert resp.status_code == 200, resp.text
+    properties = resp.json()
+    
+    # Assert that properties were populated/updated dynamically
+    types = {p["type"] for p in properties}
+    assert "ux_analytics" in types
+    assert "search_console" in types
+    assert "merchant_feed" in types
+    assert "presence_audit" in types
+    assert "pr_monitoring" in types
+    assert "brand_performance_weights" in types
+    
+    # Verify the values of some properties
+    ux_prop = next(p for p in properties if p["type"] == "ux_analytics")
+    assert ux_prop["status"] == "connected"
+    assert ux_prop["findings"]["shop_name"] == "Mock Ableys Shop"
+    
+    # Verify that a governed Op was proposed and executed successfully
+    async with async_session() as s:
+        res = await s.execute(select(OpRow).where(OpRow.action == "manage.brand.sense"))
+        ops = res.scalars().all()
+        assert len(ops) == 1
+        op = ops[0]
+        assert op.state == "DONE"
+        assert op.tenant_id == "t1"
+        assert op.brand_id == "b1"
+        
+        # Verify the audit log records the correct actor!
+        from app.models import AuditEvent
+        res_audit = await s.execute(select(AuditEvent).where(AuditEvent.op_id == op.id, AuditEvent.action == "op.proposed"))
+        audit_events = res_audit.scalars().all()
+        assert len(audit_events) == 1
+        assert audit_events[0].actor == "tasks:sense"
 
 
 @pytest.mark.asyncio

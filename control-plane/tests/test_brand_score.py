@@ -220,8 +220,11 @@ async def test_brand_performance_api_endpoint(client, db_engine):
 
 def test_non_gating_invariant_ast():
     """Air-tight static AST check to guarantee B performance score never gates execution."""
+    import os
+    root_dir = os.path.join(os.path.dirname(__file__), '..')
     for filepath in ["app/kernel/loop.py", "app/kernel/services.py"]:
-        with open(filepath, "r") as f:
+        full_path = os.path.normpath(os.path.join(root_dir, filepath))
+        with open(full_path, "r") as f:
             tree = ast.parse(f.read())
         
         for node in ast.walk(tree):
