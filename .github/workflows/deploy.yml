@@ -83,11 +83,12 @@ jobs:
           fi
 
           SAFE_SERVICE_NAME=$(printf '%s' "${SERVICE_NAME}" | tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g')
-          MIGRATION_JOB_BASE="${SAFE_SERVICE_NAME:-service}-migrate-${GITHUB_SHA::7}"
+          MIGRATION_JOB_BASE="${SAFE_SERVICE_NAME:-svc}-migrate-${GITHUB_SHA::7}"
           MIGRATION_JOB=$(printf '%s' "${MIGRATION_JOB_BASE}" | cut -c1-63 | sed -E 's/-+$//')
           trap 'gcloud run jobs delete "${MIGRATION_JOB}" --region "${REGION}" --project "${PROJECT_ID}" --quiet >/dev/null 2>&1 || true' EXIT
 
           echo "Deploying one-off migration job ${MIGRATION_JOB}..."
+          # The runtime image copies control-plane/migrate.py to /app/migrate.py.
           gcloud run jobs deploy "${MIGRATION_JOB}" \
             --image "${ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
             --region "${REGION}" \
