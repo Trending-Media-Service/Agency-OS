@@ -71,37 +71,39 @@ jobs:
       - name: Run Database Migrations (Gated)
         run: |
           set -euo pipefail
-          
-          echo "Fetching production database URL from Secret Manager..."
-          DATABASE_URL=$(gcloud secrets versions access latest --secret="aos-database-url" --project="${PROJECT_ID}")
-          
-          echo "Installing Cloud SQL Auth Proxy..."
-          curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/v2.11.0/binaries/linux/amd64/cloud-sql-proxy
-          chmod +x cloud-sql-proxy
-          
-          # Start the proxy based on the connection type in DATABASE_URL
-          if [[ "$DATABASE_URL" == *"/cloudsql/"* ]]; then
-            echo "Detected Unix socket connection. Starting proxy in Unix socket mode..."
-            sudo mkdir -p /cloudsql
-            sudo chown runner /cloudsql
-            ./cloud-sql-proxy --unix-socket /cloudsql "${CLOUDSQL_INSTANCE}" &
-          else
-            echo "Detected TCP connection. Starting proxy in TCP mode on port 5432..."
-            ./cloud-sql-proxy "${CLOUDSQL_INSTANCE}" &
+
+          echo "Resolving the backend runtime service account for migrations..."
+          BACKEND_RUNTIME_SA=$(gcloud run services describe "${SERVICE_NAME}" \
+            --platform managed \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --format="value(spec.template.spec.serviceAccountName)" 2>/dev/null || true)
+          if [ -z "${BACKEND_RUNTIME_SA}" ] || [ "${BACKEND_RUNTIME_SA}" = "null" ]; then
+            BACKEND_RUNTIME_SA="${WORKER_SA}"
           fi
-          
-          PROXY_PID=$!
-          # Ensure the proxy is terminated when this step exits
-          trap 'kill $PROXY_PID 2>/dev/null || true' EXIT
-          
-          echo "Waiting for Proxy to establish tunnel..."
-          sleep 5
-          
-          echo "Installing migration dependencies..."
-          pip install -r control-plane/requirements.txt
-          
-          echo "Running migrations..."
-          DATABASE_URL="$DATABASE_URL" python3 control-plane/migrate.py
+
+          MIGRATION_JOB="${SERVICE_NAME}-migrate-${GITHUB_SHA::7}"
+          trap 'gcloud run jobs delete "${MIGRATION_JOB}" --region "${REGION}" --project "${PROJECT_ID}" --quiet >/dev/null 2>&1 || true' EXIT
+
+          echo "Deploying one-off migration job ${MIGRATION_JOB}..."
+          gcloud run jobs deploy "${MIGRATION_JOB}" \
+            --image "${ARTIFACT_REGISTRY}:${GITHUB_SHA}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --service-account "${BACKEND_RUNTIME_SA}" \
+            --set-secrets="DATABASE_URL=aos-database-url:latest" \
+            --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+            --command=python3 \
+            --args=migrate.py \
+            --max-retries=0 \
+            --task-timeout=10m \
+            --quiet
+
+          echo "Executing migration job..."
+          gcloud run jobs execute "${MIGRATION_JOB}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --wait
 
       - name: Resolve frontend URLs for CORS
         id: cors
