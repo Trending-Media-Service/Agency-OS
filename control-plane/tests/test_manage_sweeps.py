@@ -129,3 +129,66 @@ async def test_diagnostics_sweep_creates_scale_remediation(client, session):
     assert scale_op.params["memory"] == "1Gi"
     assert scale_op.params["recipe"] == "web-host"
     assert "Increase Cloud Run instance memory limit to 1Gi" in scale_op.preview_summary
+
+
+@pytest.mark.asyncio
+async def test_drift_detection_sweep_is_idempotent(client, session):
+    """Verify that the periodic drift detection sweep is strictly idempotent
+
+    and will never propose duplicate active operations for the same brand.
+    """
+    r = await client.post("/tenants", json={"name": "DriftIdemTenant", "brand_name": "DriftIdemBrand"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+
+    # 1. Run the sweep once to propose the first Op
+    r_sweep1 = await client.post("/tasks/drift-detect")
+    assert r_sweep1.status_code == 200
+    
+    # Verify exactly 1 PENDING/PROPOSED drift detect Op exists
+    stmt1 = select(OpRow).where(OpRow.tenant_id == tid, OpRow.brand_id == bid, OpRow.action == "manage.drift.detect")
+    res1 = await session.execute(stmt1)
+    ops1 = res1.scalars().all()
+    assert len(ops1) == 1
+    op_id = ops1[0].id
+    
+    # 2. Run the sweep a second time (while the first Op is still active!)
+    r_sweep2 = await client.post("/tasks/drift-detect")
+    assert r_sweep2.status_code == 200
+    
+    # Verify that NO duplicate Op was created! Count must still be exactly 1!
+    res2 = await session.execute(stmt1)
+    ops2 = res2.scalars().all()
+    assert len(ops2) == 1
+    assert ops2[0].id == op_id
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_sweep_is_idempotent(client, session):
+    """Verify that the periodic diagnostics logs sweep is strictly idempotent
+
+    and will never propose duplicate active operations for the same brand.
+    """
+    r = await client.post("/tenants", json={"name": "DiagIdemTenant", "brand_name": "OOMBrand"})
+    tid, bid = r.json()["tenant_id"], r.json()["brand_id"]
+
+    # 1. Run the sweep once to propose the first Op
+    r_sweep1 = await client.post("/tasks/run-diagnostics")
+    assert r_sweep1.status_code == 200
+    
+    # Verify exactly 1 PENDING/PROPOSED diagnostics check Op exists
+    stmt1 = select(OpRow).where(OpRow.tenant_id == tid, OpRow.brand_id == bid, OpRow.action == "manage.diagnostics.check")
+    res1 = await session.execute(stmt1)
+    ops1 = res1.scalars().all()
+    assert len(ops1) == 1
+    op_id = ops1[0].id
+    
+    # 2. Run the sweep a second time (while the first Op is still active!)
+    r_sweep2 = await client.post("/tasks/run-diagnostics")
+    assert r_sweep2.status_code == 200
+    
+    # Verify that NO duplicate Op was created! Count must still be exactly 1!
+    res2 = await session.execute(stmt1)
+    ops2 = res2.scalars().all()
+    assert len(ops2) == 1
+    assert ops2[0].id == op_id
+
