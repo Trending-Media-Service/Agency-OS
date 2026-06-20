@@ -8,12 +8,6 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
-    strategy:
-      # Exercise the documented floor (3.11, AGENTS.md) AND the deploy target (3.12).
-      # fail-fast off so a break on one version still reports the other.
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
     services:
       postgres:
         image: postgres:16
@@ -28,15 +22,25 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agency_os
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python-version }}" }
-      - name: Install
+      # Test the documented floor (3.11, AGENTS.md) first, then the deploy target (3.12),
+      # in a single job so the branch-protection required check stays named "tests".
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install (3.11)
         run: |
           pip install pip-audit
           pip install -r control-plane/requirements.txt
       - name: Security audit (pip-audit)
         run: pip-audit -r control-plane/requirements.txt
-      - name: Kernel test suite
+      - name: Kernel test suite (3.11)
+        run: cd control-plane && python -m pytest
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install (3.12)
+        run: pip install -r control-plane/requirements.txt
+      - name: Kernel test suite (3.12)
         run: cd control-plane && python -m pytest
       - name: Invariant checks
         run: |
