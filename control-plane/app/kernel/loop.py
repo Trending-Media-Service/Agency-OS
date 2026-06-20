@@ -78,6 +78,32 @@ async def transition(s: AsyncSession, row: OpRow, target: OpState, *, actor: str
 
 
 async def propose(s: AsyncSession, spec: OpSpec, *, actor: str) -> OpRow:
+    # Resolve repository for build.deliver dynamically to prevent cross-tenant leaks
+    if spec.action == "build.deliver":
+        repo = spec.params.get("repo")
+        if not repo or repo == "git@github.com:ableys/brand-site.git":
+            from app.models import BrandProperty
+            from sqlalchemy import select
+            
+            stmt = select(BrandProperty).where(
+                BrandProperty.tenant_id == spec.tenant_id,
+                BrandProperty.brand_id == spec.brand_id,
+                BrandProperty.type == "repository",
+                BrandProperty.status == "active"
+            )
+            res = await s.execute(stmt)
+            bp = res.scalar_one_or_none()
+            
+            if bp and bp.findings.get("repo_url"):
+                spec.params["repo"] = bp.findings["repo_url"]
+            else:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No active repository connection configured for brand '{spec.brand_id}'. "
+                           f"Cannot plan or execute build delivery without a valid repository connection."
+                )
+
     row = OpRow(
         id=spec.id, tenant_id=spec.tenant_id, brand_id=spec.brand_id,
         domain=spec.domain, action=spec.action, params=spec.params,

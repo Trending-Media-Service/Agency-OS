@@ -23,7 +23,7 @@ class BuildAdapter(Adapter):
                 params={
                     "intent": intent,
                     "branch_name": f"aos-build-{uuid.uuid4().hex[:8]}",
-                    "repo": f"git@github.com:ableys/brand-site.git" # Default, should be overridden in tests
+                    "repo": None
                 },
                 severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
                 cost_estimate=Money(amount_minor=1000, currency="INR"),
