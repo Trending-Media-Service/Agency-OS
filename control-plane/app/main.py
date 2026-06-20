@@ -399,24 +399,54 @@ async def update_tenant_status(
     return tenant
 
 
-@app.delete("/tenants/{tenant_id}", status_code=204, dependencies=[Depends(verify_operator_auth)])
+@app.delete("/tenants/{tenant_id}", status_code=202, dependencies=[Depends(verify_operator_auth)])
 async def delete_tenant(
     tenant_id: str,
+    background_tasks: BackgroundTasks,
     s: AsyncSession = Depends(get_worker_db)
 ):
     tenant = await s.get(Tenant, tenant_id)
-    
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
         
-    await s.delete(tenant)
+    # Propose a governed offboard Op
+    import uuid
+    from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
+    from app.kernel.services import resolve_brand_tier
+    from app.database import get_worker_session_maker
+    
+    op_id = f"op_offboard_{uuid.uuid4().hex[:12]}"
+    spec = OpSpec(
+        id=op_id,
+        tenant_id=tenant_id,
+        brand_id="_system",
+        domain="manage",
+        action="manage.tenant.offboard",
+        params={"target_tenant_id": tenant_id},
+        severity=Severity(impact=3, reversibility=Reversibility.IRREVERSIBLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    
+    # Propose Op using the RLS-bypassed worker session
+    row = await loop.propose(s, spec, actor="api:operator")
+    
+    # Resolve tier (default 1) and gate
+    tier = await resolve_brand_tier(s, tenant_id=tenant_id, brand_id="_system", domain="manage")
+    gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
+    
     await s.commit()
     
-    # Evict the tenant from the gateway memory cache
-    from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE.pop(tenant_id, None)
-    
-    return Response(status_code=204)
+    # If it needs approval, send notifications
+    if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
+        background_tasks.add_task(send_whatsapp_card_task, row.id, get_worker_session_maker())
+        
+    return {
+        "status": "proposed",
+        "op_id": row.id,
+        "state": row.state,
+        "requirement": requirement,
+        "preview": row.preview_summary
+    }
 
 
 class BrandPortfolioItem(BaseModel):

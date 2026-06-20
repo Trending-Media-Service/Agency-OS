@@ -39,7 +39,7 @@ class Tenant(Base):
 class Brand(Base):
     __tablename__ = "brands"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
 
@@ -64,7 +64,7 @@ class Brand(Base):
 class BrandProperty(Base):
     __tablename__ = "brand_properties"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
     type: Mapped[str] = mapped_column(String(32), index=True)
     provider: Mapped[str] = mapped_column(String(64))
@@ -82,7 +82,7 @@ class BrandProperty(Base):
 class Cadence(Base):
     __tablename__ = "cadences"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
     domain: Mapped[str] = mapped_column(String(32))
     action: Mapped[str] = mapped_column(String(120))
@@ -101,7 +101,7 @@ class Cadence(Base):
 class OpRow(Base):
     __tablename__ = "ops"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     domain: Mapped[str] = mapped_column(String(16))
     action: Mapped[str] = mapped_column(String(120))
@@ -126,7 +126,7 @@ class OpTrace(Base):
     """Execution trace (§4.5): every gate, call, retry, with reasons."""
     __tablename__ = "op_traces"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     op_id: Mapped[str] = mapped_column(String(32), index=True)
     ts: Mapped[dt.datetime] = mapped_column(default=_now)
     kind: Mapped[str] = mapped_column(String(40))  # transition|gate|adapter_call|retry|note
@@ -138,7 +138,7 @@ class OpTrace(Base):
 class Approval(Base):
     __tablename__ = "approvals"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     op_id: Mapped[str] = mapped_column(String(32), index=True)
     actor: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(60))
@@ -156,7 +156,7 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ts: Mapped[str] = mapped_column(String(40))  # iso8601, part of the hash preimage
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     actor: Mapped[str] = mapped_column(String(120))
     action: Mapped[str] = mapped_column(String(120))
     op_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
@@ -170,7 +170,7 @@ class AuditEvent(Base):
 class TrustEvent(Base):
     __tablename__ = "trust_events"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     domain: Mapped[str] = mapped_column(String(16))
     kind: Mapped[str] = mapped_column(String(40))  # verified_success|override|verify_failure|rejection
@@ -184,7 +184,7 @@ class TrustEvent(Base):
 class TrustSnapshot(Base):
     __tablename__ = "trust_snapshots"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     domain: Mapped[str] = mapped_column(String(16))
     score: Mapped[float] = mapped_column()
@@ -199,7 +199,7 @@ class CostEntry(Base):
     __tablename__ = "cost_ledger"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     op_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     actor: Mapped[str | None] = mapped_column(String(120), nullable=True)
     kind: Mapped[str] = mapped_column(String(40))  # llm_tokens|api_call|gcp_resource
     amount_minor: Mapped[int] = mapped_column(Integer)
@@ -215,7 +215,7 @@ class OutboxItem(Base):
     __tablename__ = "outbox"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     op_id: Mapped[str] = mapped_column(String(32), unique=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)  # PENDING|IN_FLIGHT|DONE|DEAD
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[dt.datetime] = mapped_column(default=_now)
@@ -230,7 +230,7 @@ class Connection(Base):
     project's Secret Manager — the secret itself never touches this DB (§3)."""
     __tablename__ = "connections"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     provider: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(128), default="read")  # e.g. read|write or comma-separated scopes
@@ -248,7 +248,7 @@ class Connection(Base):
 class OpDependency(Base):
     """Stores dependency edges for DAG-based sagas [L4]."""
     __tablename__ = "op_dependencies"
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     parent_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
     from_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
     to_op_id: Mapped[str] = mapped_column(String(32), ForeignKey("ops.id"), primary_key=True)
@@ -260,7 +260,7 @@ class PolicyVersion(Base):
     """Dynamic versioned policy configurations [L5]."""
     __tablename__ = "policy_versions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(16), default="proposed")  # active|proposed|superseded
     params: Mapped[dict] = mapped_column(JSON, default=dict)  # serialized RulesetParams
@@ -281,7 +281,7 @@ class ProcessedWebhookMessage(Base):
 class Order(Base):
     __tablename__ = "orders"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(8), default="INR")
@@ -296,7 +296,7 @@ class Order(Base):
 class OrderLine(Base):
     __tablename__ = "order_lines"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
     unit_price_minor: Mapped[int] = mapped_column(Integer)
     line_discount_minor: Mapped[int] = mapped_column(Integer, default=0)
@@ -310,7 +310,7 @@ class OrderLine(Base):
 class Refund(Base):
     __tablename__ = "refunds"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     order_line_id: Mapped[str] = mapped_column(ForeignKey("order_lines.id"), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
@@ -321,7 +321,7 @@ class Refund(Base):
 class FulfillmentCost(Base):
     __tablename__ = "fulfillment_costs"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
     shipping_cost_minor: Mapped[int] = mapped_column(Integer, default=0)
     marketplace_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
@@ -333,7 +333,7 @@ class FulfillmentCost(Base):
 class Campaign(Base):
     __tablename__ = "campaigns"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(String(32), index=True)
     name: Mapped[str] = mapped_column(String(120))
     platform: Mapped[str] = mapped_column(String(40))
@@ -346,7 +346,7 @@ class Campaign(Base):
 class SpendFact(Base):
     __tablename__ = "spend_facts"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
     date: Mapped[dt.date] = mapped_column(Date)
@@ -358,7 +358,7 @@ class SpendFact(Base):
 class Touchpoint(Base):
     __tablename__ = "touchpoints"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     customer_id: Mapped[str] = mapped_column(String(64), index=True)
     campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(16))  # click|impression
@@ -372,7 +372,7 @@ Index("ix_ops_tenant_state", OpRow.tenant_id, OpRow.state)
 
 class CircuitBreakerRow(Base):
     __tablename__ = "circuit_breakers"
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), primary_key=True)
     brand_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     domain: Mapped[str] = mapped_column(String(32), primary_key=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
@@ -386,7 +386,7 @@ class CircuitBreakerRow(Base):
 class ConsentBasis(Base):
     __tablename__ = "consent_bases"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     category: Mapped[str] = mapped_column(String(32))  # pii_upload | vendor_sharing
     action_or_vendor: Mapped[str] = mapped_column(String(120), index=True)
     status: Mapped[str] = mapped_column(String(16), default="granted")  # granted | revoked
@@ -400,7 +400,7 @@ class ConsentBasis(Base):
 class ShadowDecision(Base):
     __tablename__ = "shadow_decisions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     op_id: Mapped[str] = mapped_column(String(32), index=True)
     human_decision: Mapped[str] = mapped_column(String(16))  # approve|reject|modify
     shadow_tier: Mapped[int] = mapped_column(Integer, default=2)
@@ -415,7 +415,7 @@ class ShadowDecision(Base):
 class BrandObjective(Base):
     __tablename__ = "brand_objectives"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
     objective: Mapped[str] = mapped_column(String(32), nullable=False) # footprint | growth | retention
     created_at: Mapped[dt.datetime] = mapped_column(default=_now)
