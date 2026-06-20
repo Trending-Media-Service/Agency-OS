@@ -635,12 +635,16 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
     elif any(w in normalized for w in ["bootstrap", "onboard", "host", "provision", "deploy", "website", "launch"]) or has_domain:
         intent_text = body.text
         domain_name = "provision"
+    elif any(w in normalized for w in ["build", "change", "update", "modify", "fix", "color", "style", "design", "css", "html"]):
+        intent_text = body.text
+        domain_name = "build"
     else:
         # Unrecognized — guide the operator instead of silently proposing a deploy.
         return {
             "reply": (
                 "I didn't recognize that as an action. I can: host a site "
-                "(e.g. \"host ableys.in\"), pause a campaign (\"pause campaign camp-1\"), "
+                "(e.g. \"host ableys.in\"), modify code/styling (e.g. \"change hero color to blue\"), "
+                "pause a campaign (\"pause campaign camp-1\"), "
                 "adjust a bid (\"adjust bid for campaign camp-1 to 50 inr\"), "
                 "check budgets (\"what's my spend?\"), or run diagnostics (\"show system status\")."
             ),
