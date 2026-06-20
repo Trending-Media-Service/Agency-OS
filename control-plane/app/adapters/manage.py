@@ -885,15 +885,14 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                 await session.flush()
                 
             from sqlalchemy import update
-            from app.models import AuditEvent, OpTrace, Approval, OpRow, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem
+            from app.models import AuditEvent, OpTrace, Approval, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem
             
             child_tables = [AuditEvent, OpTrace, Approval, OpRow, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem]
             for table in child_tables:
                 stmt = update(table).where(table.tenant_id == target_tenant_id).values(tenant_id="deleted_tenant")
                 await session.execute(stmt)
                 
-            from sqlalchemy import delete
-            from app.models import Connection, Campaign, Brand, BrandProperty, Cadence, CircuitBreakerRow, ConsentBasis, BrandObjective, OpDependency
+            from app.models import Campaign, Brand, Cadence, CircuitBreakerRow, ConsentBasis, BrandObjective, OpDependency
             
             other_tables = [Connection, Campaign, BrandProperty, Cadence, CircuitBreakerRow, ConsentBasis, BrandObjective, OpDependency]
             for table in other_tables:
