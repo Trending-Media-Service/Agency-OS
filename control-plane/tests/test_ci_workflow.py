@@ -40,6 +40,14 @@ def test_github_actions_workflow_syntax_and_security():
     run_blocks = "\n".join(step.get("run", "") for step in steps if "run" in step)
     assert "gcloud run services update" in run_blocks or "gcloud run deploy" in run_blocks, \
         "A step must deploy to Cloud Run via `gcloud run services update` (or `gcloud run deploy`)!"
+    assert "gcloud secrets versions access" not in run_blocks, \
+        "The deploy workflow must not read production secret payloads directly on the GitHub runner!"
+    assert 'gcloud run jobs deploy "${MIGRATION_JOB}"' in run_blocks, \
+        "Database migrations must deploy a one-off Cloud Run job!"
+    assert 'gcloud run jobs execute "${MIGRATION_JOB}"' in run_blocks, \
+        "Database migrations must execute the same one-off Cloud Run job!"
+    assert run_blocks.index('gcloud run jobs deploy "${MIGRATION_JOB}"') < run_blocks.index('gcloud run jobs execute "${MIGRATION_JOB}"'), \
+        "Database migrations must run inside a one-off Cloud Run job that uses the service's secret bindings."
 
 
 def test_github_actions_ci_workflow():
@@ -67,4 +75,3 @@ def test_github_actions_ci_workflow():
     run_cmd = pytest_step.get("run", "")
     assert "pytest" in run_cmd
     assert "-q" not in run_cmd, "The quiet flag (-q) must be removed to output the full coverage table in CI logs!"
-
