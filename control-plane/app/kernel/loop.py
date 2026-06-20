@@ -83,7 +83,6 @@ async def propose(s: AsyncSession, spec: OpSpec, *, actor: str) -> OpRow:
         repo = spec.params.get("repo")
         if not repo or repo == "git@github.com:ableys/brand-site.git":
             from app.models import BrandProperty
-            from sqlalchemy import select
             
             stmt = select(BrandProperty).where(
                 BrandProperty.tenant_id == spec.tenant_id,
