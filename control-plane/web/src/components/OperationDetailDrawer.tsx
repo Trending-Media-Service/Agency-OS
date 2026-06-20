@@ -18,6 +18,14 @@ import {
   FileCode
 } from "lucide-react";
 
+interface Violation {
+  rule_id: string;
+  message: string;
+  limit?: string | number;
+  attempted?: string | number;
+  delta?: string | number;
+}
+
 interface OperationDetailDrawerProps {
   opId: string;
   onClose: () => void;
@@ -28,14 +36,27 @@ interface OperationDetailDrawerProps {
 interface TraceItem {
   ts: string;
   kind: string;
-  detail: any;
+  detail: {
+    state?: string;
+    actor?: string;
+    violations?: Violation[];
+    requires_human?: boolean;
+    action?: string;
+    phase?: string;
+    ok?: boolean;
+    kind?: string;
+  };
 }
 
 interface OperationDetails {
   op_id: string;
   action: string;
   state: string;
-  params: any;
+  params: {
+    branch_name?: string;
+    diff?: string;
+    [key: string]: unknown;
+  };
   preview: string | null;
   trace: TraceItem[];
   impact: number;
@@ -56,9 +77,9 @@ export default function OperationDetailDrawer({
   // Fetch detailed operation data
   const { data: op, isLoading, error } = useQuery<OperationDetails>({
     queryKey: ["op-details", opId, tenantId],
-    queryFn: () => request(`/ops/${opId}` as any, "get") as Promise<OperationDetails>,
-    refetchInterval: (query: any) => {
-      const data = query?.state?.data as OperationDetails | undefined;
+    queryFn: () => request(`/ops/${opId}` as "/ops/{op_id}", "get") as Promise<OperationDetails>,
+    refetchInterval: (query: { state: { data?: OperationDetails } }) => {
+      const data = query?.state?.data;
       if (data && ["EXECUTING", "VERIFYING"].includes(data.state.toUpperCase())) {
         return 1500;
       }
@@ -213,7 +234,7 @@ export default function OperationDetailDrawer({
                   <span className="text-[10px] font-bold uppercase tracking-wider">OPA Gate Violations Detected</span>
                 </div>
                 <div className="space-y-2.5 divide-y divide-red-950/30">
-                  {violations.map((v: any, idx: number) => (
+                  {violations.map((v: Violation, idx: number) => (
                     <div key={idx} className="text-[9px] pt-2.5 first:pt-0 space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-[8px] bg-red-950/30 border border-red-900/45 px-1.5 py-0.5 rounded text-red-300">
@@ -289,7 +310,7 @@ export default function OperationDetailDrawer({
                       )}
                       {t.kind === "gate" && (
                         <span>
-                          Policy gates evaluated. {t.detail.violations.length} violations, requires human: {t.detail.requires_human ? "YES" : "NO"}
+                          Policy gates evaluated. {t.detail.violations?.length ?? 0} violations, requires human: {t.detail.requires_human ? "YES" : "NO"}
                         </span>
                       )}
                       {t.kind === "adapter_call" && (
