@@ -1,7 +1,7 @@
 """add_leads_table
 
 Revision ID: 99fb80ecf5ad
-Revises: 09694bdcb7b8
+Revises: 47d59327789e
 Create Date: 2026-06-20 23:17:15.123456
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '99fb80ecf5ad'
-down_revision: Union[str, Sequence[str], None] = '09694bdcb7b8'
+down_revision: Union[str, Sequence[str], None] = '47d59327789e'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
