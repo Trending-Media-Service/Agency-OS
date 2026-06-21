@@ -43,7 +43,7 @@ upsert_job() {
           --http-method=POST \
           --description="$description" \
           --oidc-service-account-email="$WORKER_SA" \
-          --oidc-audience="$target_uri" \
+          --oidc-token-audience="$target_uri" \
           --location="$LOCATION" \
           --project="$PROJECT" \
           --quiet
@@ -55,7 +55,7 @@ upsert_job() {
           --http-method=POST \
           --description="$description" \
           --oidc-service-account-email="$WORKER_SA" \
-          --oidc-audience="$target_uri" \
+          --oidc-token-audience="$target_uri" \
           --location="$LOCATION" \
           --project="$PROJECT" \
           --quiet
