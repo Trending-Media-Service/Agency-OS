@@ -1,0 +1,19 @@
+name: sgtm-capi
+version: 0.2.0
+description: Deploy Server-side GTM tagging container mapped to a custom domain with Google-Managed SSL, Global Load Balancer, and Facebook CAPI secret stores.
+inputs:
+  domain: {type: string, required: true}
+  project_id: {type: string, required: true}
+  gtm_container_config: {type: string, required: true}
+  capi_pixel_id: {type: string, required: true}
+  capi_access_token: {type: string, required: true}
+  region: {type: string, default: us-central1}
+outputs: [sgtm_url, static_ip_address]
+cost_estimate_monthly: {amount_minor: 2500_000, currency: INR} # ~$30/mo for Global LB
+severity: {impact: 2, reversibility: COMPENSATABLE}
+reversibility_map:
+  cloud_run: REVERSIBLE
+  load_balancer: REVERSIBLE
+  secrets: REVERSIBLE
+policy_packs: [provision_cost_ceiling]
+checks: [dns_resolves, gateway_responding, secrets_configured]

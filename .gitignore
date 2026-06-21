@@ -21,3 +21,6 @@ logs/
 
 # Test/run scratch artifacts (fallback reports & backups) — never commit these
 scratch/
+
+# Coverage data
+.coverage

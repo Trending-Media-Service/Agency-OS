@@ -30,6 +30,12 @@ class MarketingClient(Protocol):
     async def get_performance(self, campaign_id: str) -> Optional[dict]:
         ...
 
+    async def swap_pmax_audience(self, campaign_names: list[str], new_audience_id: str) -> bool:
+        ...
+
+    async def clean_search_keywords(self, campaign_name: str, brand_terms: list[str]) -> tuple[bool, list[str]]:
+        ...
+
 
 def get_marketing_client(provider: str, token: Optional[str] = None, config: Optional[dict] = None) -> MarketingClient:
     """Factory to resolve the active marketing client for a provider."""
@@ -163,3 +169,17 @@ class MockMarketingClient:
             "conversions": conversions,
             "roi": roi
         }
+
+    async def swap_pmax_audience(self, campaign_names: list[str], new_audience_id: str) -> bool:
+        campaigns = self._load()
+        for name in campaign_names:
+            match = next((c for c in campaigns.values() if c["name"] == name), None)
+            if match:
+                match["pmax_audience_id"] = new_audience_id
+        self._save(campaigns)
+        logger.info(f"[MOCK] Swapped PMax audience for campaigns {campaign_names} to {new_audience_id}")
+        return True
+
+    async def clean_search_keywords(self, campaign_name: str, brand_terms: list[str]) -> tuple[bool, list[str]]:
+        logger.info(f"[MOCK] Generic keyword audit completed for search campaign '{campaign_name}'. Paused 2 generic keywords.")
+        return True, ["customers/123/adGroupCriteria/12~34", "customers/123/adGroupCriteria/12~56"]

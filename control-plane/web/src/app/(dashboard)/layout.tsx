@@ -15,7 +15,8 @@ import {
   Sliders,
   RefreshCw,
   ShieldAlert,
-  Compass
+  Compass,
+  BarChart3
 } from "lucide-react";
 
 export default function DashboardLayout({
@@ -274,6 +275,13 @@ export default function DashboardLayout({
             >
               <Database className="h-3.5 w-3.5" />
               Operations Queue
+            </button>
+            <button
+              onClick={() => router.push("/poas")}
+              className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center ${pathname === "/poas" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              POAS Analytics
             </button>
             <button
               onClick={() => router.push("/connections")}
