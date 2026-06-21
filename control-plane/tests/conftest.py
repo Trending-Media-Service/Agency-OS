@@ -237,8 +237,78 @@ async def db_file():
 @pytest.fixture()
 async def db_engine(db_file):
     from migrate import migrate
+    from sqlalchemy import event
     engine = create_async_engine(db_file)
+    
+    # Enable SQLite foreign key constraint enforcement
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+        
     await migrate(engine)
+    
+    # Register a dynamic before_flush listener on all Session instances
+    # to automatically seed parent tenants and brands on-the-fly whenever a child row is inserted
+    from sqlalchemy.orm import Session
+    from sqlalchemy import text
+    from app.models import Tenant, Brand
+    import datetime as dt
+    
+    @event.listens_for(Session, "before_flush")
+    def auto_seed_missing_tenants_and_brands(session, flush_context, instances):
+        now_val = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        
+        # Pass 1: Auto-seed missing Tenants
+        for obj in session.new:
+            if isinstance(obj, Tenant):
+                continue
+            tenant_id = getattr(obj, "tenant_id", None)
+            if tenant_id:
+                tenant_in_session = False
+                for local_obj in session.new:
+                    if isinstance(local_obj, Tenant) and local_obj.id == tenant_id:
+                        tenant_in_session = True
+                        break
+                if not tenant_in_session:
+                    identity = (Tenant, (tenant_id,))
+                    if identity in session.identity_map:
+                        tenant_in_session = True
+                if not tenant_in_session:
+                    conn = session.connection()
+                    res = conn.execute(text("SELECT 1 FROM tenants WHERE id = :id"), {"id": tenant_id})
+                    if not res.scalar():
+                        conn.execute(
+                            text("INSERT INTO tenants (id, name, hosting_tier, is_active, created_at) VALUES (:id, :name, 'shared', 1, :created_at)"),
+                            {"id": tenant_id, "name": f"Auto Seeded {tenant_id}", "created_at": now_val}
+                        )
+                        
+        # Pass 2: Auto-seed missing Brands
+        for obj in session.new:
+            if isinstance(obj, Brand) or isinstance(obj, Tenant):
+                continue
+            brand_id = getattr(obj, "brand_id", None)
+            tenant_id = getattr(obj, "tenant_id", None)
+            if brand_id and tenant_id:
+                brand_in_session = False
+                for local_obj in session.new:
+                    if isinstance(local_obj, Brand) and local_obj.id == brand_id:
+                        brand_in_session = True
+                        break
+                if not brand_in_session:
+                    identity = (Brand, (brand_id,))
+                    if identity in session.identity_map:
+                        brand_in_session = True
+                if not brand_in_session:
+                    conn = session.connection()
+                    res = conn.execute(text("SELECT 1 FROM brands WHERE id = :id"), {"id": brand_id})
+                    if not res.scalar():
+                        conn.execute(
+                            text("INSERT INTO brands (id, tenant_id, name, created_at) VALUES (:id, :tenant_id, :name, :created_at)"),
+                            {"id": brand_id, "tenant_id": tenant_id, "name": f"Auto Seeded {brand_id}", "created_at": now_val}
+                        )
+                        
     yield engine
     await engine.dispose()
 

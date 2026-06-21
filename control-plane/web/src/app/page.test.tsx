@@ -42,6 +42,7 @@ const CATALOG = {
   actions: [
     {
       name: "provision_web_host",
+      title: "Provision Web Host",
       description: "domain to host",
       domain: "provision",
       parameters: { properties: { domain: { type: "STRING", description: "domain to host" } }, required: ["domain"] },

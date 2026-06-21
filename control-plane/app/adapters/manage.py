@@ -155,6 +155,20 @@ class ManageAdapter(Adapter):
         elif op.action == "manage.brand.sense":
             summary = f"Will run a comprehensive Brand Sense audit to discover and refresh active brand properties and channel connections."
             return PreviewArtifact(kind="brand_sense_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.tenant.offboard":
+            target_tenant_id = op.params.get("target_tenant_id")
+            return PreviewArtifact(
+                kind="tenant_offboard_preview",
+                summary=f"Soft offboard Tenant: {target_tenant_id}. This will suspend the tenant, scrub PII, evict them from the memory gateway cache, and retain all immutable audit/financial ledger rows in compliance with retention policies §4.5.",
+                detail={"target_tenant_id": target_tenant_id}
+            )
+        elif op.action == "manage.tenant.hard_delete":
+            target_tenant_id = op.params.get("target_tenant_id")
+            return PreviewArtifact(
+                kind="tenant_hard_delete_preview",
+                summary=f"HARD DELETE Tenant: {target_tenant_id}. This will physically drop the Tenant row. To satisfy foreign keys and preserve immutable ledger rows (§4.5), all associated audit events, op traces, approvals, cost ledger, and orders will be safely re-associated to the global 'deleted_tenant' placeholder row before the tenant row is dropped.",
+                detail={"target_tenant_id": target_tenant_id}
+            )
         return PreviewArtifact(kind="unknown_preview", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
@@ -819,6 +833,85 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
             
             return ExecResult(ok=True, detail={"message": "Brand Sense completed and brand properties updated", "shopify_connected": shopify_connected})
 
+        elif op.action == "manage.tenant.offboard":
+            target_tenant_id = op.params.get("target_tenant_id")
+            if not target_tenant_id:
+                raise ValueError("Missing target_tenant_id in params")
+                
+            from app.models import Tenant
+            tenant = await session.get(Tenant, target_tenant_id)
+            if not tenant:
+                return ExecResult(ok=False, detail={"message": f"Tenant {target_tenant_id} not found"})
+                
+            tenant.is_active = False
+            tenant.name = f"Offboarded Tenant {target_tenant_id[:6]}"
+            tenant.gcp_project = None
+            session.add(tenant)
+            
+            from app.middleware import VALID_TENANTS_CACHE
+            VALID_TENANTS_CACHE.pop(target_tenant_id, None)
+            
+            return ExecResult(
+                ok=True,
+                detail={
+                    "message": f"Tenant {target_tenant_id} successfully soft-offboarded and PII scrubbed",
+                    "tenant_id": target_tenant_id,
+                    "is_active": False
+                }
+            )
+            
+        elif op.action == "manage.tenant.hard_delete":
+            target_tenant_id = op.params.get("target_tenant_id")
+            if not target_tenant_id:
+                raise ValueError("Missing target_tenant_id in params")
+                
+            from app.models import Tenant
+            tenant = await session.get(Tenant, target_tenant_id)
+            if not tenant:
+                return ExecResult(ok=False, detail={"message": f"Tenant {target_tenant_id} not found"})
+                
+            if tenant.is_active:
+                return ExecResult(ok=False, detail={"message": f"Cannot hard-delete active tenant {target_tenant_id}. Must offboard first."})
+                
+            deleted_tenant = await session.get(Tenant, "deleted_tenant")
+            if not deleted_tenant:
+                deleted_tenant = Tenant(
+                    id="deleted_tenant",
+                    name="Tombstone (Deleted Tenants Archive)",
+                    hosting_tier="shared",
+                    is_active=False
+                )
+                session.add(deleted_tenant)
+                await session.flush()
+                
+            from sqlalchemy import update
+            from app.models import AuditEvent, OpTrace, Approval, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem
+            
+            child_tables = [AuditEvent, OpTrace, Approval, OpRow, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem]
+            for table in child_tables:
+                stmt = update(table).where(table.tenant_id == target_tenant_id).values(tenant_id="deleted_tenant")
+                await session.execute(stmt)
+                
+            from app.models import Campaign, Brand, Cadence, CircuitBreakerRow, ConsentBasis, BrandObjective, OpDependency
+            
+            other_tables = [Connection, Campaign, BrandProperty, Cadence, CircuitBreakerRow, ConsentBasis, BrandObjective, OpDependency]
+            for table in other_tables:
+                stmt = delete(table).where(table.tenant_id == target_tenant_id)
+                await session.execute(stmt)
+                
+            stmt_brands = delete(Brand).where(Brand.tenant_id == target_tenant_id)
+            await session.execute(stmt_brands)
+            
+            await session.delete(tenant)
+            
+            return ExecResult(
+                ok=True,
+                detail={
+                    "message": f"Tenant {target_tenant_id} physically deleted. All audit events and financial records re-associated to 'deleted_tenant' tombstone.",
+                    "tenant_id": target_tenant_id
+                }
+            )
+
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
 
     async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
@@ -969,6 +1062,20 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
             
         elif op.action == "manage.brand.sense":
             return VerifyResult(ok=True, checks={"completed": True})
+        elif op.action == "manage.tenant.offboard":
+            target_tenant_id = op.params.get("target_tenant_id")
+            from app.models import Tenant
+            tenant = await session.get(Tenant, target_tenant_id)
+            if tenant and not tenant.is_active:
+                return VerifyResult(ok=True, checks={"tenant_inactive": True, "pii_scrubbed": "Offboarded" in tenant.name})
+            return VerifyResult(ok=False, checks={"tenant_inactive": False})
+        elif op.action == "manage.tenant.hard_delete":
+            target_tenant_id = op.params.get("target_tenant_id")
+            from app.models import Tenant
+            tenant = await session.get(Tenant, target_tenant_id)
+            if tenant is None:
+                return VerifyResult(ok=True, checks={"tenant_row_dropped": True})
+            return VerifyResult(ok=False, checks={"tenant_row_dropped": False})
             
         return VerifyResult(ok=False, checks={})
 
