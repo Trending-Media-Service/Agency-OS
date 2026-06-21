@@ -54,3 +54,57 @@ def test_vertex_ai_client_real_api_mocked(mock_auth, mock_post):
             os.environ["AOS_ENV"] = old_env
         else:
             del os.environ["AOS_ENV"]
+
+
+@pytest.mark.asyncio
+@patch("app.services.llm.httpx.AsyncClient.post")
+@patch("google.auth.default")
+async def test_vertex_ai_client_personalized_content_mocked(mock_auth, mock_post):
+    # Temporarily disable AOS_ENV=test
+    old_env = os.environ.get("AOS_ENV")
+    os.environ["AOS_ENV"] = "production"
+
+    try:
+        # Mock Google auth credentials
+        mock_creds = MagicMock()
+        mock_creds.token = "mock-bearer-token"
+        mock_creds.refresh = MagicMock()
+        mock_auth.return_value = (mock_creds, "mock-project-id")
+
+        # Mock successful async response
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": "This is a highly personalized ad headline written in a playful, sensory-friendly tone!"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        
+        # Async mock for httpx.AsyncClient.post
+        async def mock_post_coro(*args, **kwargs):
+            return mock_response
+        mock_post.side_effect = mock_post_coro
+
+        client = VertexAIClient(project_id="test-project")
+        res = await client.generate_personalized_content(
+            tenant_id="t1", 
+            brand_id="b1", 
+            prompt="write a headline"
+        )
+        assert "sensory-friendly" in res
+        assert "playful" in res
+
+    finally:
+        if old_env:
+            os.environ["AOS_ENV"] = old_env
+        else:
+            del os.environ["AOS_ENV"]
+
