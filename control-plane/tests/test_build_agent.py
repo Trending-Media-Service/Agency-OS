@@ -90,7 +90,7 @@ def test_build_agent_harness_url_token_injection():
     with patch("app.adapters.build_agent.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         
-        repo_url = "https://github.com/Trending-Media-Service/Agency-OS.git"
+        repo_url = "https://git.example.com/Trending-Media-Service/Agency-OS.git"
         token = "ghp_mock_token_12345"
         
         harness = BuildAgentHarness(repo_url=repo_url, branch_name="test-branch", access_token=token)
@@ -102,4 +102,4 @@ def test_build_agent_harness_url_token_injection():
         called_args = mock_run.call_args_list[0][0][0]
         assert "git" in called_args
         assert "clone" in called_args
-        assert f"https://{token}@github.com/Trending-Media-Service/Agency-OS.git" in called_args
+        assert f"https://{token}@git.example.com/Trending-Media-Service/Agency-OS.git" in called_args

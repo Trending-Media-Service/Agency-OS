@@ -6,6 +6,17 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useApi } from "@/lib/api-client";
 import { useTenant } from "@/contexts/TenantContext";
 import { Button } from "@/components/ui/button";
+import OperationDetailDrawer from "@/components/OperationDetailDrawer";
+
+interface Operation {
+  op_id: string;
+  action: string;
+  domain: string;
+  brand_id: string;
+  preview?: string | null;
+  cost_estimate?: string | null;
+  state: string;
+}
 
 export default function OpsPage() {
   const router = useRouter();
@@ -32,7 +43,7 @@ export default function OpsPage() {
   // 1. Fetch Operations
   const { data: ops, isLoading: opsLoading, refetch: refetchOps } = useQuery({
     queryKey: ["ops", tenantId],
-    queryFn: () => request("/ops", "get"),
+    queryFn: () => request("/ops", "get") as Promise<Operation[]>,
     refetchInterval: 5000,
   });
 
@@ -58,6 +69,14 @@ export default function OpsPage() {
   const handleRowClick = (opId: string) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("opId", opId);
+    router.push(`/ops?${params.toString()}`);
+  };
+
+  const selectedOpId = searchParams.get("opId");
+
+  const handleCloseDrawer = () => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("opId");
     router.push(`/ops?${params.toString()}`);
   };
 
@@ -240,6 +259,32 @@ export default function OpsPage() {
             </div>
           </div>
         </div>
+      )}
+      {selectedOpId && (
+        <OperationDetailDrawer
+          opId={selectedOpId}
+          onClose={handleCloseDrawer}
+          onApprove={(opId, cost) => {
+            const localOp = ops?.find((o: Operation) => o.op_id === opId);
+            setConfirmDecision({
+              opId,
+              action: localOp?.action || "build.deliver",
+              domain: localOp?.domain || "build",
+              cost,
+              decision: "approve"
+            });
+          }}
+          onReject={(opId, cost) => {
+            const localOp = ops?.find((o: Operation) => o.op_id === opId);
+            setConfirmDecision({
+              opId,
+              action: localOp?.action || "build.deliver",
+              domain: localOp?.domain || "build",
+              cost,
+              decision: "reject"
+            });
+          }}
+        />
       )}
     </div>
   );

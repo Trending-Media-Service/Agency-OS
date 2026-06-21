@@ -156,6 +156,24 @@ def _provision_web_host_handler(tenant_id: str, brand_id: str, domain: str) -> l
     )]
 
 
+def _build_deliver_handler(tenant_id: str, brand_id: str, intent: str, repo: Optional[str] = None) -> list[OpSpec]:
+    import uuid
+    from app.kernel.optypes import Severity, Reversibility, Money
+    return [OpSpec(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        domain="build",
+        action="build.deliver",
+        params={
+            "intent": intent,
+            "branch_name": f"aos-build-{uuid.uuid4().hex[:8]}",
+            "repo": repo
+        },
+        severity=Severity(impact=2, reversibility=Reversibility.REVERSIBLE),
+        cost_estimate=Money(amount_minor=1000, currency="INR"),
+    )]
+
+
 def _manage_shopify_connect_handler(tenant_id: str, brand_id: str, shop_url: str, credential: str) -> list[OpSpec]:
     return [OpSpec(
         tenant_id=tenant_id, brand_id=brand_id, domain="manage",
@@ -449,3 +467,25 @@ def parse_chat_to_tool_call(text: str) -> Optional[tuple[str, dict]]:
 
     return None
 
+
+
+
+registry.register_tool(
+    name="build_deliver",
+    schema={
+        "name": "build_deliver",
+        "title": "Deliver Code Build",
+        "domain": "build",
+        "description": "Trigger an autonomous coding agent build to deliver a feature or style modification.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "brand_id": {"type": "STRING"},
+                "intent": {"type": "STRING", "description": "Conversational modification intent (e.g., 'change hero color to blue')"},
+                "repo": {"type": "STRING", "description": "Target Git repository URL (optional)"}
+            },
+            "required": ["brand_id", "intent"]
+        }
+    },
+    handler=_build_deliver_handler
+)

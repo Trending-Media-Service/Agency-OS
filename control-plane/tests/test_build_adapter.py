@@ -35,6 +35,7 @@ def test_build_adapter_plan(adapter):
     assert "intent" in op.params
     assert op.params["intent"] == "change hero color to blue"
     assert "branch_name" in op.params
+    assert op.params["repo"] is None
     assert op.cost_estimate.amount_minor == 1000
 
 def test_build_adapter_preview(adapter, build_op):
