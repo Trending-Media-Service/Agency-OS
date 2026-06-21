@@ -36,6 +36,9 @@ class MarketingClient(Protocol):
     async def clean_search_keywords(self, campaign_name: str, brand_terms: list[str]) -> tuple[bool, list[str]]:
         ...
 
+    async def bootstrap_offline_conversions(self) -> dict:
+        ...
+
 
 def get_marketing_client(provider: str, token: Optional[str] = None, config: Optional[dict] = None) -> MarketingClient:
     """Factory to resolve the active marketing client for a provider."""
@@ -183,3 +186,12 @@ class MockMarketingClient:
     async def clean_search_keywords(self, campaign_name: str, brand_terms: list[str]) -> tuple[bool, list[str]]:
         logger.info(f"[MOCK] Generic keyword audit completed for search campaign '{campaign_name}'. Paused 2 generic keywords.")
         return True, ["customers/123/adGroupCriteria/12~34", "customers/123/adGroupCriteria/12~56"]
+
+    async def bootstrap_offline_conversions(self) -> dict:
+        logger.info(f"[MOCK] Bootstrapped offline UPLOAD_CLICKS conversion action via {self.provider}")
+        return {
+            "success": True,
+            "conversion_action_id": "mock-conversion-12345",
+            "name": "AgencyOS CRM Lead Conversion",
+            "status": "CREATED_MOCK",
+        }

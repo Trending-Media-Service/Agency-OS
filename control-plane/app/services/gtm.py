@@ -1,7 +1,7 @@
 import logging
+import os
 import re
-import urllib.parse
-from typing import Optional, Any
+from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -164,3 +164,19 @@ class GTMClient:
         except Exception as e:
             logger.error(f"Failed to scrape on-page GTM container for {target_url}: {e}")
             return []
+
+
+def get_gtm_client(token: Optional[str] = None, config: Optional[dict] = None) -> GTMClient:
+    """Factory to resolve a GTM client, mirroring services.marketing.get_marketing_client.
+
+    - In the test environment we always return a mock-backed client.
+    - In real environments a GTM OAuth token (tagmanager.* scopes) is required for
+      container/tag operations. The on-page verifier is a static method and needs no
+      token, so callers may invoke it without a connection.
+    """
+    env = os.getenv("AOS_ENV", "development")
+    if env == "test":
+        return GTMClient(oauth_token="mock-gtm-token")
+    if not token:
+        raise ValueError("Credentials (token) are required for provider: gtm")
+    return GTMClient(oauth_token=token)
