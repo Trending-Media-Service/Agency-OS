@@ -50,8 +50,15 @@ class BuildAdapter(Adapter):
             if not harness.clone_and_checkout():
                 return PreviewArtifact(kind="build_error", summary="Failed to clone repo", detail={})
             
-            if not harness.apply_edits(intent):
-                return PreviewArtifact(kind="build_error", summary="Failed to apply edits", detail={})
+            if op.params.get("action_type") == "optimize_tracking":
+                target_sgtm_domain = op.params.get("target_sgtm_domain")
+                gtm_id = op.params.get("gtm_id")
+                heal_res = harness.run_tracking_audit_and_heal(target_sgtm_domain, gtm_id)
+                if not heal_res.get("success"):
+                    return PreviewArtifact(kind="build_error", summary=f"Tracking audit/heal failed: {heal_res.get('error')}", detail={})
+            else:
+                if not harness.apply_edits(intent):
+                    return PreviewArtifact(kind="build_error", summary="Failed to apply edits", detail={})
                 
             if not harness.commit_and_push():
                 return PreviewArtifact(kind="build_error", summary="Failed to commit changes", detail={})
