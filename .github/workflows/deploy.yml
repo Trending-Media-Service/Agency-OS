@@ -96,7 +96,7 @@ jobs:
             --project "${PROJECT_ID}" \
             --service-account "${BACKEND_RUNTIME_SA}" \
             --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest" \
-            --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+            --set-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --command=python3 \
             --args=/app/migrate.py \
             --max-retries=0 \
