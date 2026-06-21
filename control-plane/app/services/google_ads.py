@@ -25,7 +25,7 @@ class GoogleAdsClient(MarketingClient):
         self.config = config or {}
         self.developer_token = self.config.get("developer_token", "mock-developer-token")
         self.customer_id = self.config.get("customer_id", "mock-customer-id")
-        self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v17")
+        self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v24")
         
         # Use delegation to MockMarketingClient for mock runs.
         # Gate on AOS_ENV=test or no/mock token — do NOT treat a bare credential path
@@ -260,6 +260,18 @@ class GoogleAdsClient(MarketingClient):
                 logger.error(f"Google Ads API request failed: {e}")
                 return None
 
+    async def search(self, query: str) -> dict:
+        """Executes a raw GAQL query against the Google Ads REST API."""
+        if self._is_mock:
+            return {"results": []}
+        url = f"{self.api_url}/customers/{self.customer_id}/googleAds:search"
+        payload = {"query": query}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await self._send_with_retry(client, "POST", url, headers=self.headers, json_data=payload)
+            if resp.status_code == 200:
+                return resp.json()
+            raise Exception(f"Google Ads search failed: {resp.status_code} - {resp.text}")
+
     async def swap_pmax_audience(self, campaign_names: list[str], new_audience_id: str) -> bool:
         if self._is_mock:
             return await self._mock_client.swap_pmax_audience(campaign_names, new_audience_id)
@@ -384,3 +396,88 @@ class GoogleAdsClient(MarketingClient):
             except Exception as e:
                 logger.exception(f"Generic keyword cleanup failed: {e}")
                 return False, []
+
+    async def bootstrap_offline_conversions(self) -> dict[str, Any]:
+        """Checks for and automatically creates the required 'UPLOAD_CLICKS' conversion action.
+
+        This ensures that the CRM POAS attribution engine has a valid endpoint to upload
+        closed-won lead values, providing 100% self-healing setup.
+        """
+        action_name = "AgencyOS CRM Lead Conversion"
+        if self._is_mock:
+            return {
+                "success": True,
+                "conversion_action_id": "mock-conversion-12345",
+                "name": action_name,
+                "status": "CREATED_MOCK"
+            }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                # Step 1: Query if the active conversion action already exists
+                query = f"""
+                    SELECT conversion_action.id, conversion_action.name, conversion_action.type, conversion_action.status 
+                    FROM conversion_action 
+                    WHERE conversion_action.name = '{action_name}' AND conversion_action.status = 'ENABLED'
+                """
+                url_search = f"{self.api_url}/customers/{self.customer_id}/googleAds:search"
+                resp = await self._send_with_retry(client, "POST", url_search, headers=self.headers, json_data={"query": query})
+                
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    if results:
+                        action = results[0]["conversion_action"]
+                        logger.info(f"Active conversion action '{action_name}' already exists with ID: {action['id']}.")
+                        return {
+                            "success": True,
+                            "conversion_action_id": str(action["id"]),
+                            "name": action_name,
+                            "status": "ALREADY_EXISTS"
+                        }
+
+                # Step 2: If not found, programmatically create it
+                logger.info(f"Conversion action '{action_name}' not found. Programmatically bootstrapping...")
+                payload = {
+                    "mutateOperations": [
+                        {
+                            "conversionActionOperation": {
+                                "create": {
+                                    "name": action_name,
+                                    "type": "UPLOAD_CLICKS",
+                                    "status": "ENABLED",
+                                    "category": "SUBMIT_LEAD_FORM",
+                                    "primaryForGoal": True,
+                                    "valueSettings": {
+                                        "defaultValue": 1.0,
+                                        "alwaysUseDefaultValue": False
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+                url_mutate = f"{self.api_url}/customers/{self.customer_id}/googleAds:mutate"
+                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data=payload)
+                
+                if resp_mutate.status_code == 200:
+                    mutate_responses = resp_mutate.json().get("mutateOperationResponses", [])
+                    if mutate_responses:
+                        result = mutate_responses[0].get("conversionActionResult", {})
+                        resource_name = result.get("resourceName")
+                        if resource_name:
+                            # Extract ID from resourceName: customers/{customer_id}/conversionActions/{conversion_action_id}
+                            action_id = resource_name.split("/")[-1]
+                            logger.info(f"Successfully bootstrapped conversion action '{action_name}' with ID: {action_id}")
+                            return {
+                                "success": True,
+                                "conversion_action_id": action_id,
+                                "name": action_name,
+                                "status": "CREATED"
+                            }
+                
+                logger.error(f"Failed to bootstrap conversion action: {resp_mutate.status_code} - {resp_mutate.text}")
+                return {"success": False, "error": resp_mutate.text}
+            except Exception as e:
+                logger.exception(f"Error bootstrapping offline conversions: {e}")
+                return {"success": False, "error": str(e)}
+

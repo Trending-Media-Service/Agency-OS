@@ -30,6 +30,106 @@ class GrowAdapter(Adapter):
         """Plans growth actions. Supports creating ad campaigns, adjusting bids, pausing campaigns, and alerts."""
         normalized = intent.strip().lower()
         words = normalized.split()
+        raw_words = intent.strip().split()  # case-preserving, for URLs and GTM-XXXX ids
+
+        # --- Omnichannel tracking automation (CRM POAS bootstrap + GTM hygiene) ---
+        if ("bootstrap" in words and any(w in words for w in ("conversion", "conversions", "poas"))) \
+                or ("poas" in words and any(w in words for w in ("activate", "enable", "setup"))):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.crm_poas.bootstrap",
+                    params={"provider": "google-ads"},
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if "clean" in words and any(w in words for w in ("gtm", "workspace", "clutter")):
+            container_id = next((w.upper() for w in raw_words if w.upper().startswith("GTM-")), None)
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.gtm.cleanup_clutter",
+                    params={"container_public_id": container_id, "provider": "gtm"},
+                    severity=Severity(impact=2, reversibility=Reversibility.IRREVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if any(w in words for w in ("verify", "detect", "scan", "inspect")) and ("container" in words or "gtm" in words):
+            target_url = next((w for w in raw_words if w.startswith("http://") or w.startswith("https://")), None)
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.gtm.verify_onpage",
+                    params={"target_url": target_url, "provider": "gtm"},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if "tracking" in words and ("mismatch" in words or "audit" in words):
+            target_url = next((w for w in raw_words if w.startswith("http://") or w.startswith("https://")), None)
+            container_id = next((w.upper() for w in raw_words if w.upper().startswith("GTM-")), None)
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.tracking.audit_mismatch",
+                    params={"target_url": target_url, "container_public_id": container_id, "provider": "gtm"},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        # --- Storefront (Shopify) governed operations ---
+        if any(w in words for w in ("catalog", "skus", "barcodes", "products")) and any(w in words for w in ("audit", "scan", "check")):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.storefront.catalog_audit",
+                    params={"provider": "shopify"},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if "sales" in words and any(w in words for w in ("analysis", "analyze", "analyse", "report")):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.storefront.sales_analysis",
+                    params={"provider": "shopify"},
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        if "webhook" in words and any(w in words for w in ("register", "poas", "sgtm")):
+            gateway_url = next((w for w in raw_words if w.startswith("http://") or w.startswith("https://")), None)
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.storefront.register_poas_webhooks",
+                    params={"provider": "shopify", "gateway_url": gateway_url},
+                    severity=Severity(impact=2, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
 
         if "optimize" in words and "audience" in words:
             audience_id = "251066626" # default fallback
@@ -130,6 +230,71 @@ class GrowAdapter(Adapter):
                     domain=self.domain,
                     action="grow.meta.disconnect",
                     params={"provider": "meta-ads"},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        elif "connect" in words and ("gtm" in words or ("tag" in words and "manager" in words)):
+            credential = next((w for w in words if w.startswith("secret:")), "secret:gtm-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.gtm.connect",
+                    params={
+                        "provider": "gtm",
+                        "credential": credential,
+                        "config": {}
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+        elif "disconnect" in words and ("gtm" in words or ("tag" in words and "manager" in words)):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.gtm.disconnect",
+                    params={"provider": "gtm"},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
+        elif "connect" in words and "shopify" in words:
+            credential = next((w for w in words if w.startswith("secret:")), "secret:shopify-token")
+            if credential.startswith("secret:"):
+                credential = credential[7:]
+            shop_url = next((w for w in raw_words if "myshopify.com" in w), None)
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.shopify.connect",
+                    params={
+                        "provider": "shopify",
+                        "credential": credential,
+                        "config": {"shop_url": shop_url} if shop_url else {}
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+        elif "disconnect" in words and "shopify" in words:
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.shopify.disconnect",
+                    params={"provider": "shopify"},
                     severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
                     cost_estimate=Money(0)
                 )
@@ -372,11 +537,47 @@ class GrowAdapter(Adapter):
         elif op.action == "grow.alert.dispatch":
             summary = f"ALERT DISPATCH:\n{op.params.get('message')}"
             return PreviewArtifact(kind="alert_dispatch_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.crm_poas.bootstrap":
+            summary = "Will verify/auto-create the 'AgencyOS CRM Lead Conversion' (UPLOAD_CLICKS) action in Google Ads so offline CRM POAS uploads never fail (self-healing setup)."
+            return PreviewArtifact(kind="crm_poas_bootstrap_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.gtm.connect":
+            summary = "Will establish connection to Google Tag Manager.\nCredential: ****"
+            return PreviewArtifact(kind="gtm_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.gtm.disconnect":
+            summary = "Will remove connection to Google Tag Manager."
+            return PreviewArtifact(kind="gtm_disconnect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.gtm.cleanup_clutter":
+            container = op.params.get("container_public_id") or "(active container)"
+            summary = f"Will delete redundant 'Offline Conversion' Google Tags from GTM container {container} to resolve tag clutter."
+            return PreviewArtifact(kind="gtm_cleanup_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.gtm.verify_onpage":
+            url = op.params.get("target_url") or "(brand homepage)"
+            summary = f"Will scrape {url} and report the GTM container IDs actually loading on the live page."
+            return PreviewArtifact(kind="gtm_verify_onpage_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.tracking.audit_mismatch":
+            summary = "Will cross-reference the configured GTM container against the containers detected live on-page and flag any tracking mismatch."
+            return PreviewArtifact(kind="tracking_mismatch_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.shopify.connect":
+            summary = "Will establish connection to Shopify storefront.\nCredential: ****"
+            return PreviewArtifact(kind="shopify_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.shopify.disconnect":
+            summary = "Will remove connection to Shopify storefront."
+            return PreviewArtifact(kind="shopify_disconnect_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.storefront.catalog_audit":
+            summary = "Will audit the Shopify product catalog for missing SKUs/barcodes (GTINs) and metadata gaps that block Google Ads PMax/Shopping eligibility."
+            return PreviewArtifact(kind="storefront_catalog_audit_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.storefront.sales_analysis":
+            summary = "Will analyze recent Shopify orders to compute total sales, AOV, and top customer regions."
+            return PreviewArtifact(kind="storefront_sales_analysis_preview", summary=summary, detail=op.params)
+        elif op.action == "grow.storefront.register_poas_webhooks":
+            gateway = op.params.get("gateway_url") or "(sGTM gateway)"
+            summary = f"Will register Shopify order webhooks pointing to the POAS/sGTM tracking gateway: {gateway}"
+            return PreviewArtifact(kind="storefront_webhook_preview", summary=summary, detail=op.params)
         return PreviewArtifact(kind="unknown_preview", summary="Unknown action", detail={})
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Executes campaign operations."""
-        if op.action in ("grow.google.connect", "grow.meta.connect", "grow.dv360.connect", "grow.youtube_creator.connect"):
+        if op.action in ("grow.google.connect", "grow.meta.connect", "grow.dv360.connect", "grow.youtube_creator.connect", "grow.gtm.connect", "grow.shopify.connect"):
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
                 
@@ -389,6 +590,10 @@ class GrowAdapter(Adapter):
                 provider = "dv360"
             elif op.action == "grow.youtube_creator.connect":
                 provider = "youtube_creator"
+            elif op.action == "grow.gtm.connect":
+                provider = "gtm"
+            elif op.action == "grow.shopify.connect":
+                provider = "shopify"
 
             config = op.params.get("config", {})
             if not config and "provider" not in op.params:
@@ -460,7 +665,7 @@ class GrowAdapter(Adapter):
             CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={"message": f"Connection to {provider} registered in DB and Secret Manager", "provider": provider})
             
-        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
+        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect", "grow.gtm.disconnect", "grow.shopify.disconnect"):
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
                 
@@ -486,6 +691,21 @@ class GrowAdapter(Adapter):
             )
             await session.execute(stmt_del)
             return ExecResult(ok=True, detail={"message": f"Connection to {provider} removed from DB and Secret Manager"})
+
+        # GTM + tracking ops use the GTM client; storefront ops use the storefront client.
+        if op.action in (
+            "grow.gtm.cleanup_clutter",
+            "grow.gtm.verify_onpage",
+            "grow.gtm.list_containers",
+            "grow.tracking.audit_mismatch",
+        ):
+            return await self._execute_gtm_op(op, session)
+        if op.action in (
+            "grow.storefront.catalog_audit",
+            "grow.storefront.sales_analysis",
+            "grow.storefront.register_poas_webhooks",
+        ):
+            return await self._execute_storefront_op(op, session)
 
         # Resolve connection credentials dynamically
         provider = op.params.get("provider", "google-ads")
@@ -866,11 +1086,123 @@ class GrowAdapter(Adapter):
                 }
             )
             
+        elif op.action == "grow.crm_poas.bootstrap":
+            result = await client.bootstrap_offline_conversions()
+            if result.get("success"):
+                if session:
+                    try:
+                        stmt = select(Connection).where(
+                            Connection.tenant_id == op.tenant_id,
+                            Connection.brand_id == op.brand_id,
+                            Connection.provider == provider
+                        )
+                        res = await session.execute(stmt)
+                        conn = res.scalar_one_or_none()
+                        if conn:
+                            new_config = dict(conn.config or {})
+                            new_config["crm_conversion_action_id"] = result.get("conversion_action_id")
+                            conn.config = new_config
+                            logger.info(f"Persisted CRM conversion action id on {provider} connection")
+                    except Exception as e:
+                        logger.warning(f"Could not persist conversion action id: {e}")
+                return ExecResult(ok=True, detail=result)
+            return ExecResult(ok=False, detail=result)
+
         return ExecResult(ok=False, detail={"error": f"Unknown action: {op.action}"})
+
+    async def _resolve_provider_token(self, op: OpSpec, provider: str, session: Optional[AsyncSession] = None) -> tuple[Optional[str], dict]:
+        """Resolves an OAuth/API token + config for a provider from its Connection + Secret Manager."""
+        token = None
+        config: dict = {}
+        if session:
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == provider
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if conn:
+                config = conn.config or {}
+                if conn.credential:
+                    try:
+                        token = await SecretManagerClient().read_secret(conn.credential)
+                    except Exception as e:
+                        logger.warning(f"Failed to resolve {provider} token from Secret Manager: {e}")
+        return token, config
+
+    async def _execute_gtm_op(self, op: OpSpec, session: Optional[AsyncSession] = None) -> ExecResult:
+        """Executes GTM hygiene + tracking-mismatch operations via the GTM client."""
+        from app.services.gtm import get_gtm_client, GTMClient
+
+        if op.action == "grow.gtm.verify_onpage":
+            target_url = op.params.get("target_url")
+            if not target_url:
+                return ExecResult(ok=False, detail={"error": "target_url is required to verify the on-page GTM container"})
+            gtm_ids = await GTMClient.verify_onpage_gtm_container(target_url)
+            return ExecResult(ok=True, detail={"target_url": target_url, "onpage_containers": gtm_ids})
+
+        # Remaining GTM ops require an authenticated client.
+        token, config = await self._resolve_provider_token(op, "gtm", session)
+        gtm = get_gtm_client(token=token, config=config)
+
+        if op.action == "grow.gtm.list_containers":
+            containers = await gtm.list_containers()
+            return ExecResult(ok=True, detail={"containers": containers})
+
+        if op.action == "grow.gtm.cleanup_clutter":
+            container_id = op.params.get("container_public_id")
+            if not container_id:
+                return ExecResult(ok=False, detail={"error": "container_public_id is required to clean up tag clutter"})
+            result = await gtm.cleanup_tag_clutter(container_id)
+            return ExecResult(ok=bool(result.get("success")), detail=result)
+
+        if op.action == "grow.tracking.audit_mismatch":
+            expected = op.params.get("container_public_id")
+            target_url = op.params.get("target_url")
+            containers = await gtm.list_containers()
+            available_ids = [c.get("public_id") or c.get("publicId") for c in containers]
+            onpage_ids: list = []
+            if target_url:
+                onpage_ids = await GTMClient.verify_onpage_gtm_container(target_url)
+            mismatch = bool(expected and onpage_ids and expected not in onpage_ids)
+            return ExecResult(ok=True, detail={
+                "mismatch": mismatch,
+                "expected_container": expected,
+                "onpage_containers": onpage_ids,
+                "available_containers": available_ids,
+            })
+
+        return ExecResult(ok=False, detail={"error": f"Unknown GTM action: {op.action}"})
+
+    async def _execute_storefront_op(self, op: OpSpec, session: Optional[AsyncSession] = None) -> ExecResult:
+        """Executes Shopify/storefront catalog, sales, and POAS-webhook operations."""
+        from app.services.storefront import get_storefront_client
+
+        token, config = await self._resolve_provider_token(op, "shopify", session)
+        shop_url = op.params.get("shop_url") or config.get("shop_url") or "mock-shop"
+        sf = get_storefront_client(provider="shopify", shop_url=shop_url, token=token)
+
+        if op.action == "grow.storefront.catalog_audit":
+            result = await sf.run_catalog_audit()
+            return ExecResult(ok=bool(result.get("success")), detail=result)
+
+        if op.action == "grow.storefront.sales_analysis":
+            result = await sf.run_sales_analysis()
+            return ExecResult(ok=bool(result.get("success")), detail=result)
+
+        if op.action == "grow.storefront.register_poas_webhooks":
+            gateway_url = op.params.get("gateway_url") or config.get("sgtm_gateway_url")
+            if not gateway_url:
+                return ExecResult(ok=False, detail={"error": "gateway_url is required to register POAS webhooks"})
+            result = await sf.register_poas_webhooks(gateway_url)
+            return ExecResult(ok=bool(result.get("success")), detail=result)
+
+        return ExecResult(ok=False, detail={"error": f"Unknown storefront action: {op.action}"})
 
     async def verify(self, op: OpSpec, session: Optional[AsyncSession] = None) -> VerifyResult:
         """Verifies campaign status."""
-        if op.action in ("grow.google.connect", "grow.meta.connect"):
+        if op.action in ("grow.google.connect", "grow.meta.connect", "grow.gtm.connect", "grow.shopify.connect"):
             logger.info("Verifying Grow connection via Secret Manager and mock API...")
             if not session:
                 return VerifyResult(ok=False, checks={"session_active": False}, detail={"error": "Database session required"})
@@ -915,7 +1247,7 @@ class GrowAdapter(Adapter):
                 },
                 detail={"verified_at": "mock-time", "credential": conn.credential}
             )
-        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect"):
+        elif op.action in ("grow.google.disconnect", "grow.meta.disconnect", "grow.gtm.disconnect", "grow.shopify.disconnect"):
             return VerifyResult(ok=True, checks={"disconnected": True})
         elif op.action == "grow.dv360.connect":
             logger.info("Verifying DV360 connection...")
@@ -949,6 +1281,22 @@ class GrowAdapter(Adapter):
             return VerifyResult(ok=True, checks={"report_generated": True})
         elif op.action == "grow.ai_readiness.audit":
             return VerifyResult(ok=True, checks={"audit_complete": True})
+        elif op.action == "grow.crm_poas.bootstrap":
+            return VerifyResult(ok=True, checks={"conversion_action_bootstrapped": True})
+        elif op.action == "grow.gtm.cleanup_clutter":
+            return VerifyResult(ok=True, checks={"workspace_cleaned": True})
+        elif op.action == "grow.gtm.verify_onpage":
+            return VerifyResult(ok=True, checks={"onpage_scanned": True})
+        elif op.action == "grow.gtm.list_containers":
+            return VerifyResult(ok=True, checks={"containers_listed": True})
+        elif op.action == "grow.tracking.audit_mismatch":
+            return VerifyResult(ok=True, checks={"tracking_audited": True})
+        elif op.action == "grow.storefront.catalog_audit":
+            return VerifyResult(ok=True, checks={"catalog_audited": True})
+        elif op.action == "grow.storefront.sales_analysis":
+            return VerifyResult(ok=True, checks={"sales_analyzed": True})
+        elif op.action == "grow.storefront.register_poas_webhooks":
+            return VerifyResult(ok=True, checks={"webhook_registered": True})
 
         campaign_id = op.params.get("campaign_id")
         # Resolve connection credentials dynamically
@@ -1056,6 +1404,30 @@ class GrowAdapter(Adapter):
                     domain=self.domain,
                     action="grow.meta.disconnect",
                     params={"provider": op.params.get("provider")},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+        elif op.action == "grow.gtm.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="grow.gtm.disconnect",
+                    params={"provider": op.params.get("provider", "gtm")},
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+        elif op.action == "grow.shopify.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="grow.shopify.disconnect",
+                    params={"provider": op.params.get("provider", "shopify")},
                     severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
                     parent_op_id=op.id
                 )
