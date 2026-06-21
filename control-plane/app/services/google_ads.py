@@ -25,7 +25,7 @@ class GoogleAdsClient(MarketingClient):
         self.config = config or {}
         self.developer_token = self.config.get("developer_token", "mock-developer-token")
         self.customer_id = self.config.get("customer_id", "mock-customer-id")
-        self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v17")
+        self.api_url = self.config.get("api_url", "https://googleads.googleapis.com/v24")
         
         # Use delegation to MockMarketingClient for mock runs.
         # Gate on AOS_ENV=test or no/mock token — do NOT treat a bare credential path
@@ -260,6 +260,18 @@ class GoogleAdsClient(MarketingClient):
                 logger.error(f"Google Ads API request failed: {e}")
                 return None
 
+    async def search(self, query: str) -> dict:
+        """Executes a raw GAQL query against the Google Ads REST API."""
+        if self._is_mock:
+            return {"results": []}
+        url = f"{self.api_url}/customers/{self.customer_id}/googleAds:search"
+        payload = {"query": query}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await self._send_with_retry(client, "POST", url, headers=self.headers, json_data=payload)
+            if resp.status_code == 200:
+                return resp.json()
+            raise Exception(f"Google Ads search failed: {resp.status_code} - {resp.text}")
+
     async def swap_pmax_audience(self, campaign_names: list[str], new_audience_id: str) -> bool:
         if self._is_mock:
             return await self._mock_client.swap_pmax_audience(campaign_names, new_audience_id)
@@ -425,37 +437,43 @@ class GoogleAdsClient(MarketingClient):
 
                 # Step 2: If not found, programmatically create it
                 logger.info(f"Conversion action '{action_name}' not found. Programmatically bootstrapping...")
-                operations = [
-                    {
-                        "create": {
-                          "name": action_name,
-                          "type": "UPLOAD_CLICKS",
-                          "status": "ENABLED",
-                          "category": "LEAD",
-                          "primaryForGoal": True,
-                          "valueSettings": {
-                              "defaultValue": 1.0,
-                              "alwaysUseDefaultValue": False
-                          }
+                payload = {
+                    "mutateOperations": [
+                        {
+                            "conversionActionOperation": {
+                                "create": {
+                                    "name": action_name,
+                                    "type": "UPLOAD_CLICKS",
+                                    "status": "ENABLED",
+                                    "category": "SUBMIT_LEAD_FORM",
+                                    "primaryForGoal": True,
+                                    "valueSettings": {
+                                        "defaultValue": 1.0,
+                                        "alwaysUseDefaultValue": False
+                                    }
+                                }
+                            }
                         }
-                    }
-                ]
-                url_mutate = f"{self.api_url}/customers/{self.customer_id}/conversionActions:mutate"
-                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data={"operations": operations})
+                    ]
+                }
+                url_mutate = f"{self.api_url}/customers/{self.customer_id}/googleAds:mutate"
+                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data=payload)
                 
                 if resp_mutate.status_code == 200:
-                    mutate_results = resp_mutate.json().get("results", [])
-                    if mutate_results:
-                        resource_name = mutate_results[0]["resourceName"]
-                        # Extract ID from resourceName: customers/{customer_id}/conversionActions/{conversion_action_id}
-                        action_id = resource_name.split("/")[-1]
-                        logger.info(f"Successfully bootstrapped conversion action '{action_name}' with ID: {action_id}")
-                        return {
-                            "success": True,
-                            "conversion_action_id": action_id,
-                            "name": action_name,
-                            "status": "CREATED"
-                        }
+                    mutate_responses = resp_mutate.json().get("mutateOperationResponses", [])
+                    if mutate_responses:
+                        result = mutate_responses[0].get("conversionActionResult", {})
+                        resource_name = result.get("resourceName")
+                        if resource_name:
+                            # Extract ID from resourceName: customers/{customer_id}/conversionActions/{conversion_action_id}
+                            action_id = resource_name.split("/")[-1]
+                            logger.info(f"Successfully bootstrapped conversion action '{action_name}' with ID: {action_id}")
+                            return {
+                                "success": True,
+                                "conversion_action_id": action_id,
+                                "name": action_name,
+                                "status": "CREATED"
+                            }
                 
                 logger.error(f"Failed to bootstrap conversion action: {resp_mutate.status_code} - {resp_mutate.text}")
                 return {"success": False, "error": resp_mutate.text}

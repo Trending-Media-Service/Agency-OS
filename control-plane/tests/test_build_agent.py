@@ -103,3 +103,64 @@ def test_build_agent_harness_url_token_injection():
         assert "git" in called_args
         assert "clone" in called_args
         assert f"https://{token}@git.example.com/Trending-Media-Service/Agency-OS.git" in called_args
+
+
+def test_build_agent_harness_tracking_audit_and_heal(temp_git_remote, run_git):
+    branch_name = "test-tracking-heal"
+    target_sgtm_domain = "tracking.test.com"
+    gtm_id = "GTM-TEST1234"
+    
+    # 1. First, let's inject a standard client-side index.html into the remote repo so the agent can audit it.
+    temp_dir = tempfile.mkdtemp()
+    try:
+        run_git(["clone", temp_git_remote, temp_dir], check=True, capture_output=True)
+        # Create an unoptimized index.html
+        html_content = """<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Test App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>"""
+        with open(os.path.join(temp_dir, "index.html"), "w") as f:
+            f.write(html_content)
+        run_git(["add", "index.html"], cwd=temp_dir, check=True)
+        run_git(["config", "user.email", "test@test.com"], cwd=temp_dir, check=True)
+        run_git(["config", "user.name", "Test User"], cwd=temp_dir, check=True)
+        run_git(["commit", "-m", "Add base index.html"], cwd=temp_dir, check=True)
+        run_git(["push", "origin", "main"], cwd=temp_dir, check=True)
+    finally:
+        shutil.rmtree(temp_dir)
+        
+    # 2. Now, run the BuildAgentHarness to audit and heal it!
+    with BuildAgentHarness(repo_url=temp_git_remote, branch_name=branch_name) as harness:
+        # Clone
+        assert harness.clone_and_checkout() is True
+        assert os.path.exists(os.path.join(harness.repo_path, "index.html"))
+        
+        # Audit & Heal!
+        res = harness.run_tracking_audit_and_heal(target_sgtm_domain=target_sgtm_domain, gtm_id=gtm_id)
+        assert res["success"] is True
+        assert res["healed"] is True
+        assert res["file_audited"] == "index.html"
+        
+        # Verify changes were written
+        with open(os.path.join(harness.repo_path, "index.html"), "r") as f:
+            content = f.read()
+            
+        assert gtm_id in content
+        assert target_sgtm_domain in content
+        assert "Google Tag Manager" in content
+        
+        # Commit and push
+        assert harness.commit_and_push() is True
+        
+        # Verify diff contains the injected tags
+        diff = harness.get_diff()
+        assert f"https://{target_sgtm_domain}/gtm.js?id=" in diff
+        assert f"'{gtm_id}'" in diff
+        assert f"https://{target_sgtm_domain}/ns.html?id={gtm_id}" in diff
+

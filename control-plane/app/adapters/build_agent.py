@@ -297,3 +297,113 @@ class BuildAgentHarness:
         except subprocess.CalledProcessError as e:
             logger.error(f"Revert failed: {e.stderr}")
             return False
+
+    def run_tracking_audit_and_heal(self, target_sgtm_domain: str, gtm_id: str) -> dict:
+        """Audits the cloned repository for GTM installation, and programmatically heals it if missing/unoptimized."""
+        if not hasattr(self, 'repo_path'):
+            raise RuntimeError("Repo must be cloned first")
+            
+        logger.info(f"Running automated GTM tracking audit on repository for container {gtm_id}...")
+        
+        # 1. Locate layout/index.html files
+        target_file = None
+        for root, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in [".git", "node_modules", "build", "dist"]]
+            # Priority 1: layout.tsx or layout.jsx in App Router
+            # Priority 2: _document.tsx or _document.jsx in Pages Router
+            # Priority 3: index.html in Vite/React SPA
+            for file in files:
+                if file in ["layout.tsx", "layout.jsx", "_document.tsx", "_document.jsx", "index.html"]:
+                    target_file = os.path.join(root, file)
+                    break
+            if target_file:
+                break
+                
+        if not target_file:
+            # Fallback: search for any index.html
+            for root, dirs, files in os.walk(self.repo_path):
+                dirs[:] = [d for d in dirs if d not in [".git", "node_modules", "build", "dist"]]
+                if "index.html" in files:
+                    target_file = os.path.join(root, "index.html")
+                    break
+                    
+        if not target_file:
+            return {"success": False, "error": "No suitable layout or entrypoint HTML file found to audit."}
+            
+        rel_path = os.path.relpath(target_file, self.repo_path)
+        logger.info(f"Sentinel located master entrypoint file: {rel_path}")
+        
+        with open(target_file, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        # Audit GTM presence and domain mapping
+        has_gtm = gtm_id in content
+        is_client_side = "googletagmanager.com/gtm.js" in content
+        
+        # If it's fully optimized, return success immediately
+        if has_gtm and not is_client_side and target_sgtm_domain in content:
+            return {
+                "success": True,
+                "optimized": True,
+                "file_audited": rel_path,
+                "message": "Tracking is already fully optimized and routed through sGTM!"
+            }
+            
+        # Execute self-healing injection/rewrite
+        modified = content
+        
+        # Scenario A: It's an index.html file (Vite/React SPA)
+        if rel_path.endswith("index.html"):
+            # Inject GTM Script in <head>
+            head_gtm = f"""    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){{w[l]=w[l]||[];w[l].push({{'gtm.start':
+    new Date().getTime(),event:'gtm.js'}});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;
+    j.src='https://{target_sgtm_domain}/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    }})(window,document,'script','dataLayer','{gtm_id}');</script>
+    <!-- End Google Tag Manager -->\n"""
+            
+            # Inject GTM Noscript in <body>
+            body_gtm = f"""    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://{target_sgtm_domain}/ns.html?id={gtm_id}"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->\n"""
+            
+            if "<head>" in modified and "Google Tag Manager" not in modified:
+                modified = modified.replace("<head>", f"<head>\n{head_gtm}")
+            if "<body>" in modified and "Google Tag Manager (noscript)" not in modified:
+                modified = modified.replace("<body>", f"<body>\n{body_gtm}")
+                
+        # Scenario B: Next.js Root Layout (Next.js App Router)
+        elif rel_path.endswith("layout.tsx") or rel_path.endswith("layout.jsx"):
+            # If standard client-side is loading, replace it
+            if "googletagmanager.com/gtm.js" in modified:
+                modified = modified.replace(
+                    "j.src='https://www.googletagmanager.com/gtm.js?id='",
+                    f"j.src='https://{target_sgtm_domain}/gtm.js?id='"
+                )
+            elif "Google Tag Manager" not in modified:
+                # Inject complete Next.js Script tag structure
+                script_tag = f"""        <Script id="gtm-script" strategy="afterInteractive">
+          {{`(function(w,d,s,l,i){{w[l]=w[l]||[];w[l].push({{'gtm.start':
+          new Date().getTime(),event:'gtm.js'}});var f=d.getElementsByTagName(s)[0],
+          j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;
+          j.src='https://{target_sgtm_domain}/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+          }})(window,document,'script','dataLayer','{gtm_id}');`}}
+        </Script>"""
+                if "<head>" in modified:
+                    modified = modified.replace("<head>", f"<head>\n{script_tag}")
+                elif "html" in modified:
+                    modified = modified.replace("<html lang=\"en\">", f"<html lang=\"en\">\n<head>\n{script_tag}\n</head>")
+                    
+        with open(target_file, "w", encoding="utf-8") as f:
+            f.write(modified)
+            
+        logger.info(f"Self-healed layout/index file: {rel_path}")
+        return {
+            "success": True,
+            "optimized": False,
+            "file_audited": rel_path,
+            "healed": True
+        }
+
