@@ -40,8 +40,8 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
 
 
-# Thread-safe memory cache of verified tenant IDs to ensure zero-latency fast-paths
-VALID_TENANTS_CACHE: set[str] = set()
+# Thread-safe memory cache mapping tenant_id -> is_active (bool) to ensure zero-latency fast-paths
+VALID_TENANTS_CACHE: dict[str, bool] = {}
 
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
@@ -53,8 +53,10 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     # Header format: X-Tenant-ID
     tenant_id = request.headers.get("X-Tenant-ID")
 
-    # Bypass validation strictly on public API paths
-    if request.url.path.startswith("/webhooks/plugins/") or request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/tenants", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/connections/oauth/callback"]:
+    # Bypass validation strictly on public or operator-scoped paths
+    if (request.url.path.startswith("/webhooks/plugins/") or 
+        request.url.path.startswith("/tenants") or 
+        request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/tasks/drift-detect", "/tasks/run-diagnostics", "/connections/oauth/callback"]):
       return await call_next(request)
 
     if not tenant_id:
@@ -66,32 +68,47 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     # --- SECURE TENANT VALIDATION ---
     bypass_validation = getattr(request.app.state, "bypass_tenant_validation", False)
     # 1. Fast path: check local memory cache
-    if not bypass_validation and tenant_id not in VALID_TENANTS_CACHE:
-      # 2. Slow path: check database
-      try:
-        session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
-        async with session_maker() as session:
-          stmt = select(Tenant.id).where(Tenant.id == tenant_id)
-          res = await session.execute(stmt)
-          db_tenant_id = res.scalar()
-          
-          if not db_tenant_id:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Unauthorized: Tenant not registered."},
-            )
-          
-          # Cache the verified tenant ID for future fast-paths
-          VALID_TENANTS_CACHE.add(tenant_id)
-      except Exception as e:
-        # Safeguard: If DB query fails, log and block the request (fail closed)
-        import logging
-        logger = logging.getLogger("app.middleware")
-        logger.error(f"Database error during tenant validation for {tenant_id}: {e}")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error during tenant verification."},
-        )
+    if not bypass_validation:
+      if tenant_id in VALID_TENANTS_CACHE:
+        if not VALID_TENANTS_CACHE[tenant_id]:
+          return JSONResponse(
+              status_code=status.HTTP_403_FORBIDDEN,
+              content={"detail": "Forbidden: Tenant account is suspended."},
+          )
+      else:
+        # 2. Slow path: check database
+        try:
+          session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
+          async with session_maker() as session:
+            stmt = select(Tenant.id, Tenant.is_active).where(Tenant.id == tenant_id)
+            res = await session.execute(stmt)
+            row = res.first()
+            
+            if not row:
+              return JSONResponse(
+                  status_code=status.HTTP_401_UNAUTHORIZED,
+                  content={"detail": "Unauthorized: Tenant not registered."},
+              )
+            
+            db_tenant_id, is_active = row
+            
+            # Cache the verified tenant status for future fast-paths
+            VALID_TENANTS_CACHE[tenant_id] = is_active
+            
+            if not is_active:
+              return JSONResponse(
+                  status_code=status.HTTP_403_FORBIDDEN,
+                  content={"detail": "Forbidden: Tenant account is suspended."},
+              )
+        except Exception as e:
+          # Safeguard: If DB query fails, log and block the request (fail closed)
+          import logging
+          logger = logging.getLogger("app.middleware")
+          logger.error(f"Database error during tenant validation for {tenant_id}: {e}")
+          return JSONResponse(
+              status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+              content={"detail": "Internal server error during tenant verification."},
+          )
 
     # Set tenant identification safely across the current thread-safe context
     token = tenant_context.set(tenant_id)

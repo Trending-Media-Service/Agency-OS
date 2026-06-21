@@ -36,6 +36,17 @@ function titleCase(name: string): string {
   return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function cleanFallbackTitle(name: string, domain: string): string {
+  let title = titleCase(name);
+  const domainTitle = titleCase(domain);
+  if (title.toLowerCase().startsWith(domain.toLowerCase() + " ")) {
+    title = title.substring(domain.length + 1);
+  } else if (title.startsWith(domainTitle + " ")) {
+    title = title.substring(domainTitle.length + 1);
+  }
+  return title;
+}
+
 function stateColor(state: string): string {
   switch (state.toUpperCase()) {
     case "APPROVED": return "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
@@ -135,7 +146,7 @@ export function ActionPanel() {
                 title={t.description}
                 className="w-full text-left px-3 py-2 rounded border border-zinc-800 bg-zinc-950 hover:border-zinc-700 hover:bg-zinc-900/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <div className="text-[11px] text-zinc-200 font-medium">{t.title || titleCase(t.name)}</div>
+                <div className="text-[11px] text-zinc-200 font-medium">{t.title || cleanFallbackTitle(t.name, t.domain || "actions")}</div>
                 {t.description && <div className="text-[9px] text-zinc-500 truncate">{t.description}</div>}
               </button>
             ))}
@@ -175,7 +186,7 @@ export function ActionPanel() {
           <div className="bg-zinc-950 border border-zinc-900 rounded-lg p-6 max-w-sm w-full space-y-4 shadow-xl">
             <div className="flex justify-between items-start">
               <div className="space-y-1">
-                <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{selected.title || titleCase(selected.name)}</h3>
+                <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{selected.title || cleanFallbackTitle(selected.name, selected.domain || "actions")}</h3>
                 {selected.description && <p className="text-[10px] text-zinc-500">{selected.description}</p>}
               </div>
               <button onClick={() => setSelected(null)} aria-label="Close" className="text-zinc-500 hover:text-zinc-300">

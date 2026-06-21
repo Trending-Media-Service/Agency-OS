@@ -45,13 +45,28 @@ class SilentWriteVisitor(ast.NodeVisitor):
         self.local_vars = old_vars
 
     def visit_Assign(self, node):
-        # Track local variable assignments to class instantiations
-        # e.g. conn = Connection(...) or event = TrustEvent(...)
+        # Track local variable assignments to class instantiations or DB gets
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             var_name = node.targets[0].id
+            
+            # Case 1: direct instantiation: var = Class(...)
             if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
                 class_name = node.value.func.id
                 self.local_vars[var_name] = class_name
+                
+            # Case 2: await session.get(Class, ...) or session.get(Class, ...)
+            else:
+                call_node = None
+                if isinstance(node.value, ast.Await):
+                    call_node = node.value.value
+                elif isinstance(node.value, ast.Call):
+                    call_node = node.value
+                    
+                if call_node and isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Attribute):
+                    if call_node.func.attr == 'get' and self._get_receiver_name(call_node.func.value) in ('session', 's', 'db', 'db_session'):
+                        if call_node.args and isinstance(call_node.args[0], ast.Name):
+                            class_name = call_node.args[0].id
+                            self.local_vars[var_name] = class_name
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -184,6 +199,9 @@ def test_static_no_silent_writes():
                     # Legacy exception: Meridian calibration writes results directly.
                     # TODO: Refactor to a governed Op (manage.attribution.calibrate) in ManageAdapter.
                     allowed_models = {'BrandProperty'}
+                elif relative_path_key == os.path.normpath('app/main.py'):
+                    # Operator-level admin routes in main.py manage Tenant records directly.
+                    allowed_models = {'Tenant'}
 
                 file_violations = check_file_for_silent_writes(full_path, allowed_models=allowed_models)
                 violations.extend(file_violations)

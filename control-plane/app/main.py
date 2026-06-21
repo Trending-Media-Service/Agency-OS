@@ -336,7 +336,7 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)
     await s.flush()
     
     from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE.add(t.id)
+    VALID_TENANTS_CACHE[t.id] = True
     
     return {"tenant_id": t.id, "brand_id": b.id}
 
@@ -363,6 +363,90 @@ async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
 
     res = await s.execute(stmt)
     return [dict(row) for row in res.mappings().all()]
+
+
+class TenantUpdateIn(BaseModel):
+    is_active: bool
+
+
+class TenantOut(BaseModel):
+    id: str
+    name: str
+    hosting_tier: str
+    gcp_project: str | None = None
+    is_active: bool
+    created_at: dt.datetime
+
+
+@app.patch("/tenants/{tenant_id}", response_model=TenantOut, dependencies=[Depends(verify_operator_auth)])
+async def update_tenant_status(
+    tenant_id: str,
+    body: TenantUpdateIn,
+    s: AsyncSession = Depends(get_worker_db)
+):
+    tenant = await s.get(Tenant, tenant_id)
+    
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    tenant.is_active = body.is_active
+    await s.commit()
+    
+    # Update the gateway memory cache
+    from app.middleware import VALID_TENANTS_CACHE
+    VALID_TENANTS_CACHE[tenant_id] = body.is_active
+    
+    return tenant
+
+
+@app.delete("/tenants/{tenant_id}", status_code=202, dependencies=[Depends(verify_operator_auth)])
+async def delete_tenant(
+    tenant_id: str,
+    background_tasks: BackgroundTasks,
+    s: AsyncSession = Depends(get_worker_db)
+):
+    tenant = await s.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    # Propose a governed offboard Op
+    import uuid
+    from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
+    from app.kernel.services import resolve_brand_tier
+    from app.database import get_worker_session_maker
+    
+    op_id = f"op_offboard_{uuid.uuid4().hex[:12]}"
+    spec = OpSpec(
+        id=op_id,
+        tenant_id=tenant_id,
+        brand_id="_system",
+        domain="manage",
+        action="manage.tenant.offboard",
+        params={"target_tenant_id": tenant_id},
+        severity=Severity(impact=3, reversibility=Reversibility.IRREVERSIBLE),
+        cost_estimate=Money(amount_minor=0, currency="INR")
+    )
+    
+    # Propose Op using the RLS-bypassed worker session
+    row = await loop.propose(s, spec, actor="api:operator")
+    
+    # Resolve tier (default 1) and gate
+    tier = await resolve_brand_tier(s, tenant_id=tenant_id, brand_id="_system", domain="manage")
+    gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
+    
+    await s.commit()
+    
+    # If it needs approval, send notifications
+    if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
+        background_tasks.add_task(send_whatsapp_card_task, row.id, get_worker_session_maker())
+        
+    return {
+        "status": "proposed",
+        "op_id": row.id,
+        "state": row.state,
+        "requirement": requirement,
+        "preview": row.preview_summary
+    }
 
 
 class BrandPortfolioItem(BaseModel):
@@ -551,12 +635,16 @@ async def chat(body: ChatIn, background_tasks: BackgroundTasks,
     elif any(w in normalized for w in ["bootstrap", "onboard", "host", "provision", "deploy", "website", "launch"]) or has_domain:
         intent_text = body.text
         domain_name = "provision"
+    elif any(w in normalized for w in ["build", "change", "update", "modify", "fix", "color", "style", "design", "css", "html"]):
+        intent_text = body.text
+        domain_name = "build"
     else:
         # Unrecognized — guide the operator instead of silently proposing a deploy.
         return {
             "reply": (
                 "I didn't recognize that as an action. I can: host a site "
-                "(e.g. \"host ableys.in\"), pause a campaign (\"pause campaign camp-1\"), "
+                "(e.g. \"host ableys.in\"), modify code/styling (e.g. \"change hero color to blue\"), "
+                "pause a campaign (\"pause campaign camp-1\"), "
                 "adjust a bid (\"adjust bid for campaign camp-1 to 50 inr\"), "
                 "check budgets (\"what's my spend?\"), or run diagnostics (\"show system status\")."
             ),
@@ -1350,6 +1438,28 @@ async def refresh_tokens_task(s: AsyncSession = Depends(get_worker_db)):
     from app.tasks.rotation import rotate_expiring_tokens
     await rotate_expiring_tokens(s)
     return {"status": "ok", "message": "Token rotation completed"}
+
+
+@app.post("/tasks/drift-detect", dependencies=[Depends(verify_worker_auth)])
+async def drift_detect_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to run periodic configuration drift detection sweeps across all tenants.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.drift import run_drift_detection_sweep
+    await run_drift_detection_sweep(s)
+    return {"status": "ok", "message": "Drift detection sweep completed"}
+
+
+@app.post("/tasks/run-diagnostics", dependencies=[Depends(verify_worker_auth)])
+async def run_diagnostics_task(s: AsyncSession = Depends(get_worker_db)):
+    """Background task to run periodic diagnostics log sweeps across all tenants.
+
+    Bypasses RLS by using get_worker_db.
+    """
+    from app.tasks.diagnostics import run_diagnostics_sweep
+    await run_diagnostics_sweep(s)
+    return {"status": "ok", "message": "Diagnostics logs sweep completed"}
 
 
 @app.post("/tasks/check-graduations", dependencies=[Depends(verify_worker_auth)])

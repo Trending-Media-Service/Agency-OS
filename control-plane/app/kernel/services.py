@@ -783,6 +783,11 @@ def check_role_authority(op: OpSpec, role: str, rules: RulesetParams) -> Optiona
     if not auth.get("allow_irreversible", False):
       return f"{role} cannot approve IRREVERSIBLE Ops"
 
+  # 6. Action-specific top-tier constraints (tenant offboarding/destruction requires AGENCY_OWNER)
+  if op.action in ("manage.tenant.offboard", "manage.tenant.hard_delete"):
+    if role_norm != "AGENCY_OWNER":
+      return f"Only AGENCY_OWNER can approve tenant offboarding or destruction (attempted as {role})"
+
   return None
 
 

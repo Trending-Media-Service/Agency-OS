@@ -96,7 +96,7 @@ async def test_precedence_both_keys_present_grow(session, mock_secrets_client):
         domain="grow",
         action="grow.google.connect",
         params={
-            "provider": "google",
+            "provider": "google-ads",
             "credential": "google-primary-credential",
             "secret_ref": "google-legacy-secret-ref",
             "config": {"developer_token": "dev-token-123"}
@@ -109,7 +109,7 @@ async def test_precedence_both_keys_present_grow(session, mock_secrets_client):
     stmt = select(Connection).where(
         Connection.tenant_id == "test-tenant",
         Connection.brand_id == "test-brand",
-        Connection.provider == "google"
+        Connection.provider == "google-ads"
     )
     db_res = await session.execute(stmt)
     conn = db_res.scalar_one_or_none()
