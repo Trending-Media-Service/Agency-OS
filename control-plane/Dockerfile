@@ -64,6 +64,11 @@ RUN mkdir -p /app /recipes && \
 # Copy application code and recipes with correct ownership
 COPY --chown=appuser:appgroup app/ /app/app/
 COPY --chown=appuser:appgroup migrate.py /app/
+# Alembic config + migration scripts are required by the migrate Cloud Run job.
+# Without these, migrate.py fails with:
+#   CommandError: No config file '/app/alembic.ini' found
+COPY --chown=appuser:appgroup alembic.ini /app/
+COPY --chown=appuser:appgroup migrations/ /app/migrations/
 COPY --chown=appuser:appgroup recipes/ /recipes/
 
 # Expose FastAPI port
