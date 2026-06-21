@@ -384,3 +384,82 @@ class GoogleAdsClient(MarketingClient):
             except Exception as e:
                 logger.exception(f"Generic keyword cleanup failed: {e}")
                 return False, []
+
+    async def bootstrap_offline_conversions(self) -> dict[str, Any]:
+        """Checks for and automatically creates the required 'UPLOAD_CLICKS' conversion action.
+
+        This ensures that the CRM POAS attribution engine has a valid endpoint to upload
+        closed-won lead values, providing 100% self-healing setup.
+        """
+        action_name = "AgencyOS CRM Lead Conversion"
+        if self._is_mock:
+            return {
+                "success": True,
+                "conversion_action_id": "mock-conversion-12345",
+                "name": action_name,
+                "status": "CREATED_MOCK"
+            }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                # Step 1: Query if the active conversion action already exists
+                query = f"""
+                    SELECT conversion_action.id, conversion_action.name, conversion_action.type, conversion_action.status 
+                    FROM conversion_action 
+                    WHERE conversion_action.name = '{action_name}' AND conversion_action.status = 'ENABLED'
+                """
+                url_search = f"{self.api_url}/customers/{self.customer_id}/googleAds:search"
+                resp = await self._send_with_retry(client, "POST", url_search, headers=self.headers, json_data={"query": query})
+                
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    if results:
+                        action = results[0]["conversion_action"]
+                        logger.info(f"Active conversion action '{action_name}' already exists with ID: {action['id']}.")
+                        return {
+                            "success": True,
+                            "conversion_action_id": str(action["id"]),
+                            "name": action_name,
+                            "status": "ALREADY_EXISTS"
+                        }
+
+                # Step 2: If not found, programmatically create it
+                logger.info(f"Conversion action '{action_name}' not found. Programmatically bootstrapping...")
+                operations = [
+                    {
+                        "create": {
+                          "name": action_name,
+                          "type": "UPLOAD_CLICKS",
+                          "status": "ENABLED",
+                          "category": "LEAD",
+                          "primaryForGoal": True,
+                          "valueSettings": {
+                              "defaultValue": 1.0,
+                              "alwaysUseDefaultValue": False
+                          }
+                        }
+                    }
+                ]
+                url_mutate = f"{self.api_url}/customers/{self.customer_id}/conversionActions:mutate"
+                resp_mutate = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data={"operations": operations})
+                
+                if resp_mutate.status_code == 200:
+                    mutate_results = resp_mutate.json().get("results", [])
+                    if mutate_results:
+                        resource_name = mutate_results[0]["resourceName"]
+                        # Extract ID from resourceName: customers/{customer_id}/conversionActions/{conversion_action_id}
+                        action_id = resource_name.split("/")[-1]
+                        logger.info(f"Successfully bootstrapped conversion action '{action_name}' with ID: {action_id}")
+                        return {
+                            "success": True,
+                            "conversion_action_id": action_id,
+                            "name": action_name,
+                            "status": "CREATED"
+                        }
+                
+                logger.error(f"Failed to bootstrap conversion action: {resp_mutate.status_code} - {resp_mutate.text}")
+                return {"success": False, "error": resp_mutate.text}
+            except Exception as e:
+                logger.exception(f"Error bootstrapping offline conversions: {e}")
+                return {"success": False, "error": str(e)}
+
