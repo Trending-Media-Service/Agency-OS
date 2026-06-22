@@ -17,8 +17,16 @@ onboarding API, until the self-serve frontend wizard exists.
   backend by the deploy's **"Resolve runtime secrets"** step. Until a provider's
   secret exists, its OAuth uses the `mock-*` fallback and **cannot** complete a
   real handshake.
-- `BACKEND` = the deployed control-plane URL
-  (`https://agency-os-backend-…run.app`).
+- `BACKEND` = the deployed control-plane URL — once the custom domain is live,
+  `https://api.trendingmediagroup.in` (see `DOMAINS.md`); until then the
+  `https://agency-os-backend-…run.app` URL.
+- **`SECRET_KEY`** (secret `aos-oauth-state-secret`) must also be provisioned — it
+  HMAC-signs the OAuth `state`. Without it the app uses an insecure hardcoded
+  default and state tokens are forgeable. Generate once: `openssl rand -base64 32`.
+
+> **Quick start:** `BACKEND=https://api.yourdomain.com ./scripts/onboard.sh --name Ableys --domain ableys.com --shop ableys`
+> bootstraps the tenant and prints the authorize URLs + follow-up commands. The
+> steps below are the manual equivalent.
 
 ## Step 1 — Create the tenant + brand
 
@@ -67,6 +75,33 @@ curl -sS -X POST \
 The key is written to Secret Manager (tenant/brand-scoped) and a `Connection`
 row is seeded.
 
+## Step 3b — Provider settings (e.g. Google Ads developer token)
+
+Some providers need config that OAuth doesn't capture — notably the Google Ads
+**developer token** (Ads → Tools → API Center), read by
+`app/services/google_ads.py` from the connection `config`. After the Google Ads
+OAuth connection exists, merge it in:
+
+```bash
+curl -sS -X POST \
+  "$BACKEND/api/v1/onboarding/connection/config?tenant_id=<tenant_id>&brand_id=<brand_id>&provider=google-ads" \
+  -H 'Content-Type: application/json' -d '{"developer_token":"<YOUR_DEV_TOKEN>"}'
+```
+
+## Step 3c — Headless storefront on GitHub (e.g. Tanmatra)
+
+No first-class GitHub connector exists yet, but a headless site is supported today:
+
+1. Register the site (URL + a deploy token, e.g. Vercel) as a `web` connection:
+   ```bash
+   curl -sS -X POST \
+     "$BACKEND/api/v1/onboarding/connection/direct?tenant_id=<tenant_id>&brand_id=<brand_id>&provider=web&api_key=<DEPLOY_TOKEN>" \
+     -H 'Content-Type: application/json' -d '{"url":"https://tanmatra.com"}'
+   ```
+2. Drive code changes through the build agent (`build_deliver`) with the GitHub
+   repo URL + a GitHub PAT as the access token. (A real "Connect GitHub" OAuth
+   connector is future work.)
+
 ## Step 4 — Verify
 
 - `GET $BACKEND/connections` with header `X-Tenant-ID: <tenant_id>` → the new
@@ -78,6 +113,7 @@ row is seeded.
 
 - **No brand auth** — onboarding endpoints trust the IDs in the URL. Secure them
   to an authenticated brand session before exposing self-serve.
-- **No frontend wizard / callback page** — drive via the URLs above for now.
-- **Google Ads developer token** is read from the connection `config`, not from
-  the environment; supply it when creating the Google Ads connection.
+- **No frontend wizard / callback page** — drive via the URLs above (or
+  `scripts/onboard.sh`) for now.
+- **No first-class GitHub connector** — headless apps use a `web` connection +
+  the build agent with a repo URL + PAT (Step 3c); real GitHub OAuth is future work.

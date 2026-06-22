@@ -32,6 +32,7 @@ declare -A SECRET_NAME=(
   [OPERATOR_TOKEN]=aos-operator-token
   [WHATSAPP_APP_SECRET]=whatsapp-app-secret
   [WHATSAPP_VERIFY_TOKEN]=whatsapp-verify-token
+  [SECRET_KEY]=aos-oauth-state-secret
   [GOOGLE_ADS_CLIENT_ID]=google-ads-client-id
   [GOOGLE_ADS_CLIENT_SECRET]=google-ads-client-secret
   [GOOGLE_ADS_DEVELOPER_TOKEN]=google-ads-developer-token

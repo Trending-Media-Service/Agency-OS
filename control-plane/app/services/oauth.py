@@ -211,7 +211,8 @@ class OauthService:
         brand_id: str, 
         provider: str,
         code: str,
-        shop: Optional[str] = None
+        shop: Optional[str] = None,
+        redirect_uri: Optional[str] = None
     ) -> Dict[str, Any]:
         """Exchanges the authorization code for access and refresh tokens, writing them to Secret Manager."""
         logger.info(f"Exchanging OAuth authorization code for tenant={tenant_id}, provider={provider}...")
@@ -229,8 +230,10 @@ class OauthService:
         else:
             from app.services.oauth_registry import OauthProviderRegistry
             env_prefix = provider.replace("-", "_").upper()
-            redirect_uri = os.getenv(f"{env_prefix}_REDIRECT_URI", "http://localhost/callback")
-            url, payload = OauthProviderRegistry.get_exchange_payload(provider, code, redirect_uri=redirect_uri)
+            # The redirect_uri MUST match the one used in the authorize request; it is
+            # carried in the signed OAuth state. Fall back to env/default for back-compat.
+            resolved_redirect = redirect_uri or os.getenv(f"{env_prefix}_REDIRECT_URI", "http://localhost/callback")
+            url, payload = OauthProviderRegistry.get_exchange_payload(provider, code, redirect_uri=resolved_redirect)
             
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:

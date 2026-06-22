@@ -246,3 +246,66 @@ def test_normalize_shopify_domain():
     assert normalize_shopify_domain("ableys.myshopify.com") == "ableys.myshopify.com"
     assert normalize_shopify_domain("https://ableys.myshopify.com/admin") == "ableys.myshopify.com"
     assert normalize_shopify_domain("ABLEYS") == "ableys.myshopify.com"
+
+
+@pytest.mark.asyncio
+async def test_onboarding_connection_config(client, session: AsyncSession):
+    # Seed a tenant/brand/connection, then merge extra config (e.g. Google Ads dev token).
+    session.add(Tenant(id="t-5", name="Cfg", hosting_tier="shared"))
+    session.add(Brand(id="b-5", tenant_id="t-5", name="Cfg"))
+    session.add(Connection(tenant_id="t-5", brand_id="b-5", provider="google-ads",
+                           credential="ref", config={}, status="active"))
+    await session.commit()
+
+    resp = await client.post(
+        "/api/v1/onboarding/connection/config?tenant_id=t-5&brand_id=b-5&provider=google-ads",
+        json={"developer_token": "real-dev-token-123"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "connection_configured"
+
+    session.expire_all()
+    stmt = select(Connection).where(
+        Connection.tenant_id == "t-5", Connection.brand_id == "b-5", Connection.provider == "google-ads"
+    )
+    updated = (await session.execute(stmt)).scalar_one()
+    assert updated.config.get("developer_token") == "real-dev-token-123"
+
+
+@pytest.mark.asyncio
+async def test_onboarding_connection_config_missing_404(client):
+    resp = await client.post(
+        "/api/v1/onboarding/connection/config?tenant_id=nope&brand_id=nope&provider=google-ads",
+        json={"developer_token": "x"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("app.services.oauth.SecretManagerClient")
+async def test_onboarding_callback_threads_redirect_uri(mock_secrets_cls, clean_env, client, session: AsyncSession):
+    # For non-Shopify providers the token exchange must use the redirect_uri carried in
+    # the signed state (not the localhost env default), or the exchange would fail.
+    session.add(Tenant(id="t-6", name="G", hosting_tier="shared"))
+    session.add(Brand(id="b-6", tenant_id="t-6", name="G"))
+    await session.commit()
+
+    mock_secrets = MagicMock()
+    mock_secrets.write_secret = AsyncMock(side_effect=lambda sid, val: f"projects/test/secrets/{sid}/versions/1")
+    mock_secrets_cls.return_value = mock_secrets
+
+    redirect = "https://api.example.com/api/v1/onboarding/oauth/callback"
+    state = generate_oauth_state(tenant_id="t-6", brand_id="b-6", redirect_uri=redirect, provider="google-ads")
+
+    with patch("app.services.oauth_registry.OauthProviderRegistry.get_exchange_payload") as mock_xchg, \
+         patch("httpx.AsyncClient.post") as mock_post:
+        mock_xchg.return_value = ("https://oauth2.googleapis.com/token", {"code": "c"})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+        mock_post.return_value = mock_resp
+
+        resp = await client.get(f"/api/v1/onboarding/oauth/callback?code=abc&state={state}")
+        assert resp.status_code == 200
+        mock_xchg.assert_called_once()
+        assert mock_xchg.call_args.kwargs["redirect_uri"] == redirect
