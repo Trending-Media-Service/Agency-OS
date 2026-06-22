@@ -169,30 +169,101 @@ class GoogleAdsClient(MarketingClient):
         if self._is_mock:
             return await self._mock_client.update_campaign_ad_copy(campaign_id, new_headline)
 
-        url = f"{self.api_url}/customers/{self.customer_id}/adGroupAds:mutate"
-        payload = {
+        # 1. Search for the existing Responsive Search Ad (RSA) in the campaign
+        search_query = (
+            f"SELECT ad_group_ad.resource_name, ad_group.resource_name, ad_group_ad.ad.responsive_search_ad.headlines "
+            f"FROM ad_group_ad "
+            f"WHERE campaign.id = '{campaign_id}' AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD' "
+            f"LIMIT 1"
+        )
+        
+        logger.info(f"Sentinel searching for existing RSA in campaign {campaign_id}...")
+        try:
+            search_results = await self.search(search_query)
+        except Exception as e:
+            logger.error(f"Failed to search for target RSA in campaign {campaign_id}: {e}")
+            return False
+
+        results_list = search_results.get("results", [])
+        if not results_list:
+            logger.warning(f"No existing Responsive Search Ad found for campaign {campaign_id}. Cannot optimize ad copy.")
+            return False
+
+        target_ad = results_list[0].get("adGroupAd")
+        target_ad_group = results_list[0].get("adGroup")
+        
+        if not target_ad or not target_ad_group:
+            logger.error("Failed to parse ad_group_ad or ad_group resource names from search results.")
+            return False
+            
+        old_ad_resource_name = target_ad.get("resourceName")
+        ad_group_resource_name = target_ad_group.get("resourceName")
+        
+        # Get existing headlines to merge them and preserve ad strength
+        existing_headlines = target_ad.get("ad", {}).get("responsiveSearchAd", {}).get("headlines", [])
+        
+        new_headlines = [{"text": new_headline, "pinnedField": "HEADLINE_1"}]
+        for h in existing_headlines:
+            if h.get("text") != new_headline:
+                new_headlines.append({"text": h.get("text")})
+                
+        new_headlines = new_headlines[:15]
+
+        # 2. Build and execute the Create + Pause mutation sequence (Safer pattern!)
+        url_mutate = f"{self.api_url}/customers/{self.customer_id}/adGroupAds:mutate"
+        
+        create_payload = {
             "operations": [
                 {
-                    "update": {
+                    "create": {
+                        "adGroup": ad_group_resource_name,
+                        "status": "ENABLED",
                         "ad": {
+                            "type": "RESPONSIVE_SEARCH_AD",
                             "responsiveSearchAd": {
-                                "headlines": [{"text": new_headline, "pinnedField": "HEADLINE_1"}]
+                                "headlines": new_headlines
                             }
                         }
                     }
                 }
             ]
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        
+        logger.info(f"Sentinel programmatically creating new optimized RSA under ad group {ad_group_resource_name}...")
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
             try:
-                resp = await self._send_with_retry(client, "POST", url, headers=self.headers, json_data=payload)
-                if resp.status_code == 200:
-                    logger.info(f"Google Ads ad copy for campaign {campaign_id} updated successfully")
-                    return True
-                logger.error(f"Google Ads ad copy update failed: {resp.status_code} - {resp.text}")
-                return False
+                resp_create = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data=create_payload)
+                if resp_create.status_code != 200:
+                    logger.error(f"Google Ads RSA creation failed: {resp_create.status_code} - {resp_create.text}")
+                    return False
+                
+                logger.info(f"Optimized RSA created successfully in Google Ads.")
+                
+                # Pause the old Ad Group Ad
+                pause_payload = {
+                    "operations": [
+                        {
+                            "update": {
+                                "resourceName": old_ad_resource_name,
+                                "status": "PAUSED"
+                            },
+                            "updateMask": "status"
+                        }
+                    ]
+                }
+                
+                logger.info(f"Sentinel pausing the old unoptimized RSA: {old_ad_resource_name}...")
+                resp_pause = await self._send_with_retry(client, "POST", url_mutate, headers=self.headers, json_data=pause_payload)
+                if resp_pause.status_code != 200:
+                    logger.warning(f"Failed to pause old RSA {old_ad_resource_name}: {resp_pause.status_code} - {resp_pause.text}")
+                else:
+                    logger.info(f"Old RSA {old_ad_resource_name} successfully paused.")
+                    
+                return True
+                
             except Exception as e:
-                logger.error(f"Google Ads API request failed: {e}")
+                logger.error(f"Google Ads API request failed during RSA optimize cycle: {e}")
                 return False
 
     async def delete_campaign(self, campaign_id: str) -> bool:

@@ -203,3 +203,86 @@ async def test_google_ads_real_campaign_id_injection_protection(real_client):
         with pytest.raises(ValueError) as exc:
             await real_client.delete_campaign(unsafe_id)
         assert "Invalid/unsafe campaign_id format" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_google_ads_real_update_campaign_ad_copy(real_client):
+    with patch("httpx.AsyncClient.post") as mock_post:
+        # Mock responses for the 3 sequential HTTP calls:
+        # 1. Search Query
+        mock_resp_search = MagicMock()
+        mock_resp_search.status_code = 200
+        mock_resp_search.json.return_value = {
+            "results": [
+                {
+                    "adGroupAd": {
+                        "resourceName": "customers/cust-999-888/adGroupAds/ad-group-123~ad-456",
+                        "ad": {
+                            "responsiveSearchAd": {
+                                "headlines": [
+                                    {"text": "Original Headline A"},
+                                    {"text": "Original Headline B"}
+                                ]
+                            }
+                        }
+                    },
+                    "adGroup": {
+                        "resourceName": "customers/cust-999-888/adGroups/ad-group-123"
+                    }
+                }
+            ]
+        }
+
+        # 2. Create optimized RSA
+        mock_resp_create = MagicMock()
+        mock_resp_create.status_code = 200
+        mock_resp_create.json.return_value = {"resourceName": "customers/cust-999-888/adGroupAds/ad-group-123~ad-789"}
+
+        # 3. Pause old RSA
+        mock_resp_pause = MagicMock()
+        mock_resp_pause.status_code = 200
+        mock_resp_pause.json.return_value = {}
+
+        # Async side-effect runner for the 3 sequential HTTP requests
+        calls_count = 0
+        async def mock_post_side_effect(url, *args, **kwargs):
+            nonlocal calls_count
+            calls_count += 1
+            if calls_count == 1:
+                assert "googleAds:search" in url
+                return mock_resp_search
+            elif calls_count == 2:
+                # Create mutation payload check
+                payload = kwargs.get("json", {})
+                op = payload["operations"][0]["create"]
+                assert op["adGroup"] == "customers/cust-999-888/adGroups/ad-group-123"
+                assert op["status"] == "ENABLED"
+                assert op["ad"]["type"] == "RESPONSIVE_SEARCH_AD"
+                
+                headlines = op["ad"]["responsiveSearchAd"]["headlines"]
+                # Verify that the new headline was pinned to HEADLINE_1
+                assert headlines[0]["text"] == "Highly Personalized Optimized Headline"
+                assert headlines[0]["pinnedField"] == "HEADLINE_1"
+                # Verify that the existing headlines were preserved
+                assert headlines[1]["text"] == "Original Headline A"
+                assert headlines[2]["text"] == "Original Headline B"
+                return mock_resp_create
+            elif calls_count == 3:
+                # Pause mutation payload check
+                payload = kwargs.get("json", {})
+                op = payload["operations"][0]["update"]
+                assert op["resourceName"] == "customers/cust-999-888/adGroupAds/ad-group-123~ad-456"
+                assert op["status"] == "PAUSED"
+                assert kwargs.get("json", {}).get("operations", [{}])[0].get("updateMask") == "status"
+                return mock_resp_pause
+            raise RuntimeError("Unexpected HTTP POST call beyond the 3 RSA steps")
+
+        mock_post.side_effect = mock_post_side_effect
+
+        ok = await real_client.update_campaign_ad_copy(
+            campaign_id="camp-123",
+            new_headline="Highly Personalized Optimized Headline"
+        )
+        assert ok is True
+        assert calls_count == 3
+
