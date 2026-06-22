@@ -141,6 +141,16 @@ class MockMarketingClient:
             return True
         return False
 
+    async def update_campaign_ad_copy(self, campaign_id: str, new_headline: str) -> bool:
+        campaigns = self._load()
+        if campaign_id not in campaigns:
+            logger.error(f"Campaign {campaign_id} not found in mock store")
+            return False
+        campaigns[campaign_id]["headline"] = new_headline
+        self._save(campaigns)
+        logger.info(f"Mock updated campaign {campaign_id} ad copy to: {new_headline}")
+        return True
+
     async def get_campaign(self, campaign_id: str) -> dict | None:
         campaigns = self._load()
         return campaigns.get(campaign_id)

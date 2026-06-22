@@ -3,6 +3,7 @@ import json
 import logging
 import httpx
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -104,22 +105,41 @@ class VertexAIClient:
                 logger.error(f"Failed to parse model response payload: {e}. Raw response: {data}")
                 raise RuntimeError("Invalid model response format")
 
-    async def generate_personalized_content(self, tenant_id: str, brand_id: str, prompt: str, system_instruction: Optional[str] = None) -> str:
+    async def generate_personalized_content(
+        self, 
+        tenant_id: str, 
+        brand_id: str, 
+        prompt: str, 
+        session: AsyncSession, 
+        system_instruction: Optional[str] = None
+    ) -> str:
         """Executes Tier 1 (RAG) and Tier 2 (Memory Graph) context injection to generate personalized copy.
         
         It programmatically queries the brand metadata for Tone of Voice (TOV), 
         Target Personas, and past experiences, and injects them into the prompt.
         """
-        # Mock RAG context resolution for test environment
+        from app.models import BrandProperty
+        from sqlalchemy import select
+        
+        # 1. Dynamic RAG / Brand Identity database lookup!
         tone_of_voice = "Playful, sensory-friendly, empathetic"
         target_persona = "Parents of children with ADHD, sensory-seeking toddlers"
         past_experience = "Using the word 'Discounts' in ad copy decreased conversions by 8%."
         
-        # In production, query the database for these brand properties
-        # (This is actual, live database/context resolution execution code!)
         try:
-            # Emulated DB lookup:
-            logger.info(f"Sentinel fetching RAG & Memory Graph context for tenant {tenant_id} / brand {brand_id}...")
+            stmt = select(BrandProperty).where(
+                BrandProperty.tenant_id == tenant_id,
+                BrandProperty.brand_id == brand_id,
+                BrandProperty.type == "brand_identity",
+                BrandProperty.status == "active"
+            )
+            res = await session.execute(stmt)
+            bp_identity = res.scalar_one_or_none()
+            if bp_identity and bp_identity.findings:
+                tone_of_voice = bp_identity.findings.get("tone_of_voice", tone_of_voice)
+                target_persona = bp_identity.findings.get("target_persona", target_persona)
+                past_experience = bp_identity.findings.get("past_experience", past_experience)
+                logger.info(f"Dynamic RAG context successfully resolved from DB for brand {brand_id}")
         except Exception as e:
             logger.warning(f"Failed to fetch brand properties from DB: {e}. Falling back to defaults.")
 
@@ -143,12 +163,22 @@ class VertexAIClient:
         
         # Tier 3: Check if a Tenant-Isolated LoRA Adapter is active for this tenant
         # If active, route the URL to the custom LoRA endpoint instead of the base model!
-        # Endpoint schema: projects/{project}/locations/{region}/endpoints/{tenant_id}-lora-endpoint
-        lora_active = False
-        if lora_active:
-            url = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.region}/endpoints/{tenant_id}-lora-endpoint:predict"
-        else:
-            url = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.region}/publishers/google/models/{self.model}:generateContent"
+        url = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.region}/publishers/google/models/{self.model}:generateContent"
+        
+        try:
+            stmt_lora = select(BrandProperty).where(
+                BrandProperty.tenant_id == tenant_id,
+                BrandProperty.brand_id == brand_id,
+                BrandProperty.type == "lora_adapter",
+                BrandProperty.status == "active"
+            )
+            res_lora = await session.execute(stmt_lora)
+            bp_lora = res_lora.scalar_one_or_none()
+            if bp_lora and bp_lora.findings and bp_lora.findings.get("endpoint_url"):
+                url = bp_lora.findings.get("endpoint_url")
+                logger.info(f"Sentinel dynamically routing request to Tenant LoRA Endpoint: {url}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch LoRA adapter from DB: {e}. Using base model.")
 
         headers = {
             "Authorization": f"Bearer {token}",

@@ -162,6 +162,39 @@ class GoogleAdsClient(MarketingClient):
                 logger.error(f"Google Ads API request failed: {e}")
                 return False
 
+    async def update_campaign_ad_copy(self, campaign_id: str, new_headline: str) -> bool:
+        if not re.match(r"^[a-zA-Z0-9\-_]+$", campaign_id):
+            raise ValueError(f"Invalid/unsafe campaign_id format: {campaign_id}")
+
+        if self._is_mock:
+            return await self._mock_client.update_campaign_ad_copy(campaign_id, new_headline)
+
+        url = f"{self.api_url}/customers/{self.customer_id}/adGroupAds:mutate"
+        payload = {
+            "operations": [
+                {
+                    "update": {
+                        "ad": {
+                            "responsiveSearchAd": {
+                                "headlines": [{"text": new_headline, "pinnedField": "HEADLINE_1"}]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await self._send_with_retry(client, "POST", url, headers=self.headers, json_data=payload)
+                if resp.status_code == 200:
+                    logger.info(f"Google Ads ad copy for campaign {campaign_id} updated successfully")
+                    return True
+                logger.error(f"Google Ads ad copy update failed: {resp.status_code} - {resp.text}")
+                return False
+            except Exception as e:
+                logger.error(f"Google Ads API request failed: {e}")
+                return False
+
     async def delete_campaign(self, campaign_id: str) -> bool:
         if not re.match(r"^[a-zA-Z0-9\-_]+$", campaign_id):
             raise ValueError(f"Invalid/unsafe campaign_id format: {campaign_id}")

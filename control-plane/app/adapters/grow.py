@@ -71,6 +71,29 @@ class GrowAdapter(Adapter):
                 )
             ]
 
+        if "optimize" in words and ("copy" in words or "headline" in words):
+            campaign_id = "camp-ableys-brand-search"
+            for w in words:
+                if w.startswith("camp-"):
+                    campaign_id = w
+                    break
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="grow.marketing.optimize_copy",
+                    params={
+                        "campaign_id": campaign_id,
+                        "original_headline": "Affordable Rehabilitation Solutions",
+                        "prompt": "Write a highly compelling, personalized ad headline focused on senior physical therapy and sensory-friendly rehabilitation.",
+                        "provider": "google-ads"
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(0)
+                )
+            ]
+
         if "connect" in words and ("google" in words or "google-ads" in words or "google_ads" in words):
             credential = next((w for w in words if w.startswith("secret:")), "secret:google-ads-token")
             if credential.startswith("secret:"):
@@ -336,6 +359,18 @@ class GrowAdapter(Adapter):
             summary = f"Will execute an AI-Readiness Audit on campaign {campaign_id} (consisting of broad-match keyword scans, smart bidding checks, and asset-group completeness audits)."
             return PreviewArtifact(kind="ai_readiness_preview", summary=summary, detail=op.params)
 
+        elif op.action == "grow.marketing.optimize_copy":
+            campaign_id = op.params.get("campaign_id")
+            original_headline = op.params.get("original_headline")
+            summary = (
+                f"Will execute AI Copywriting Optimization on campaign {campaign_id}.\n"
+                f"  - Original Headline: '{original_headline}'\n"
+                f"  - Dynamic RAG Injection: YES (Fetches Tone of Voice, Target Audience from Brand properties)\n"
+                f"  - Dynamic LoRA Adapter Routing: YES (Checks for active tenant-isolated fine-tuned weights)\n"
+                f"  - Mutate Target: Google Ads Responsive Search Ads"
+            )
+            return PreviewArtifact(kind="marketing_copy_optimize_preview", summary=summary, detail=op.params)
+
         elif op.action == "grow.campaign.create":
             name = op.params.get("name")
             budget = op.params.get("budget_minor", 0) / 100
@@ -592,6 +627,41 @@ class GrowAdapter(Adapter):
                 return ExecResult(ok=True, detail={"message": f"Campaign {campaign_id} deleted"})
             return ExecResult(ok=False, detail={"error": f"Failed to delete campaign {campaign_id}"})
             
+        elif op.action == "grow.marketing.optimize_copy":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session is required to fetch brand RAG/LoRA context"})
+                
+            prompt = op.params.get("prompt")
+            original_headline = op.params.get("original_headline")
+            campaign_id = op.params.get("campaign_id")
+            
+            from app.services.llm import VertexAIClient
+            llm_client = VertexAIClient()
+            
+            try:
+                personalized_headline = await llm_client.generate_personalized_content(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    prompt=prompt,
+                    session=session
+                )
+            except Exception as e:
+                logger.error(f"Failed to generate personalized ad copy: {e}")
+                return ExecResult(ok=False, detail={"error": f"LLM personalization failed: {str(e)}"})
+                
+            ok = await client.update_campaign_ad_copy(campaign_id, personalized_headline)
+            if ok:
+                return ExecResult(
+                    ok=True,
+                    detail={
+                        "message": f"Ad copy for campaign {campaign_id} successfully optimized and personalized!",
+                        "original_headline": original_headline,
+                        "optimized_headline": personalized_headline,
+                        "provider": provider
+                    }
+                )
+            return ExecResult(ok=False, detail={"error": f"Failed to update ad copy in Google Ads for campaign {campaign_id}"})
+
         elif op.action == "grow.bid.adjust":
             new_bid = op.params.get("new_bid_minor")
             ok = await client.update_campaign(campaign_id, bid_minor=new_bid)

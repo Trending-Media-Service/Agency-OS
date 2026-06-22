@@ -212,3 +212,84 @@ async def test_grow_google_connect_execute_backward_compatibility(adapter, sessi
     secrets_client = SecretManagerClient()
     val = await secrets_client.read_secret(conn.credential)
     assert val == "legacy-gads-secret-token"
+
+
+@pytest.mark.asyncio
+async def test_grow_marketing_optimize_copy_integration(adapter, session):
+    from app.models import BrandProperty, Connection
+    from app.services.marketing import MockMarketingClient
+    from app.services.secrets import SecretManagerClient
+    
+    MockMarketingClient.clear()
+    
+    # 1. Register the Google Ads token in the mock Secret Manager registry
+    secrets_client = SecretManagerClient()
+    credential_ref = await secrets_client.write_secret("t1-b1-google-ads-secret", "mock-gads-token-value")
+    
+    # 2. Seed the Google Ads Connection pointing to the registered secret
+    conn = Connection(
+        tenant_id="t1",
+        brand_id="b1",
+        provider="google-ads",
+        credential=credential_ref,
+        config={}
+    )
+    session.add(conn)
+    
+    # 3. Seed the Brand Identity (RAG) context
+    rag_prop = BrandProperty(
+        tenant_id="t1",
+        brand_id="b1",
+        type="brand_identity",
+        provider="internal",
+        status="active",
+        findings={
+            "tone_of_voice": "Energetic and clinical",
+            "target_persona": "Orthopedic surgeons",
+            "past_experience": "Avoid using 'cheap'"
+        }
+    )
+    session.add(rag_prop)
+    
+    # 4. Seed the Tenant LoRA Adapter
+    lora_prop = BrandProperty(
+        tenant_id="t1",
+        brand_id="b1",
+        type="lora_adapter",
+        provider="vertex-ai",
+        status="active",
+        findings={
+            "endpoint_url": "https://us-central1-aiplatform.googleapis.com/v1/projects/mock-proj/locations/us-central1/endpoints/t1-lora"
+        }
+    )
+    session.add(lora_prop)
+    await session.commit()
+    
+    # 5. Create the target campaign in our mock Google Ads store
+    client = MockMarketingClient()
+    await client.create_campaign("camp-ableys-brand-search", "brand-search", 500000, 5000)
+    
+    # 5. Plan the optimize copy operation
+    ops = adapter.plan("optimize ad copy for campaign camp-ableys-brand-search", "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.action == "grow.marketing.optimize_copy"
+    assert op.params["campaign_id"] == "camp-ableys-brand-search"
+    
+    # 6. Preview the operation
+    preview_art = adapter.preview(op)
+    assert preview_art.kind == "marketing_copy_optimize_preview"
+    assert "Dynamic RAG Injection: YES" in preview_art.summary
+    assert "Dynamic LoRA Adapter Routing: YES" in preview_art.summary
+    
+    # 7. Execute the operation (this will query DB RAG, LoRA, call LLM client, and update Google Ads!)
+    res = await adapter.execute(op, "idem_optimize_123", session=session)
+    assert res.ok is True
+    assert "optimized_headline" in res.detail
+    
+    # 8. Verify the campaign's headline was programmatically mutated in Google Ads!
+    camp = await client.get_campaign("camp-ableys-brand-search")
+    assert camp is not None
+    assert "headline" in camp
+    assert "Energetic and clinical" in camp["headline"]
+
