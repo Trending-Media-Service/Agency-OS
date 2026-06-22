@@ -112,7 +112,7 @@ async def oauth_callback(
 
     # 1. Exchange the authorization code for access/refresh tokens
     try:
-        creds = await oauth_service.exchange_code_for_token(tenant_id, brand_id, provider, code, shop=shop)
+        creds = await oauth_service.exchange_code_for_token(tenant_id, brand_id, provider, code, shop=shop, redirect_uri=payload.get("redirect_uri"))
     except Exception as e:
         logger.error(f"OAuth token exchange failed: {e}")
         raise HTTPException(status_code=500, detail=f"OAuth token exchange failed: {str(e)}")
@@ -185,6 +185,38 @@ async def connect_direct_api_key(
     
     logger.info(f"Direct connection established successfully for provider={provider}")
     return {"status": "direct_connection_established", "provider": provider}
+
+@router.post("/connection/config")
+async def configure_connection(
+    tenant_id: str,
+    brand_id: str,
+    provider: str,
+    config: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """Merges additional non-secret config into an existing Connection.
+
+    Used to supply provider settings not captured by OAuth — notably the Google Ads
+    `developer_token` (read by app/services/google_ads.py from the connection config).
+    """
+    logger.info(f"Configuring connection for tenant={tenant_id}, provider={provider}...")
+    stmt = select(Connection).where(
+        Connection.tenant_id == tenant_id,
+        Connection.brand_id == brand_id,
+        Connection.provider == provider,
+    )
+    res = await db.execute(stmt)
+    conn = res.scalar_one_or_none()
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    merged = dict(conn.config or {})
+    merged.update(config or {})
+    conn.config = merged
+    await db.commit()
+
+    logger.info(f"Connection config updated for provider={provider}: keys={list((config or {}).keys())}")
+    return {"status": "connection_configured", "provider": provider}
 
 
 async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_token: str, session_maker, shop: str = None):
