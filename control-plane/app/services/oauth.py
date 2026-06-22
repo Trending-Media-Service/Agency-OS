@@ -23,7 +23,22 @@ def _base64url_decode(data: str) -> bytes:
     padding = "=" * (4 - (len(data) % 4))
     return base64.urlsafe_b64decode(data + padding)
 
-def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provider: Optional[str] = None) -> str:
+def normalize_shopify_domain(shop: str) -> str:
+    """Return the canonical '<handle>.myshopify.com' host for a Shopify shop.
+
+    Accepts a bare handle ('ableys'), a full myshopify domain
+    ('ableys.myshopify.com'), or a URL ('https://ableys.myshopify.com/...') and
+    normalizes to the host form.
+    """
+    shop = (shop or "").strip().lower()
+    if "://" in shop:
+        shop = urlparse.urlparse(shop).hostname or shop
+    shop = shop.strip("/")
+    if shop.endswith(".myshopify.com"):
+        return shop
+    return f"{shop}.myshopify.com"
+
+def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provider: Optional[str] = None, shop: Optional[str] = None) -> str:
     """Generates a cryptographically signed, short-lived state token for OAuth flow."""
     expires_at = int((dt.datetime.utcnow() + dt.timedelta(minutes=15)).timestamp())
     payload = {
@@ -34,6 +49,8 @@ def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provi
     }
     if provider:
         payload["provider"] = provider
+    if shop:
+        payload["shop"] = shop
     payload_json = json.dumps(payload, sort_keys=True).encode("utf-8")
     payload_b64 = _base64url_encode(payload_json)
     
@@ -192,14 +209,18 @@ class OauthService:
         self, 
         tenant_id: str, 
         brand_id: str, 
-        provider: str, 
-        code: str
+        provider: str,
+        code: str,
+        shop: Optional[str] = None
     ) -> Dict[str, Any]:
         """Exchanges the authorization code for access and refresh tokens, writing them to Secret Manager."""
         logger.info(f"Exchanging OAuth authorization code for tenant={tenant_id}, provider={provider}...")
         
         if provider == "shopify":
-            url = f"https://{brand_id}.myshopify.com/admin/oauth/access_token"
+            # Shopify OAuth runs against the store's own admin domain. Prefer the
+            # explicit shop carried in the OAuth state; fall back to brand_id.
+            shop_domain = normalize_shopify_domain(shop or brand_id)
+            url = f"https://{shop_domain}/admin/oauth/access_token"
             payload = {
                 "client_id": os.getenv("SHOPIFY_CLIENT_ID", "mock-shopify-client-id"),
                 "client_secret": os.getenv("SHOPIFY_CLIENT_SECRET", "mock-shopify-client-secret"),

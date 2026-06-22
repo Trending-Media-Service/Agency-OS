@@ -43,16 +43,16 @@ $BACKEND/api/v1/onboarding/oauth/authorize/{provider}
     ?tenant_id=<tenant_id>
     &brand_id=<brand_id>
     &redirect_uri=$BACKEND/api/v1/onboarding/oauth/callback
+    &shop=<store-handle>        # Shopify only (e.g. ableys or ableys.myshopify.com)
 ```
 
 OAuth-redirect providers: `shopify`, `google-ads`, `meta-ads`, `tiktok-ads`,
 `hubspot`, `salesforce`.
 
-> ⚠️ **Shopify gotcha:** the authorize URL is built as
-> `https://{brand_id}.myshopify.com/admin/oauth/authorize` — it currently uses
-> **`brand_id` as the shop subdomain**. For a real store, either name the brand
-> to match the `.myshopify.com` handle, or fix the endpoint to take an explicit
-> `shop` parameter before connecting a real Shopify store.
+> **Shopify:** pass the store handle/domain via `&shop=` (e.g. `shop=ableys` or
+> `shop=ableys.myshopify.com`). It is carried in the signed OAuth state, so the
+> callback completes the token exchange and the catalog RAG scan against the
+> correct store. If omitted, it falls back to `brand_id` (legacy behavior).
 
 ## Step 3 — Connect key-based services (no OAuth)
 

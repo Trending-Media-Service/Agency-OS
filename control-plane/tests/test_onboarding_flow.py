@@ -218,3 +218,31 @@ async def test_bootstrap_brand_identity_task(mock_llm_cls, clean_env, db_engine,
         mock_get.assert_called_once()
         args, kwargs = mock_get.call_args
         assert "b-4.myshopify.com/admin/api/2024-01/products.json" in args[0]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_oauth_authorize_with_explicit_shop(clean_env, client):
+    # When an explicit shop handle is provided, the authorize URL + signed state
+    # must target that store, not the brand_id.
+    resp = await client.get(
+        "/api/v1/onboarding/oauth/authorize/shopify?"
+        "tenant_id=t-1&brand_id=b-1&redirect_uri=http://localhost/callback&shop=ableys"
+    )
+    assert resp.status_code in (200, 307)
+    redirect_url = str(resp.headers.get("location") or resp.url)
+    assert "ableys.myshopify.com/admin/oauth/authorize" in redirect_url
+    assert "b-1.myshopify.com" not in redirect_url
+
+    import urllib.parse as urlparse
+    state_token = urlparse.parse_qs(urlparse.urlparse(redirect_url).query)["state"][0]
+    payload = verify_oauth_state(state_token)
+    assert payload["shop"] == "ableys.myshopify.com"
+    assert payload["brand_id"] == "b-1"
+
+
+def test_normalize_shopify_domain():
+    from app.services.oauth import normalize_shopify_domain
+    assert normalize_shopify_domain("ableys") == "ableys.myshopify.com"
+    assert normalize_shopify_domain("ableys.myshopify.com") == "ableys.myshopify.com"
+    assert normalize_shopify_domain("https://ableys.myshopify.com/admin") == "ableys.myshopify.com"
+    assert normalize_shopify_domain("ABLEYS") == "ableys.myshopify.com"
