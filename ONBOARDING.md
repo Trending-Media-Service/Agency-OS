@@ -17,8 +17,9 @@ onboarding API, until the self-serve frontend wizard exists.
   backend by the deploy's **"Resolve runtime secrets"** step. Until a provider's
   secret exists, its OAuth uses the `mock-*` fallback and **cannot** complete a
   real handshake.
-- `BACKEND` = the deployed control-plane URL (your custom domain, e.g.
-  `https://api.yourdomain.com`, or `https://agency-os-backend-…run.app`).
+- `BACKEND` = the deployed control-plane URL — once the custom domain is live,
+  `https://api.trendingmediagroup.in` (see `DOMAINS.md`); until then the
+  `https://agency-os-backend-…run.app` URL.
 - **`SECRET_KEY`** (secret `aos-oauth-state-secret`) must also be provisioned — it
   HMAC-signs the OAuth `state`. Without it the app uses an insecure hardcoded
   default and state tokens are forgeable. Generate once: `openssl rand -base64 32`.

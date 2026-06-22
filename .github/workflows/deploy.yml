@@ -120,16 +120,16 @@ jobs:
           if [ -n "${FRONTEND_URLS_JSON}" ] && [ "${FRONTEND_URLS_JSON}" != "null" ]; then
             # Convert ["url1","url2",...] to url1,url2,...
             FRONTEND_URLS=$(echo "${FRONTEND_URLS_JSON}" | tr -d '[]"' | tr '\n' ',' | sed 's/,$//')
-            echo "allowed_origins=${FRONTEND_URLS},http://localhost:3000" >> "${GITHUB_OUTPUT}"
+            echo "allowed_origins=${FRONTEND_URLS},http://localhost:3000,https://app.trendingmediagroup.in" >> "${GITHUB_OUTPUT}"
           else
             # Fallback to single status.url if annotation is unavailable
             FRONTEND_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
               --platform managed --region "${REGION}" \
               --format="value(status.url)" --project "${PROJECT_ID}" 2>/dev/null || true)
             if [ -n "${FRONTEND_URL}" ] && [ "${FRONTEND_URL}" != "null" ]; then
-              echo "allowed_origins=${FRONTEND_URL},http://localhost:3000" >> "${GITHUB_OUTPUT}"
+              echo "allowed_origins=${FRONTEND_URL},http://localhost:3000,https://app.trendingmediagroup.in" >> "${GITHUB_OUTPUT}"
             else
-              echo "allowed_origins=http://localhost:3000" >> "${GITHUB_OUTPUT}"
+              echo "allowed_origins=http://localhost:3000,https://app.trendingmediagroup.in" >> "${GITHUB_OUTPUT}"
             fi
           fi
 
