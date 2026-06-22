@@ -84,6 +84,9 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 app = FastAPI(title="Agency OS control plane", version="0.1.0")
 app.state.db_session_maker = AsyncSessionLocal
 
+from app.routers.onboarding import router as onboarding_router
+app.include_router(onboarding_router)
+
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
