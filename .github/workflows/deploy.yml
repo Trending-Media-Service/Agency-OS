@@ -133,6 +133,35 @@ jobs:
             fi
           fi
 
+      - name: Resolve runtime secrets
+        id: secrets
+        run: |
+          set -euo pipefail
+          # Base platform secrets (always provisioned).
+          SECRETS="DATABASE_URL=${DATABASE_URL_SECRET}:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest"
+          # Platform OAuth app credentials, read as env vars by app/services/oauth_registry.py.
+          # Each is injected ONLY if the Secret Manager secret exists, so an unprovisioned
+          # provider is skipped (mock fallback) rather than failing the deploy.
+          # Provision them with ./load_credentials.sh (see credentials.example.env).
+          declare -A OAUTH_SECRETS=(
+            [GOOGLE_ADS_CLIENT_ID]=google-ads-client-id
+            [GOOGLE_ADS_CLIENT_SECRET]=google-ads-client-secret
+            [META_ADS_CLIENT_ID]=meta-ads-client-id
+            [META_ADS_CLIENT_SECRET]=meta-ads-client-secret
+            [SHOPIFY_CLIENT_ID]=shopify-client-id
+            [SHOPIFY_CLIENT_SECRET]=shopify-client-secret
+          )
+          for env_name in "${!OAUTH_SECRETS[@]}"; do
+            secret_name="${OAUTH_SECRETS[$env_name]}"
+            if gcloud secrets describe "${secret_name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+              SECRETS="${SECRETS},${env_name}=${secret_name}:latest"
+              echo "wired ${env_name} <- ${secret_name}"
+            else
+              echo "skip  ${env_name} (secret ${secret_name} not found; using mock fallback)"
+            fi
+          done
+          echo "value=${SECRETS}" >> "${GITHUB_OUTPUT}"
+
       - name: Deploy to Cloud Run (Canary)
         run: |
           gcloud run services update "${SERVICE_NAME}" \
@@ -144,7 +173,7 @@ jobs:
             --no-traffic \
             --tag=canary \
             --set-env-vars="^###^ALLOWED_ORIGINS=${{ steps.cors.outputs.allowed_origins }}###ENV=production###GCP_PROJECT=${PROJECT_ID}###GCP_LOCATION=${REGION}###AOS_STATE_BUCKET=${STATE_BUCKET}###OUTBOX_QUEUE_NAME=${OUTBOX_QUEUE}###APP_URL=${APP_URL}###AOS_WORKER_SERVICE_ACCOUNT=${{ env.WORKER_SA }}" \
-            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest,WORKER_DATABASE_URL=aos-worker-database-url:latest,OPERATOR_TOKEN=aos-operator-token:latest,WHATSAPP_APP_SECRET=whatsapp-app-secret:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest" \
+            --set-secrets="${{ steps.secrets.outputs.value }}" \
             --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
             --memory 2Gi
 

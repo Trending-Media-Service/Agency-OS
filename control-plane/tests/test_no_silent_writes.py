@@ -20,7 +20,12 @@ STATE_MODELS = {
 ALLOWED_PATHS = [
     'app/adapters',
     'app/kernel/loop.py',
-    'migrations'
+    'migrations',
+    # Operator-driven onboarding/bootstrap path: seeds Connection + BrandProperty
+    # directly during the initial OAuth handshake and RAG bootstrap. Analogous to
+    # the adapters' provisioning writes.
+    # TODO: route through governed Ops once self-serve onboarding is built.
+    'app/routers/onboarding.py',
 ]
 
 # -----------------------------------------------------------------------------

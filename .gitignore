@@ -24,3 +24,6 @@ scratch/
 
 # Coverage data
 .coverage
+
+# Filled credentials intake (never commit real secrets) — template is credentials.example.env
+credentials.env

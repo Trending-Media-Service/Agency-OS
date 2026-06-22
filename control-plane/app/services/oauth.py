@@ -23,7 +23,22 @@ def _base64url_decode(data: str) -> bytes:
     padding = "=" * (4 - (len(data) % 4))
     return base64.urlsafe_b64decode(data + padding)
 
-def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provider: Optional[str] = None) -> str:
+def normalize_shopify_domain(shop: str) -> str:
+    """Return the canonical '<handle>.myshopify.com' host for a Shopify shop.
+
+    Accepts a bare handle ('ableys'), a full myshopify domain
+    ('ableys.myshopify.com'), or a URL ('https://ableys.myshopify.com/...') and
+    normalizes to the host form.
+    """
+    shop = (shop or "").strip().lower()
+    if "://" in shop:
+        shop = urlparse.urlparse(shop).hostname or shop
+    shop = shop.strip("/")
+    if shop.endswith(".myshopify.com"):
+        return shop
+    return f"{shop}.myshopify.com"
+
+def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provider: Optional[str] = None, shop: Optional[str] = None) -> str:
     """Generates a cryptographically signed, short-lived state token for OAuth flow."""
     expires_at = int((dt.datetime.utcnow() + dt.timedelta(minutes=15)).timestamp())
     payload = {
@@ -34,6 +49,8 @@ def generate_oauth_state(tenant_id: str, brand_id: str, redirect_uri: str, provi
     }
     if provider:
         payload["provider"] = provider
+    if shop:
+        payload["shop"] = shop
     payload_json = json.dumps(payload, sort_keys=True).encode("utf-8")
     payload_b64 = _base64url_encode(payload_json)
     
@@ -187,3 +204,61 @@ class OauthService:
                     await self.secrets_client.delete_secret(old_version_ref)
                 except Exception as e:
                     logger.error(f"Failed to prune old secret version {old_version_ref}: {e}")
+
+    async def exchange_code_for_token(
+        self, 
+        tenant_id: str, 
+        brand_id: str, 
+        provider: str,
+        code: str,
+        shop: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Exchanges the authorization code for access and refresh tokens, writing them to Secret Manager."""
+        logger.info(f"Exchanging OAuth authorization code for tenant={tenant_id}, provider={provider}...")
+        
+        if provider == "shopify":
+            # Shopify OAuth runs against the store's own admin domain. Prefer the
+            # explicit shop carried in the OAuth state; fall back to brand_id.
+            shop_domain = normalize_shopify_domain(shop or brand_id)
+            url = f"https://{shop_domain}/admin/oauth/access_token"
+            payload = {
+                "client_id": os.getenv("SHOPIFY_CLIENT_ID", "mock-shopify-client-id"),
+                "client_secret": os.getenv("SHOPIFY_CLIENT_SECRET", "mock-shopify-client-secret"),
+                "code": code
+            }
+        else:
+            from app.services.oauth_registry import OauthProviderRegistry
+            env_prefix = provider.replace("-", "_").upper()
+            redirect_uri = os.getenv(f"{env_prefix}_REDIRECT_URI", "http://localhost/callback")
+            url, payload = OauthProviderRegistry.get_exchange_payload(provider, code, redirect_uri=redirect_uri)
+            
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(url, data=payload)
+                if resp.status_code != 200:
+                    raise Exception(f"Token exchange HTTP failed: {resp.status_code} - {resp.text}")
+                data = resp.json()
+            except Exception as e:
+                logger.error(f"OAuth token exchange request failed: {e}")
+                raise
+            
+        access_token = data.get("access_token")
+        # Google Ads returns refresh_token on authorization_code grant. Shopify returns permanent access_token.
+        refresh_token = data.get("refresh_token", access_token) 
+        expires_in = data.get("expires_in", 3600)
+        
+        if not access_token:
+            raise ValueError("No access_token returned by provider during exchange")
+        
+        # Write securely to tenant-isolated Secret Manager
+        secret_id_refresh = f"{tenant_id}-{brand_id}-{provider}-secret"
+        refresh_token_ref = await self.secrets_client.write_secret(secret_id_refresh, refresh_token)
+        access_token_ref = await self.secrets_client.write_secret(f"{secret_id_refresh}_access", access_token)
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": expires_in,
+            "access_token_ref": access_token_ref,
+            "refresh_token_ref": refresh_token_ref
+        }
