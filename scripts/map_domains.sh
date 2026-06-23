@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT="${1:-aos-control-plane-tmg}"
-REGION="${2:-asia-south1}"
+REGION="${2:-us-central1}"
 DOMAIN="trendingmediagroup.in"
 
 declare -A MAP=(

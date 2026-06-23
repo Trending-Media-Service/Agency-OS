@@ -3,7 +3,7 @@
 set -euo pipefail
 
 GCP_PROJECT_ID="aos-control-plane-tmg"
-REGION="asia-south1"
+REGION="us-central1"
 BACKEND_SERVICE="agency-os-backend"
 FRONTEND_SERVICE="agency-os-web"
 WORKER_SA="aos-worker@$GCP_PROJECT_ID.iam.gserviceaccount.com"
@@ -33,7 +33,7 @@ FRONTEND_URLS_JSON=$(gcloud run services describe "$FRONTEND_SERVICE" \
   --platform managed \
   --region "$REGION" \
   --format="value(metadata.annotations.\"run.googleapis.com/urls\")" \
-  --project "$GCP_PROJECT_ID" 2>/dev/null)
+  --project "$GCP_PROJECT_ID" 2>/dev/null || true)
 
 if [ -n "$FRONTEND_URLS_JSON" ] && [ "$FRONTEND_URLS_JSON" != "null" ]; then
     echo "Found Frontend URLs (multiple): $FRONTEND_URLS_JSON"
@@ -55,12 +55,9 @@ else
       fi
 fi
 
-# 4.5 Resolve live Backend Service URL dynamically
-echo "Resolving Backend Service URL..."
-APP_URL=$(gcloud run services describe "$BACKEND_SERVICE" --platform managed --region "$REGION" --format="value(status.url)" --project "$GCP_PROJECT_ID" 2>/dev/null || true)
-if [ -z "$APP_URL" ] || [ "$APP_URL" = "null" ]; then
-    APP_URL="https://agency-os-backend-730671240713.asia-south1.run.app"
-fi
+# 4.5 Use Custom Domain Backend URL for production cutover
+echo "Using custom domain Backend URL..."
+APP_URL="https://api.trendingmediagroup.in"
 echo "Backend Service URL: $APP_URL"
 
 # 5. Redeploy/Update the Cloud Run service with full production environment & Cloud SQL configuration
