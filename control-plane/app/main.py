@@ -24,7 +24,7 @@ from app.adapters.governance import GovernanceAdapter
 from app.adapters.dr import DRAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
-from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
+from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin, PetpoojaPlugin
 from .models import Brand, OpRow, OpTrace, Tenant, TrustSnapshot, Cadence, Order, Connection, CircuitBreakerRow, AuditEvent, BrandObjective
 
 # Setup Sentry SDK if DSN is set
@@ -60,6 +60,7 @@ loop.register(GovernanceAdapter())
 loop.register(DRAdapter())
 
 register_plugin(ShopifyPlugin())
+register_plugin(PetpoojaPlugin())
 
 
 logger = logging.getLogger(__name__)
@@ -338,8 +339,9 @@ async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)
     s.add(b)
     await s.flush()
     
-    from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE[t.id] = True
+    from app.middleware import VALID_TENANTS_CACHE, CACHE_TTL_SECONDS
+    import time
+    VALID_TENANTS_CACHE[t.id] = (True, time.time() + CACHE_TTL_SECONDS)
     
     return {"tenant_id": t.id, "brand_id": b.id}
 
@@ -396,8 +398,9 @@ async def update_tenant_status(
     await s.commit()
     
     # Update the gateway memory cache
-    from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE[tenant_id] = body.is_active
+    from app.middleware import VALID_TENANTS_CACHE, CACHE_TTL_SECONDS
+    import time
+    VALID_TENANTS_CACHE[tenant_id] = (body.is_active, time.time() + CACHE_TTL_SECONDS)
     
     return tenant
 
@@ -2096,6 +2099,8 @@ async def _find_connection(s: AsyncSession, provider: str, identifier: str) -> C
     for conn in conns:
         if provider == "shopify" and conn.config.get("shop_url") == identifier:
             return conn
+        elif provider == "petpooja" and (conn.config.get("rest_id") == identifier or conn.config.get("restID") == identifier):
+            return conn
     return None
 
 
@@ -2151,14 +2156,12 @@ async def plugin_webhook(
         gcp_project = tenant.gcp_project if tenant else None
 
         # 3. Retrieve signature and secret key
-        signature = None
-        if provider == "shopify":
-            signature = x_shopify_hmac_sha256
+        signature = await plugin.extract_signature(headers, payload)
         if not signature:
-            signature = headers.get("x-signature")
-
-        if not signature:
-            raise HTTPException(401, "Webhook signature header missing")
+            if provider == "shopify":
+                signature = x_shopify_hmac_sha256
+            if not signature:
+                signature = headers.get("x-signature")
 
         # Resolve actual secret key from Secret Manager (Falling back to credential if not in Secret Manager)
         from app.services.secrets import SecretManagerClient
@@ -2172,12 +2175,17 @@ async def plugin_webhook(
             logger.error(f"Failed to read webhook secret from Secret Manager: {e}")
             raise HTTPException(500, "Internal secret resolution error")
 
+        if secret_key and not signature:
+            raise HTTPException(401, "Webhook signature or token missing")
+
         # 4. Verify signature
-        if not await plugin.verify_signature(raw_body, signature, secret_key):
+        if not await plugin.verify_signature(raw_body, signature or "", secret_key or ""):
             raise HTTPException(401, "Webhook signature mismatch")
 
         # 5. Translate webhook payload to OpSpecs
-        event_type = x_shopify_topic or headers.get("x-event-type", "")
+        event_type = await plugin.extract_event_type(headers, payload)
+        if not event_type:
+            event_type = x_shopify_topic or headers.get("x-event-type", "")
         specs = await plugin.translate_webhook(event_type, payload, conn.tenant_id, conn.brand_id)
 
         proposed_ops = []

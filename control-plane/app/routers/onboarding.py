@@ -11,7 +11,7 @@ from typing import Optional
 
 from app.database import get_db, AsyncSessionLocal
 from app.models import Tenant, Brand, Connection, BrandProperty
-from app.services.oauth import generate_oauth_state, verify_oauth_state, OauthService, normalize_shopify_domain
+from app.services.oauth import generate_oauth_state, verify_oauth_state, OauthService
 from app.services.oauth_registry import OauthProviderRegistry
 
 router = APIRouter(prefix="/api/v1/onboarding", tags=["onboarding"])
@@ -51,31 +51,21 @@ async def oauth_authorize(
     provider: str, 
     tenant_id: str, 
     brand_id: str, 
-    redirect_uri: str,
-    custom_domain: Optional[str] = None,
-    shop: Optional[str] = None,
+    redirect_uri: str, 
+    custom_domain: Optional[str] = None
 ):
-    """Generates the signed state token and redirects the merchant to the provider's OAuth page.
-
-    For Shopify, `shop` is the store's myshopify handle/domain (e.g. 'ableys' or
-    'ableys.myshopify.com'); it is carried in the signed state so the callback can
-    complete the token exchange against the correct store. Falls back to brand_id.
-    """
+    """Generates the signed state token and redirects the merchant to the provider's OAuth page."""
     logger.info(f"Generating OAuth redirect for provider={provider}, tenant={tenant_id}...")
     state = generate_oauth_state(tenant_id, brand_id, redirect_uri, provider)
     
     # Handle Shopify custom store subdomains vs standard providers
     if provider == "shopify":
-        shop_domain = normalize_shopify_domain(shop or brand_id)
-        # Re-sign the state with the resolved shop so the callback can complete
-        # the token exchange against the correct store.
-        state = generate_oauth_state(tenant_id, brand_id, redirect_uri, provider, shop=shop_domain)
         client_id = os.getenv("SHOPIFY_CLIENT_ID", "mock-shopify-client-id")
         auth_url = (
-            f"https://{shop_domain}/admin/oauth/authorize?"
+            f"https://{brand_id}.myshopify.com/admin/oauth/authorize?"
             f"client_id={client_id}&"
             f"scope=read_products,write_products,read_orders&"
-            f"redirect_uri={redirect_uri}&"
+            f"redirect_uri={urllib_parse_escape(redirect_uri) if 'urllib' in globals() else redirect_uri}&"
             f"state={state}"
         )
     else:
@@ -106,13 +96,12 @@ async def oauth_callback(
     tenant_id = payload["tenant_id"]
     brand_id = payload["brand_id"]
     provider = payload.get("provider", "shopify")
-    shop = payload.get("shop")
-
+    
     oauth_service = OauthService()
-
+    
     # 1. Exchange the authorization code for access/refresh tokens
     try:
-        creds = await oauth_service.exchange_code_for_token(tenant_id, brand_id, provider, code, shop=shop, redirect_uri=payload.get("redirect_uri"))
+        creds = await oauth_service.exchange_code_for_token(tenant_id, brand_id, provider, code)
     except Exception as e:
         logger.error(f"OAuth token exchange failed: {e}")
         raise HTTPException(status_code=500, detail=f"OAuth token exchange failed: {str(e)}")
@@ -147,7 +136,7 @@ async def oauth_callback(
     # 3. Trigger autonomous background RAG bootstrapping if Shopify is connected
     if provider == "shopify":
         session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
-        background_tasks.add_task(bootstrap_brand_identity_task, tenant_id, brand_id, creds["access_token"], session_maker, shop)
+        background_tasks.add_task(bootstrap_brand_identity_task, tenant_id, brand_id, creds["access_token"], session_maker)
         
     return {
         "status": "connection_established", 
@@ -186,47 +175,13 @@ async def connect_direct_api_key(
     logger.info(f"Direct connection established successfully for provider={provider}")
     return {"status": "direct_connection_established", "provider": provider}
 
-@router.post("/connection/config")
-async def configure_connection(
-    tenant_id: str,
-    brand_id: str,
-    provider: str,
-    config: dict,
-    db: AsyncSession = Depends(get_db)
-):
-    """Merges additional non-secret config into an existing Connection.
 
-    Used to supply provider settings not captured by OAuth — notably the Google Ads
-    `developer_token` (read by app/services/google_ads.py from the connection config).
-    """
-    logger.info(f"Configuring connection for tenant={tenant_id}, provider={provider}...")
-    stmt = select(Connection).where(
-        Connection.tenant_id == tenant_id,
-        Connection.brand_id == brand_id,
-        Connection.provider == provider,
-    )
-    res = await db.execute(stmt)
-    conn = res.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail="Connection not found")
-
-    merged = dict(conn.config or {})
-    merged.update(config or {})
-    conn.config = merged
-    await db.commit()
-
-    logger.info(f"Connection config updated for provider={provider}: keys={list((config or {}).keys())}")
-    return {"status": "connection_configured", "provider": provider}
-
-
-async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_token: str, session_maker, shop: str = None):
+async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_token: str, session_maker):
     """Background task: Scans Shopify catalog, calls Gemini, and seeds the Brand RAG Profile."""
     logger.info(f"Starting autonomous RAG bootstrapping for brand {brand_id}...")
-
-    # A. Fetch Shop and Product metadata from Shopify (prefer the explicit shop
-    #    handle/domain resolved during onboarding; fall back to brand_id).
-    shop_domain = normalize_shopify_domain(shop or brand_id)
-    shop_url = f"https://{shop_domain}/admin/api/2024-01/products.json?limit=5"
+    
+    # A. Fetch Shop and Product metadata from Shopify
+    shop_url = f"https://{brand_id}.myshopify.com/admin/api/2024-01/products.json?limit=5"
     headers = {
         "X-Shopify-Access-Token": shopify_token,
         "Content-Type": "application/json"
@@ -291,16 +246,15 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         
     # D. Write the RAG profile directly to the database using local session
     async with session_maker() as db_session:
+        from sqlalchemy import delete
+        
         # Clean up any existing brand_identity entries
-        stmt_cleanup = select(BrandProperty).where(
+        stmt_cleanup = delete(BrandProperty).where(
             BrandProperty.tenant_id == tenant_id,
             BrandProperty.brand_id == brand_id,
             BrandProperty.type == "brand_identity"
         )
-        res = await db_session.execute(stmt_cleanup)
-        existing = res.scalars().all()
-        for prop in existing:
-            await db_session.delete(prop)
+        await db_session.execute(stmt_cleanup)
             
         rag_prop = BrandProperty(
             tenant_id=tenant_id,

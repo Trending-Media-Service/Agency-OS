@@ -4,6 +4,7 @@ import sys
 from unittest.mock import patch, MagicMock
 from fastapi import BackgroundTasks
 from app.tasks import enqueue_drain
+import asyncio
 
 
 @pytest.fixture
@@ -48,7 +49,12 @@ def test_enqueue_drain_cloud_tasks_with_oidc(mock_tasks_client, monkeypatch):
     # 2. Call enqueue_drain
     enqueue_drain(bg_tasks)
 
-    # 3. Assertions
+    # 3. Execute the deferred background task
+    assert len(bg_tasks.tasks) == 1
+    # Run the background task synchronously to trigger the mock
+    asyncio.run(bg_tasks.tasks[0]())
+
+    # 4. Assertions
     mock_tasks_client.queue_path.assert_called_once_with("test-project", "asia-south1", "test-queue")
     
     expected_task = {
@@ -91,7 +97,11 @@ def test_enqueue_drain_cloud_tasks_no_oidc_when_sa_missing(mock_tasks_client, mo
     # 2. Call enqueue_drain
     enqueue_drain(bg_tasks)
 
-    # 3. Assertions
+    # 3. Execute the deferred background task
+    assert len(bg_tasks.tasks) == 1
+    asyncio.run(bg_tasks.tasks[0]())
+
+    # 4. Assertions
     expected_task = {
         "http_request": {
             "http_method": "POST",

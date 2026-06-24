@@ -1,0 +1,42 @@
+From b95d6636cc1b9ae528a0408315f59c0c58a81d8c Mon Sep 17 00:00:00 2001
+From: AgencyOS Bootstrapper <bot@agencyos.ai>
+Date: Sun, 21 Jun 2026 19:48:04 +0000
+Subject: [PATCH] feat: integrate master GTM container GTM-NTCNQN55 routed
+ through first-party sGTM gateway
+
+---
+ client/index.html | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/client/index.html b/client/index.html
+index 01ee4fc..3e04926 100644
+--- a/client/index.html
++++ b/client/index.html
+@@ -1,6 +1,13 @@
+ <!DOCTYPE html>
+ <html lang="en">
+   <head>
++    <!-- Google Tag Manager -->
++    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
++    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
++    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;
++    j.src='https://tracking.ableysindia.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
++    })(window,document,'script','dataLayer','GTM-NTCNQN55');</script>
++    <!-- End Google Tag Manager -->
+     <meta charset="UTF-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+     <title>Abley's Rehab | Professional Therapy Tools for Experts</title>
+@@ -21,6 +28,10 @@
+     <link href="https://fonts.googleapis.com/css2?family=Architects+Daughter&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Fira+Code:wght@300..700&family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400..700;1,400..700&family=Merriweather:ital,opsz,wght@0,18..144,300..900;1,18..144,300..900&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Outfit:wght@100..900&family=Oxanium:wght@200..800&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&family=Roboto:ital,wght@0,100..900;1,100..900&family=Source+Code+Pro:ital,wght@0,200..900;1,200..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+   </head>
+   <body>
++    <!-- Google Tag Manager (noscript) -->
++    <noscript><iframe src="https://tracking.ableysindia.com/ns.html?id=GTM-NTCNQN55"
++    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
++    <!-- End Google Tag Manager (noscript) -->
+     <div id="root"></div>
+     <script type="module" src="/src/main.tsx"></script>
+   </body>
+-- 
+2.55.0.rc0.738.g0c8ab3ebcc-goog
+

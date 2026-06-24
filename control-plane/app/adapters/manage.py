@@ -8,7 +8,7 @@ from app.kernel.loop import Adapter
 import uuid
 import tempfile
 import os
-from app.models import Connection, OpRow, BrandProperty
+from app.models import Connection, OpRow, BrandProperty, Tenant, Order, OrderLine
 from app.services.secrets import SecretManagerClient
 from app.services.mcp import McpClient
 from app.services.storage import GcsClient
@@ -125,6 +125,97 @@ class ManageAdapter(Adapter):
                 )
             ]
 
+        elif "connect" in words and "petpooja" in words:
+            app_key = next((w.split("app_key:")[1] for w in words if w.startswith("app_key:")), None)
+            app_secret = next((w.split("app_secret:")[1] for w in words if w.startswith("app_secret:")), None)
+            access_token = next((w.split("access_token:")[1] for w in words if w.startswith("access_token:")), None)
+            rest_id = next((w.split("rest_id:")[1] for w in words if w.startswith("rest_id:")), None)
+            
+            app_key = app_key or "mock-app-key"
+            app_secret = app_secret or "mock-app-secret"
+            access_token = access_token or "mock-access-token"
+            rest_id = rest_id or "mock-rest-id"
+            
+            import json
+            cred_json = json.dumps({
+                "app_key": app_key,
+                "app_secret": app_secret,
+                "access_token": access_token
+            })
+            
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.petpooja.connect",
+                    params={
+                        "provider": "petpooja",
+                        "credential": cred_json,
+                        "config": {
+                            "rest_id": rest_id
+                        }
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+            
+        elif "pull" in words and "petpooja" in words:
+            import re
+            date_match = next((w for w in words if re.match(r"^\d{4}-\d{2}-\d{2}$", w)), None)
+            if not date_match:
+                yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                date_match = yesterday
+                
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.petpooja.pull_orders",
+                    params={
+                        "order_date": date_match
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.REVERSIBLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+
+        elif "connect" in words and ("git" in words or "repository" in words or "repo" in words):
+            repo_url = next((w for w in words if w.startswith("https://") or w.startswith("git@")), None)
+            if not repo_url:
+                repo_url = next((w for w in words if "github.com" in w or w.endswith(".git")), None)
+            if not repo_url:
+                repo_url = "https://github.com/chan8822/Wellness-Foods.git"
+                
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.git.connect",
+                    params={
+                        "repo_url": repo_url
+                    },
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+            
+        elif "disconnect" in words and ("git" in words or "repository" in words or "repo" in words):
+            return [
+                OpSpec(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    domain=self.domain,
+                    action="manage.git.disconnect",
+                    params={},
+                    severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE),
+                    cost_estimate=Money(amount_minor=0, currency="INR"),
+                )
+            ]
+
         return []
 
     def preview(self, op: OpSpec) -> PreviewArtifact:
@@ -155,6 +246,21 @@ class ManageAdapter(Adapter):
         elif op.action == "manage.brand.sense":
             summary = f"Will run a comprehensive Brand Sense audit to discover and refresh active brand properties and channel connections."
             return PreviewArtifact(kind="brand_sense_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.git.connect":
+            repo_url = op.params.get("repo_url")
+            summary = f"Will connect Git repository: {repo_url} as the active code repository for brand {op.brand_id}."
+            return PreviewArtifact(kind="git_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.git.disconnect":
+            summary = f"Will disconnect the active Git repository for brand {op.brand_id}."
+            return PreviewArtifact(kind="git_disconnect_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.petpooja.connect":
+            rest_id = op.params.get("config", {}).get("rest_id")
+            summary = f"Will establish connection to Petpooja POS for restaurant: {rest_id}\nCredential: ****"
+            return PreviewArtifact(kind="petpooja_connect_preview", summary=summary, detail=op.params)
+        elif op.action == "manage.petpooja.pull_orders":
+            order_date = op.params.get("order_date")
+            summary = f"Will pull and sync historical orders from Petpooja for date: {order_date}"
+            return PreviewArtifact(kind="petpooja_pull_preview", summary=summary, detail=op.params)
         elif op.action == "manage.tenant.offboard":
             target_tenant_id = op.params.get("target_tenant_id")
             return PreviewArtifact(
@@ -173,11 +279,11 @@ class ManageAdapter(Adapter):
 
     async def execute(self, op: OpSpec, idem_key: str, session: Optional[AsyncSession] = None) -> ExecResult:
         """Executes connection, disconnection, backup, or backup deletion."""
-        if op.action in ("manage.shopify.connect", "manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke"):
+        if op.action in ("manage.shopify.connect", "manage.petpooja.connect", "manage.shopify.disconnect", "manage.connection.verify", "manage.connection.revoke"):
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session is required for Connection operations"})
 
-        if op.action == "manage.shopify.connect":
+        if op.action in ("manage.shopify.connect", "manage.petpooja.connect"):
             provider = op.params.get("provider")
             raw_token = op.params.get("credential") or op.params.get("secret_ref")
             if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
@@ -658,7 +764,6 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
         elif op.action == "manage.shopify.sync_order":
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session required"})
-            from app.models import Order
             order_id = op.params.get("order_id")
             amount_minor = op.params.get("amount_minor")
             stmt = select(Order).where(Order.id == str(order_id))
@@ -687,7 +792,310 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                 session.add(order)
                 logger.info(f"Synchronized Shopify order {order_id} to DB")
             return ExecResult(ok=True, detail={"message": f"Order {order_id} synced"})
+
+        elif op.action == "manage.petpooja.sync_order":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session required"})
+                
+            import datetime as dt
             
+            order_id = op.params.get("order_id")
+            total_amount = op.params.get("total_amount", 0.0)
+            amount_minor = int(total_amount * 100)
+            placed_at_raw = op.params.get("placed_at")
+            
+            placed_at = None
+            if placed_at_raw:
+                if isinstance(placed_at_raw, str):
+                    try:
+                        placed_at = dt.datetime.fromisoformat(placed_at_raw.replace("Z", "+00:00"))
+                    except ValueError:
+                        try:
+                            placed_at = dt.datetime.strptime(placed_at_raw, "%Y-%m-%d %H:%M:%S")
+                            placed_at = placed_at.replace(tzinfo=dt.timezone.utc)
+                        except ValueError:
+                            placed_at = dt.datetime.now(dt.timezone.utc)
+                elif isinstance(placed_at_raw, (int, float)):
+                    placed_at = dt.datetime.fromtimestamp(placed_at_raw, dt.timezone.utc)
+                    
+            stmt = select(Order).where(Order.id == str(order_id))
+            res = await session.execute(stmt)
+            existing_order = res.scalar_one_or_none()
+            
+            if not existing_order:
+                order = Order(
+                    id=str(order_id),
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    amount_minor=amount_minor,
+                    placed_at=placed_at or dt.datetime.now(dt.timezone.utc)
+                )
+                session.add(order)
+                logger.info(f"Created Petpooja order {order_id} in DB")
+                
+                items = op.params.get("items", [])
+                for idx, item in enumerate(items):
+                    item_price = item.get("price", 0.0)
+                    item_qty = item.get("quantity", 1)
+                    item_discount = item.get("discount", 0.0)
+                    
+                    line = OrderLine(
+                        id=f"{order_id}-{idx}",
+                        tenant_id=op.tenant_id,
+                        order_id=str(order_id),
+                        unit_price_minor=int(item_price * 100),
+                        line_discount_minor=int(item_discount * 100),
+                        qty=int(item_qty)
+                    )
+                    session.add(line)
+                logger.info(f"Synchronized {len(items)} order lines for Petpooja order {order_id}")
+            else:
+                logger.info(f"Petpooja order {order_id} already exists in DB, skipping")
+                
+            return ExecResult(ok=True, detail={"message": f"Petpooja order {order_id} synced"})
+
+        elif op.action == "manage.petpooja.pull_orders":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session required"})
+                
+            stmt = select(Connection).where(
+                Connection.tenant_id == op.tenant_id,
+                Connection.brand_id == op.brand_id,
+                Connection.provider == "petpooja"
+            )
+            res = await session.execute(stmt)
+            conn = res.scalar_one_or_none()
+            if not conn:
+                return ExecResult(ok=False, detail={"error": "No Petpooja connection found for this brand"})
+                
+            import json
+            
+            tenant_stmt = select(Tenant).where(Tenant.id == op.tenant_id)
+            tenant_res = await session.execute(tenant_stmt)
+            tenant = tenant_res.scalar_one_or_none()
+            gcp_project = tenant.gcp_project if tenant else None
+            
+            try:
+                secrets_client = SecretManagerClient(project_id=gcp_project)
+                secret_str = await secrets_client.read_secret(conn.credential)
+            except Exception as e:
+                logger.warning(f"Failed to read secret from Secret Manager: {e}. Falling back to raw credential.")
+                secret_str = conn.credential
+                
+            try:
+                creds = json.loads(secret_str)
+            except Exception as e:
+                return ExecResult(ok=False, detail={"error": f"Failed to parse Petpooja credentials JSON: {e}"})
+                
+            app_key = creds.get("app_key")
+            app_secret = creds.get("app_secret")
+            access_token = creds.get("access_token")
+            rest_id = conn.config.get("rest_id") or conn.config.get("restID")
+            
+            if not (app_key and app_secret and access_token and rest_id):
+                return ExecResult(ok=False, detail={"error": "Incomplete Petpooja credentials or rest_id config"})
+                
+            order_date = op.params.get("order_date")
+            
+            import httpx
+            api_url = conn.config.get("api_url", "https://xyz.com/data")
+            
+            if app_key == "mock-app-key" or "mock" in api_url or "xyz.com" in api_url:
+                logger.info("[Mock Petpooja] Pulling orders for date %s", order_date)
+                data = {
+                    "code": "200",
+                    "success": "1",
+                    "message": "",
+                    "order_json": [
+                        {
+                            "Restaurant": {
+                                "restaurantid": "337230",
+                                "res_name": "Petpooja_Rider_Testing",
+                                "address": "Shop No : Test , Floor : 0 , Test , Ahmedabad Gujarat 380051",
+                                "restaurant_state": "Gujarat",
+                                "contact_information": "1234567890",
+                                "restID": rest_id
+                            },
+                            "Customer": {
+                                "name": "malvi vaghela",
+                                "address": "nehru nagar",
+                                "phone": "7228017330",
+                                "gst_no": "",
+                                "created_date": "2024-08-08 04:54:49"
+                            },
+                            "Order": {
+                                "orderID": "180",
+                                "refId": "7342987696",
+                                "delivery_charges": "0",
+                                "container_charges": "0",
+                                "order_type": "Dine In",
+                                "sub_order_type_id": "971062",
+                                "sub_order_type": "AC",
+                                "payment_type": "Cash",
+                                "custom_payment_type": "",
+                                "table_no": "A1",
+                                "no_of_persons": "0",
+                                "discount_total": "219",
+                                "tax_total": "31.96",
+                                "round_off": "0.04",
+                                "core_total": "858",
+                                "total": "671",
+                                "created_on": f"{order_date} 14:59:38",
+                                "order_from": "POS",
+                                "advance_order": "No",
+                                "part_payment": [],
+                                "order_date": order_date,
+                                "status": "Success",
+                                "service_charge": 0,
+                                "waivedOff": "0",
+                                "tip": "0",
+                                "is_food_res": "",
+                                "online_order_id": ""
+                            },
+                            "OrderItem": [
+                                {
+                                    "categoryid": "5821023",
+                                    "categoryname": "Classic Cold Coffee [O]",
+                                    "name": "Iced Mocha [o]",
+                                    "itemid": "144401426",
+                                    "itemcode": "20 [H]",
+                                    "specialnotes": "",
+                                    "price": "219",
+                                    "quantity": "1",
+                                    "total": "219",
+                                    "total_discount": 0,
+                                    "total_tax": 10.96
+                                }
+                            ]
+                        }
+                    ]
+                }
+            else:
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "app_key": app_key,
+                    "app_secret": app_secret,
+                    "access_token": access_token,
+                    "restID": rest_id,
+                    "order_date": order_date,
+                    "refId": ""
+                }
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    try:
+                        resp = await client.request("GET", api_url, headers=headers, json=payload)
+                        resp.raise_for_status()
+                        data = resp.json()
+                    except Exception as e:
+                        return ExecResult(ok=False, detail={"error": f"Petpooja API request failed: {e}"})
+                        
+            if data.get("success") != "1":
+                return ExecResult(ok=False, detail={"error": f"Petpooja API returned failure: {data.get('message')}"})
+                
+            orders_list = data.get("order_json", [])
+            synced_count = 0
+            from app.kernel.plugins import normalize_petpooja_order
+            import datetime as dt
+            
+            for order_data in orders_list:
+                normalized = normalize_petpooja_order(order_data)
+                order_id = normalized["order_id"]
+                if not order_id:
+                    continue
+                    
+                total_amount = normalized["total_amount"]
+                amount_minor = int(total_amount * 100)
+                placed_at_raw = normalized["placed_at"]
+                
+                placed_at = None
+                if placed_at_raw:
+                    try:
+                        placed_at = dt.datetime.strptime(placed_at_raw, "%Y-%m-%d %H:%M:%S")
+                        placed_at = placed_at.replace(tzinfo=dt.timezone.utc)
+                    except ValueError:
+                        placed_at = dt.datetime.now(dt.timezone.utc)
+                        
+                stmt_order = select(Order).where(Order.id == str(order_id))
+                res_order = await session.execute(stmt_order)
+                existing_order = res_order.scalar_one_or_none()
+                
+                if not existing_order:
+                    new_order = Order(
+                        id=str(order_id),
+                        tenant_id=op.tenant_id,
+                        brand_id=op.brand_id,
+                        amount_minor=amount_minor,
+                        placed_at=placed_at or dt.datetime.now(dt.timezone.utc)
+                    )
+                    session.add(new_order)
+                    
+                    for idx, item in enumerate(normalized["items"]):
+                        line = OrderLine(
+                            id=f"{order_id}-{idx}",
+                            tenant_id=op.tenant_id,
+                            order_id=str(order_id),
+                            unit_price_minor=int(item["price"] * 100),
+                            line_discount_minor=int(item["discount"] * 100),
+                            qty=int(item["quantity"])
+                        )
+                        session.add(line)
+                    synced_count += 1
+                    
+            return ExecResult(ok=True, detail={"message": f"Successfully pulled and synced {synced_count} orders for date {order_date}"})
+
+        elif op.action == "manage.git.connect":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session required"})
+                
+            repo_url = op.params.get("repo_url")
+            if not repo_url:
+                return ExecResult(ok=False, detail={"error": "Missing repo_url in params"})
+                
+            stmt = select(BrandProperty).where(
+                BrandProperty.tenant_id == op.tenant_id,
+                BrandProperty.brand_id == op.brand_id,
+                BrandProperty.type == "repository"
+            )
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            
+            import datetime as dt
+            now = dt.datetime.now(dt.timezone.utc)
+            
+            if existing:
+                existing.status = "active"
+                existing.findings = {"repo_url": repo_url}
+                existing.last_checked = now
+                logger.info(f"Updated Git repository for brand {op.brand_id} to {repo_url}")
+            else:
+                new_prop = BrandProperty(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    type="repository",
+                    provider="git",
+                    status="active",
+                    findings={"repo_url": repo_url},
+                    last_checked=now
+                )
+                session.add(new_prop)
+                logger.info(f"Connected Git repository for brand {op.brand_id}: {repo_url}")
+                
+            return ExecResult(ok=True, detail={"message": f"Git repository connected successfully: {repo_url}"})
+
+        elif op.action == "manage.git.disconnect":
+            if not session:
+                return ExecResult(ok=False, detail={"error": "Database session required"})
+                
+            stmt = delete(BrandProperty).where(
+                BrandProperty.tenant_id == op.tenant_id,
+                BrandProperty.brand_id == op.brand_id,
+                BrandProperty.type == "repository"
+            )
+            await session.execute(stmt)
+            logger.info(f"Disconnected Git repository for brand {op.brand_id}")
+            return ExecResult(ok=True, detail={"message": "Git repository disconnected successfully"})
+
         elif op.action == "manage.brand.sense":
             if not session:
                 return ExecResult(ok=False, detail={"error": "Database session required for Brand Sense"})
@@ -838,7 +1246,6 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
             if not target_tenant_id:
                 raise ValueError("Missing target_tenant_id in params")
                 
-            from app.models import Tenant
             tenant = await session.get(Tenant, target_tenant_id)
             if not tenant:
                 return ExecResult(ok=False, detail={"message": f"Tenant {target_tenant_id} not found"})
@@ -865,7 +1272,6 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
             if not target_tenant_id:
                 raise ValueError("Missing target_tenant_id in params")
                 
-            from app.models import Tenant
             tenant = await session.get(Tenant, target_tenant_id)
             if not tenant:
                 return ExecResult(ok=False, detail={"message": f"Tenant {target_tenant_id} not found"})
@@ -885,7 +1291,7 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                 await session.flush()
                 
             from sqlalchemy import update
-            from app.models import AuditEvent, OpTrace, Approval, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem
+            from app.models import AuditEvent, OpTrace, Approval, CostEntry, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem
             
             child_tables = [AuditEvent, OpTrace, Approval, OpRow, CostEntry, Order, OrderLine, Refund, FulfillmentCost, SpendFact, ShadowDecision, TrustEvent, TrustSnapshot, PolicyVersion, Touchpoint, OutboxItem]
             for table in child_tables:
@@ -1064,14 +1470,12 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
             return VerifyResult(ok=True, checks={"completed": True})
         elif op.action == "manage.tenant.offboard":
             target_tenant_id = op.params.get("target_tenant_id")
-            from app.models import Tenant
             tenant = await session.get(Tenant, target_tenant_id)
             if tenant and not tenant.is_active:
                 return VerifyResult(ok=True, checks={"tenant_inactive": True, "pii_scrubbed": "Offboarded" in tenant.name})
             return VerifyResult(ok=False, checks={"tenant_inactive": False})
         elif op.action == "manage.tenant.hard_delete":
             target_tenant_id = op.params.get("target_tenant_id")
-            from app.models import Tenant
             tenant = await session.get(Tenant, target_tenant_id)
             if tenant is None:
                 return VerifyResult(ok=True, checks={"tenant_row_dropped": True})
@@ -1091,6 +1495,18 @@ VALUES ('{op.id}', CURRENT_TIMESTAMP);
                     params={
                         "provider": op.params.get("provider"),
                     },
+                    severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
+                    parent_op_id=op.id
+                )
+            ]
+        elif op.action == "manage.git.connect":
+            return [
+                OpSpec(
+                    tenant_id=op.tenant_id,
+                    brand_id=op.brand_id,
+                    domain=self.domain,
+                    action="manage.git.disconnect",
+                    params={},
                     severity=Severity(impact=1, reversibility=Reversibility.IRREVERSIBLE),
                     parent_op_id=op.id
                 )

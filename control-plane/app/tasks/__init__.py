@@ -33,6 +33,14 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
     """
     print(f"\n[DEBUG] enqueue_drain called, session_maker={session_maker}")
     if GCP_PROJECT and GCP_LOCATION and QUEUE_NAME and APP_URL:
+        def _create_cloud_task(client, request_payload):
+            try:
+                response = client.create_task(request=request_payload)
+                logger.info(f"Enqueued Cloud Task: {response.name}")
+                print(f"[DEBUG] Enqueued Cloud Task: {response.name}")
+            except Exception as e:
+                logger.error(f"Failed to enqueue Cloud Task in background: {e}")
+
         try:
             from google.cloud import tasks_v2
             client = tasks_v2.CloudTasksClient()
@@ -48,17 +56,14 @@ def enqueue_drain(background_tasks: BackgroundTasks, session_maker=None):
                 task["http_request"]["oidc_token"] = {
                     "service_account_email": WORKER_SA
                 }
-            # We don't block the request waiting for Cloud Tasks API
-            # but since create_task is sync, it might block slightly.
-            # In a highly optimized setup, we could run this in a thread pool.
-            response = client.create_task(request={"parent": parent, "task": task})
-            logger.info(f"Enqueued Cloud Task: {response.name}")
-            print(f"[DEBUG] Enqueued Cloud Task: {response.name}")
+            
+            # Offload the blocking synchronous GCP client call to the background tasks pool
+            background_tasks.add_task(_create_cloud_task, client, {"parent": parent, "task": task})
             return
         except ImportError:
             logger.warning("google-cloud-tasks is not installed but GCP configs are set. Falling back to local.")
         except Exception as e:
-            logger.error(f"Failed to enqueue Cloud Task, falling back to local: {e}")
+            logger.error(f"Failed to setup Cloud Task request, falling back to local: {e}")
 
     # Local fallback
     if not session_maker:

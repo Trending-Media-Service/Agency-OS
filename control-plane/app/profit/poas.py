@@ -24,13 +24,20 @@ async def calculate_campaign_poas(
     tenant_id: str,
     brand_id: str,
     attribution_window_days: int = 30,
-    attribution_model: str = "last_touch"
+    attribution_model: str = "last_touch",
+    date_from: dt.datetime | None = None,
+    date_to: dt.datetime | None = None
 ) -> list[dict]:
     """Computes contribution margin and POAS per campaign in minor units.
 
     POAS = contribution_margin / spend.
     Organics sit at the top. Other campaigns sorted worst-POAS-first.
     """
+    if date_to is None:
+        date_to = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    if date_from is None:
+        date_from = date_to - dt.timedelta(days=90)
+
     # Fetch incrementality multiplier alpha_inc (default to 1.0)
     alpha_inc = 1.0
     stmt_alpha = select(BrandProperty).where(
@@ -52,9 +59,19 @@ async def calculate_campaign_poas(
     objective_row = res_obj.scalar_one_or_none()
     objective = objective_row.objective if objective_row else "retention"
 
+    # Calculate bounded date for touchpoints to cover the attribution window
+    touchpoint_date_from = date_from - dt.timedelta(days=attribution_window_days)
+
     if objective == "growth": # Lead Gen Brand!
         # Compute CRM Lead POAS instead of E-commerce!
-        leads_q = await s.execute(select(Lead).where(Lead.tenant_id == tenant_id, Lead.brand_id == brand_id))
+        leads_q = await s.execute(
+            select(Lead).where(
+                Lead.tenant_id == tenant_id, 
+                Lead.brand_id == brand_id,
+                Lead.placed_at >= date_from,
+                Lead.placed_at <= date_to
+            )
+        )
         leads = leads_q.scalars().all()
 
         campaigns_q = await s.execute(select(Campaign).where(Campaign.tenant_id == tenant_id, Campaign.brand_id == brand_id))
@@ -63,14 +80,24 @@ async def calculate_campaign_poas(
         spend_facts_q = await s.execute(
             select(SpendFact)
             .join(Campaign, Campaign.id == SpendFact.campaign_id)
-            .where(SpendFact.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+            .where(
+                SpendFact.tenant_id == tenant_id, 
+                Campaign.brand_id == brand_id,
+                SpendFact.date >= date_from.date(),
+                SpendFact.date <= date_to.date()
+            )
         )
         spend_facts = spend_facts_q.scalars().all()
 
         touchpoints_q = await s.execute(
             select(Touchpoint)
             .join(Campaign, Campaign.id == Touchpoint.campaign_id)
-            .where(Touchpoint.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+            .where(
+                Touchpoint.tenant_id == tenant_id, 
+                Campaign.brand_id == brand_id,
+                Touchpoint.occurred_at >= touchpoint_date_from,
+                Touchpoint.occurred_at <= date_to
+            )
         )
         touchpoints = touchpoints_q.scalars().all()
 
@@ -213,14 +240,26 @@ async def calculate_campaign_poas(
         reports.sort(key=sort_key)
         return reports
 
-    # 1. Fetch all relevant tables
-    orders_q = await s.execute(select(Order).where(Order.tenant_id == tenant_id, Order.brand_id == brand_id))
+    # 1. Fetch all relevant tables (bounded by date)
+    orders_q = await s.execute(
+        select(Order).where(
+            Order.tenant_id == tenant_id, 
+            Order.brand_id == brand_id,
+            Order.created_at >= date_from,
+            Order.created_at <= date_to
+        )
+    )
     orders = orders_q.scalars().all()
 
     order_lines_q = await s.execute(
         select(OrderLine)
         .join(Order, Order.id == OrderLine.order_id)
-        .where(OrderLine.tenant_id == tenant_id, Order.brand_id == brand_id)
+        .where(
+            OrderLine.tenant_id == tenant_id, 
+            Order.brand_id == brand_id,
+            Order.created_at >= date_from,
+            Order.created_at <= date_to
+        )
     )
     order_lines = order_lines_q.scalars().all()
 
@@ -228,14 +267,24 @@ async def calculate_campaign_poas(
         select(Refund)
         .join(OrderLine, OrderLine.id == Refund.order_line_id)
         .join(Order, Order.id == OrderLine.order_id)
-        .where(Refund.tenant_id == tenant_id, Order.brand_id == brand_id)
+        .where(
+            Refund.tenant_id == tenant_id, 
+            Order.brand_id == brand_id,
+            Order.created_at >= date_from,
+            Order.created_at <= date_to
+        )
     )
     refunds = refunds_q.scalars().all()
 
     fulfillment_q = await s.execute(
         select(FulfillmentCost)
         .join(Order, Order.id == FulfillmentCost.order_id)
-        .where(FulfillmentCost.tenant_id == tenant_id, Order.brand_id == brand_id)
+        .where(
+            FulfillmentCost.tenant_id == tenant_id, 
+            Order.brand_id == brand_id,
+            Order.created_at >= date_from,
+            Order.created_at <= date_to
+        )
     )
     fulfillment_costs = fulfillment_q.scalars().all()
 
@@ -245,14 +294,24 @@ async def calculate_campaign_poas(
     spend_facts_q = await s.execute(
         select(SpendFact)
         .join(Campaign, Campaign.id == SpendFact.campaign_id)
-        .where(SpendFact.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+        .where(
+            SpendFact.tenant_id == tenant_id, 
+            Campaign.brand_id == brand_id,
+            SpendFact.date >= date_from.date(),
+            SpendFact.date <= date_to.date()
+        )
     )
     spend_facts = spend_facts_q.scalars().all()
 
     touchpoints_q = await s.execute(
         select(Touchpoint)
         .join(Campaign, Campaign.id == Touchpoint.campaign_id)
-        .where(Touchpoint.tenant_id == tenant_id, Campaign.brand_id == brand_id)
+        .where(
+            Touchpoint.tenant_id == tenant_id, 
+            Campaign.brand_id == brand_id,
+            Touchpoint.occurred_at >= touchpoint_date_from,
+            Touchpoint.occurred_at <= date_to
+        )
     )
     touchpoints = touchpoints_q.scalars().all()
 

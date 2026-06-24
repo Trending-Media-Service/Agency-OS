@@ -39,6 +39,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   const [role, setRoleState] = useState<string>("AGENCY_OWNER"); // default dev role
   const [operatorToken, setOperatorTokenState] = useState<string>("");
   const [knownTenants, setKnownTenants] = useState<KnownTenant[]>(DEFAULT_TENANTS);
+  const [mounted, setMounted] = useState(false);
 
   // Load from localStorage on client boot
   useEffect(() => {
@@ -68,6 +69,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
         setKnownTenants(DEFAULT_TENANTS);
       }
     }
+    setMounted(true);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
@@ -155,6 +157,8 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       return updated;
     });
   };
+
+  if (!mounted) return null;
 
   return (
     <TenantContext.Provider value={{ 

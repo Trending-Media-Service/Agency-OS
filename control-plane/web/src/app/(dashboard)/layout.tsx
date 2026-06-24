@@ -1,13 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import React, { useState, Suspense } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { useApi } from "@/lib/api-client";
 import { useTenant } from "@/contexts/TenantContext";
 import { Button } from "@/components/ui/button";
 import { ActionPanel } from "@/components/ActionPanel";
-import { OpDetailDrawer, OpDetailData } from "@/components/op-detail-drawer";
+import { DashboardDrawer } from "./DashboardDrawer";
+import TenantSetupWizard from "@/components/TenantSetupWizard";
 import { 
   Database, 
   Network, 
@@ -16,7 +17,8 @@ import {
   RefreshCw,
   ShieldAlert,
   Compass,
-  BarChart3
+  BarChart3,
+  TrendingUp
 } from "lucide-react";
 
 export default function DashboardLayout({
@@ -26,7 +28,6 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { request } = useApi();
   const {
     tenantId,
@@ -67,14 +68,6 @@ export default function DashboardLayout({
     refetchInterval: 10000,
   });
 
-  // 3. Drawer URL State Integration (?opId=...)
-  const selectedOpId = searchParams.get("opId");
-  const { data: selectedOp, isLoading: selectedOpLoading } = useQuery({
-    queryKey: ["opDetail", selectedOpId],
-    queryFn: () => selectedOpId ? request(`/ops/${selectedOpId}` as "/ops/{op_id}", "get") : null,
-    enabled: selectedOpId !== null,
-  });
-
   const { refetch: refetchOps } = useQuery({
     queryKey: ["ops", tenantId],
     enabled: false
@@ -87,32 +80,6 @@ export default function DashboardLayout({
     queryKey: ["auditEvents", tenantId],
     enabled: false
   });
-
-  // Decision mutation for drawer
-  const decisionMutation = useMutation({
-    mutationFn: ({ opId, decision, reason }: { opId: string, decision: "approve" | "reject" | "modify", reason?: string }) => 
-      request(`/ops/${opId}/decision` as "/ops/{op_id}/decision", "post", {
-        decision,
-        actor: "chandan",
-        role: role,
-        surface: "web",
-        reason
-      }),
-    onSuccess: () => {
-      refetchOps();
-      closeDrawer();
-    }
-  });
-
-  const closeDrawer = () => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("opId");
-    router.push(`${pathname}?${params.toString()}`);
-  };
-
-  const handleDecision = (opId: string, decision: "approve" | "reject" | "modify", reason?: string) => {
-    decisionMutation.mutate({ opId, decision, reason });
-  };
 
   const handleCreateTenant = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,6 +237,13 @@ export default function DashboardLayout({
               Brand Twin
             </button>
             <button
+              onClick={() => router.push("/grow")}
+              className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center ${pathname === "/grow" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
+            >
+              <TrendingUp className="h-3.5 w-3.5" />
+              Grow Optimizer
+            </button>
+            <button
               onClick={() => router.push("/ops")}
               className={`py-3.5 border-b-2 font-medium transition-colors gap-2 flex items-center ${pathname === "/ops" ? "border-zinc-100 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
             >
@@ -319,78 +293,11 @@ export default function DashboardLayout({
 
       </div>
       
-      {selectedOpId && (
-        <OpDetailDrawer
-          opId={selectedOpId}
-          opData={(selectedOp as OpDetailData) || null}
-          loading={selectedOpLoading}
-          onClose={closeDrawer}
-          onDecision={handleDecision}
-          role={role}
-        />
-      )}
+      <Suspense fallback={null}>
+        <DashboardDrawer />
+      </Suspense>
 
-      {showCreateTenant && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-zinc-950 border border-zinc-900 rounded-lg p-6 max-w-sm w-full space-y-4 shadow-xl">
-            <div className="space-y-1">
-              <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">Onboard New Tenant</h3>
-              <p className="text-[10px] text-zinc-500">Create a clean tenant namespace and bootstrap its first brand.</p>
-            </div>
-            
-            <form onSubmit={handleCreateTenant} className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-zinc-400 font-semibold">Tenant Name</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. Ableys"
-                  value={newTenantName}
-                  onChange={(e) => setNewTenantName(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-zinc-400 font-semibold">First Brand Name</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. Ableys Retail"
-                  value={newBrandName}
-                  onChange={(e) => setNewBrandName(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-zinc-700 font-mono"
-                />
-              </div>
-
-              {createTenantError && (
-                <p className="text-[10px] text-red-400 font-mono">{createTenantError}</p>
-              )}
-
-              <div className="flex justify-end space-x-2 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setShowCreateTenant(false);
-                    setCreateTenantError(null);
-                  }}
-                  className="border-zinc-800 text-zinc-400 hover:bg-zinc-900 text-[10px] h-7 px-3 rounded"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={createTenantLoading}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-[10px] h-7 px-3 rounded disabled:opacity-50"
-                >
-                  {createTenantLoading ? "Creating..." : "Create Tenant"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {showCreateTenant && <TenantSetupWizard onClose={() => setShowCreateTenant(false)} />}
     </div>
   );
 }

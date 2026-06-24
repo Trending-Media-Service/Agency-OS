@@ -348,3 +348,78 @@ async def test_manage_adapter_execute_connect_backward_compatibility(adapter, se
     secrets_client = SecretManagerClient()
     val = await secrets_client.read_secret(conn.credential)
     assert val == "legacy-shopify-token"
+
+
+@pytest.mark.asyncio
+async def test_manage_adapter_git_connect_flow(adapter, session):
+    from app.models import BrandProperty
+    
+    # 1. Plan git connection
+    intent = "connect git repository https://github.com/chan8822/Wellness-Foods.git"
+    ops = adapter.plan(intent, "t1", "b1")
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.action == "manage.git.connect"
+    assert op.params["repo_url"] == "https://github.com/chan8822/wellness-foods.git"
+    
+    # 2. Preview
+    preview_art = adapter.preview(op)
+    assert "wellness-foods.git" in preview_art.summary
+    assert preview_art.kind == "git_connect_preview"
+    
+    # 3. Execute
+    res = await adapter.execute(op, "idem_git_connect_123", session=session)
+    assert res.ok is True
+    
+    # 4. Verify DB property
+    stmt = select(BrandProperty).where(
+        BrandProperty.tenant_id == "t1",
+        BrandProperty.brand_id == "b1",
+        BrandProperty.type == "repository"
+    )
+    db_res = await session.execute(stmt)
+    bp = db_res.scalar_one_or_none()
+    assert bp is not None
+    assert bp.status == "active"
+    assert bp.findings["repo_url"] == "https://github.com/chan8822/wellness-foods.git"
+
+
+@pytest.mark.asyncio
+async def test_manage_adapter_git_disconnect_flow(adapter, session):
+    from app.models import BrandProperty
+    import datetime as dt
+    
+    # 1. Seed existing property
+    bp = BrandProperty(
+        tenant_id="t1",
+        brand_id="b1",
+        type="repository",
+        provider="git",
+        status="active",
+        findings={"repo_url": "https://github.com/chan8822/Wellness-Foods.git"},
+        last_checked=dt.datetime.now(dt.timezone.utc)
+    )
+    session.add(bp)
+    await session.commit()
+    
+    # 2. Execute disconnect
+    op = OpSpec(
+        tenant_id="t1",
+        brand_id="b1",
+        domain="manage",
+        action="manage.git.disconnect",
+        params={},
+        severity=Severity(impact=1, reversibility=Reversibility.COMPENSATABLE)
+    )
+    res = await adapter.execute(op, "idem_git_disconnect_123", session=session)
+    assert res.ok is True
+    
+    # 3. Verify DB property is gone
+    stmt = select(BrandProperty).where(
+        BrandProperty.tenant_id == "t1",
+        BrandProperty.brand_id == "b1",
+        BrandProperty.type == "repository"
+    )
+    db_res = await session.execute(stmt)
+    bp_after = db_res.scalar_one_or_none()
+    assert bp_after is None

@@ -40,9 +40,10 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
 
 
-# Thread-safe memory cache mapping tenant_id -> is_active (bool) to ensure zero-latency fast-paths
-VALID_TENANTS_CACHE: dict[str, bool] = {}
-
+# Thread-safe memory cache mapping tenant_id -> (is_active, expiration_timestamp) to ensure zero-latency fast-paths
+# Added TTL to prevent permanent caching of suspended tenants across workers.
+VALID_TENANTS_CACHE: dict[str, tuple[bool, float]] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
   """Parses and asserts valid tenant headers across all endpoint executions,
@@ -68,10 +69,16 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
 
     # --- SECURE TENANT VALIDATION ---
     bypass_validation = getattr(request.app.state, "bypass_tenant_validation", False)
-    # 1. Fast path: check local memory cache
+    
+    import time
+    now = time.time()
+    
+    # 1. Fast path: check local memory cache with TTL
     if not bypass_validation:
-      if tenant_id in VALID_TENANTS_CACHE:
-        if not VALID_TENANTS_CACHE[tenant_id]:
+      cached_data = VALID_TENANTS_CACHE.get(tenant_id)
+      if cached_data and (now < cached_data[1]):
+        is_active = cached_data[0]
+        if not is_active:
           return JSONResponse(
               status_code=status.HTTP_403_FORBIDDEN,
               content={"detail": "Forbidden: Tenant account is suspended."},
@@ -93,8 +100,8 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
             
             db_tenant_id, is_active = row
             
-            # Cache the verified tenant status for future fast-paths
-            VALID_TENANTS_CACHE[tenant_id] = is_active
+            # Cache the verified tenant status with expiration
+            VALID_TENANTS_CACHE[tenant_id] = (is_active, now + CACHE_TTL_SECONDS)
             
             if not is_active:
               return JSONResponse(
