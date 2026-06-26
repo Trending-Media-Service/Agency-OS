@@ -681,8 +681,18 @@ class GrowAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if conn and conn.credential:
-                secrets_client = SecretManagerClient()
-                await secrets_client.delete_secret(conn.credential)
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                secrets_client = SecretManagerClient(project_id=gcp_project)
+                try:
+                    await secrets_client.delete_secret(conn.credential)
+                except Exception as e:
+                    logger.error(f"Failed to delete marketing secret from Secret Manager: {e}")
+                    raise RuntimeError(f"Failed to delete marketing secret from Secret Manager: {e}") from e
                 
             stmt_del = delete(Connection).where(
                 Connection.tenant_id == op.tenant_id,

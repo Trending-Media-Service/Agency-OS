@@ -27,7 +27,7 @@ async def setup_connection_and_trust(db_engine):
                 tenant_id="tenant-webhook-test",
                 brand_id="brand-shopify-test",
                 provider="shopify",
-                credential="shopify-secret-key-123",
+                credential="projects/aos-control-plane/secrets/tenant-webhook-test-shopify-secret/versions/latest",
                 config={"shop_url": "test-store.myshopify.com"}
             )
             s.add(conn)
@@ -43,8 +43,27 @@ async def setup_connection_and_trust(db_engine):
             s.add(snap)
 
 
+async def _seed_shopify_secret(db_engine, value: str, project_id: str | None = None) -> str:
+    from app.services.secrets import SecretManagerClient
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    secrets_client = SecretManagerClient(project_id=project_id)
+    credential = await secrets_client.write_secret("tenant-webhook-test-shopify-secret", value)
+
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        async with s.begin():
+            stmt = select(Connection).where(Connection.tenant_id == "tenant-webhook-test", Connection.provider == "shopify")
+            res = await s.execute(stmt)
+            conn = res.scalar_one()
+            conn.credential = credential
+            s.add(conn)
+    return credential
+
+
 @pytest.mark.asyncio
 async def test_shopify_webhook_proposes_op_successfully(client, db_engine):
+    await _seed_shopify_secret(db_engine, "shopify-secret-key-123")
     payload = b'{"id": 998877, "total_price": "149.99", "created_at": "2026-06-15T05:00:00Z"}'
     signature = _generate_shopify_signature(payload, "shopify-secret-key-123")
 
@@ -89,7 +108,8 @@ async def test_shopify_webhook_proposes_op_successfully(client, db_engine):
 
 
 @pytest.mark.asyncio
-async def test_shopify_webhook_bad_signature_rejected(client):
+async def test_shopify_webhook_bad_signature_rejected(client, db_engine):
+    await _seed_shopify_secret(db_engine, "shopify-secret-key-123")
     payload = b'{"id": 998877, "total_price": "149.99"}'
     headers = {
         "X-Shopify-Hmac-Sha256": "bad-signature-value-here",
@@ -216,7 +236,8 @@ async def test_shopify_webhook_uses_tenant_gcp_project_for_secrets(client, db_en
 
 
 @pytest.mark.asyncio
-async def test_shopify_webhook_deduplicated(client):
+async def test_shopify_webhook_deduplicated(client, db_engine):
+    await _seed_shopify_secret(db_engine, "shopify-secret-key-123")
     payload = b'{"id": 554433, "total_price": "49.99"}'
     signature = _generate_shopify_signature(payload, "shopify-secret-key-123")
 
@@ -246,6 +267,36 @@ async def test_shopify_webhook_deduplicated(client):
     assert resp2.status_code == 200
     assert resp2.json()["status"] == "ignored"
     assert "duplicate" in resp2.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_shopify_webhook_missing_secret_fails_closed(client, db_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    async_session = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with async_session() as s:
+        async with s.begin():
+            stmt = select(Connection).where(Connection.tenant_id == "tenant-webhook-test", Connection.provider == "shopify")
+            res = await s.execute(stmt)
+            conn = res.scalar_one()
+            conn.credential = "projects/aos-control-plane/secrets/non-existent/versions/latest"
+            s.add(conn)
+
+    payload = b'{"id": 112358, "total_price": "49.99"}'
+    signature = _generate_shopify_signature(payload, "dummy-secret")
+    headers = {
+        "X-Shopify-Hmac-Sha256": signature,
+        "X-Shopify-Shop-Domain": "test-store.myshopify.com",
+        "X-Shopify-Topic": "orders/create",
+        "Content-Type": "application/json"
+    }
+
+    response = await client.post(
+        "/webhooks/plugins/shopify",
+        content=payload,
+        headers=headers
+    )
+    assert response.status_code == 401
+    assert "secret not found" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
