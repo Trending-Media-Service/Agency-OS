@@ -186,9 +186,16 @@ class ManageAdapter(Adapter):
                 return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             config = op.params.get("config", {})
             
+            # Retrieve tenant to determine dedicated GCP project ID for secret isolation
+            from app.models import Tenant
+            stmt_tenant = select(Tenant).where(Tenant.id == op.tenant_id)
+            res_tenant = await session.execute(stmt_tenant)
+            tenant = res_tenant.scalar_one_or_none()
+            gcp_project = tenant.gcp_project if tenant else None
+
             # Write token to Secret Manager and get reference
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
-            secrets_client = SecretManagerClient()
+            secrets_client = SecretManagerClient(project_id=gcp_project)
             credential_ref = await secrets_client.write_secret(secret_id, raw_token)
             
             logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential_ref}")
@@ -236,7 +243,13 @@ class ManageAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if conn and conn.credential:
-                secrets_client = SecretManagerClient()
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                secrets_client = SecretManagerClient(project_id=gcp_project)
                 await secrets_client.delete_secret(conn.credential)
             
             stmt_del = delete(Connection).where(
@@ -263,7 +276,13 @@ class ManageAdapter(Adapter):
                 CONNECTOR_OPERATIONS.labels(operation="rotate", provider=provider or "unknown", result="failure").inc()
                 return ExecResult(ok=False, detail={"error": "Connection record not found for rotation"})
             
-            secrets_client = SecretManagerClient()
+            from app.models import Tenant
+            stmt_tenant = select(Tenant).where(Tenant.id == op.tenant_id)
+            res_tenant = await session.execute(stmt_tenant)
+            tenant = res_tenant.scalar_one_or_none()
+            gcp_project = tenant.gcp_project if tenant else None
+
+            secrets_client = SecretManagerClient(project_id=gcp_project)
             
             refresh_token_ref = conn.config.get("refresh_token_ref")
             if not refresh_token_ref and conn.config.get("refresh_token"):
@@ -355,7 +374,13 @@ class ManageAdapter(Adapter):
                 return ExecResult(ok=False, detail={"error": "Cannot verify a revoked connection"})
                 
             try:
-                secrets_client = SecretManagerClient()
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == op.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                secrets_client = SecretManagerClient(project_id=gcp_project)
                 token = await secrets_client.read_secret(conn.credential)
                 if not token:
                     raise ValueError("Retrieved token is empty")
@@ -443,7 +468,13 @@ class ManageAdapter(Adapter):
                 
             if conn.credential:
                 try:
-                    secrets_client = SecretManagerClient()
+                    from app.models import Tenant
+                    stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                    res_tenant = await session.execute(stmt_tenant)
+                    tenant = res_tenant.scalar_one_or_none()
+                    gcp_project = tenant.gcp_project if tenant else None
+
+                    secrets_client = SecretManagerClient(project_id=gcp_project)
                     await secrets_client.delete_secret(conn.credential)
                 except Exception as e:
                     logger.error(f"Failed to delete secret: {e}")

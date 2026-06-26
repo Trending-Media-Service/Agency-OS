@@ -632,7 +632,13 @@ class GrowAdapter(Adapter):
                 return ExecResult(ok=False, detail={"error": "Credential or secret_ref is required and cannot be empty or whitespace-only."})
             
             secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
-            secrets_client = SecretManagerClient()
+            from app.models import Tenant
+            stmt_tenant = select(Tenant).where(Tenant.id == op.tenant_id)
+            res_tenant = await session.execute(stmt_tenant)
+            tenant = res_tenant.scalar_one_or_none()
+            gcp_project = tenant.gcp_project if tenant else None
+
+            secrets_client = SecretManagerClient(project_id=gcp_project)
             credential_ref = await secrets_client.write_secret(secret_id, raw_token)
             
             logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential_ref}")
@@ -681,7 +687,13 @@ class GrowAdapter(Adapter):
             res = await session.execute(stmt)
             conn = res.scalar_one_or_none()
             if conn and conn.credential:
-                secrets_client = SecretManagerClient()
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                secrets_client = SecretManagerClient(project_id=gcp_project)
                 await secrets_client.delete_secret(conn.credential)
                 
             stmt_del = delete(Connection).where(
@@ -1126,7 +1138,14 @@ class GrowAdapter(Adapter):
                 config = conn.config or {}
                 if conn.credential:
                     try:
-                        token = await SecretManagerClient().read_secret(conn.credential)
+                        from app.models import Tenant
+                        stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                        res_tenant = await session.execute(stmt_tenant)
+                        tenant = res_tenant.scalar_one_or_none()
+                        gcp_project = tenant.gcp_project if tenant else None
+
+                        secrets_client = SecretManagerClient(project_id=gcp_project)
+                        token = await secrets_client.read_secret(conn.credential)
                     except Exception as e:
                         logger.warning(f"Failed to resolve {provider} token from Secret Manager: {e}")
         return token, config
@@ -1221,7 +1240,13 @@ class GrowAdapter(Adapter):
                 return VerifyResult(ok=False, checks={"connection_in_db": False}, detail={"error": "Connection record not found"})
                 
             try:
-                secrets_client = SecretManagerClient()
+                from app.models import Tenant
+                stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                res_tenant = await session.execute(stmt_tenant)
+                tenant = res_tenant.scalar_one_or_none()
+                gcp_project = tenant.gcp_project if tenant else None
+
+                secrets_client = SecretManagerClient(project_id=gcp_project)
                 token = await secrets_client.read_secret(conn.credential)
                 if not token:
                     raise ValueError("Retrieved token is empty")
@@ -1314,7 +1339,13 @@ class GrowAdapter(Adapter):
             if conn:
                 config = conn.config or {}
                 try:
-                    secrets_client = SecretManagerClient()
+                    from app.models import Tenant
+                    stmt_tenant = select(Tenant).where(Tenant.id == conn.tenant_id)
+                    res_tenant = await session.execute(stmt_tenant)
+                    tenant = res_tenant.scalar_one_or_none()
+                    gcp_project = tenant.gcp_project if tenant else None
+
+                    secrets_client = SecretManagerClient(project_id=gcp_project)
                     token = await secrets_client.read_secret(conn.credential)
                 except Exception as e:
                     logger.warning(f"Failed to resolve marketing token from Secret Manager: {e}. Using raw credential.")

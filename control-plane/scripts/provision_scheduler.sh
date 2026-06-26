@@ -69,6 +69,7 @@ upsert_job "aos-process-cadences" "*/15 * * * *" "/tasks/process-cadences" "Prop
 upsert_job "aos-trust-snapshots" "0 * * * *" "/tasks/trust-snapshots" "Capture and record brand trust snapshots"
 upsert_job "aos-evaluate-trust" "0 1 * * *" "/tasks/evaluate-trust" "Evaluate campaign ROI and adjust trust tiers"
 upsert_job "aos-calibrate-attribution" "0 2 * * *" "/tasks/calibrate-attribution" "Calibrate marketing attribution models"
+upsert_job "aos-drain-outbox" "*/5 * * * *" "/tasks/drain-outbox" "Safety-net periodic drain of the transactional outbox"
 
 echo "========================================"
 echo "=== Scheduler Provisioning Completed Successfully ==="
