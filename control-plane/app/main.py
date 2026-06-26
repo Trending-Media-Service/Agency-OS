@@ -2160,14 +2160,14 @@ async def plugin_webhook(
         if not signature:
             raise HTTPException(401, "Webhook signature header missing")
 
-        # Resolve actual secret key from Secret Manager (Falling back to credential if not in Secret Manager)
+        # Resolve actual secret key from Secret Manager (fail-closed on lookup failure)
         from app.services.secrets import SecretManagerClient
         try:
             secrets_client = SecretManagerClient(project_id=gcp_project)
             secret_key = await secrets_client.read_secret(conn.credential)
         except ValueError as e:
-            logger.warning(f"Secret not found in registry: {e}. Falling back to literal ref.")
-            secret_key = conn.credential
+            logger.error(f"Webhook secret not found in Secret Manager: {e}")
+            raise HTTPException(401, "Webhook secret not found")
         except Exception as e:
             logger.error(f"Failed to read webhook secret from Secret Manager: {e}")
             raise HTTPException(500, "Internal secret resolution error")
@@ -2329,4 +2329,3 @@ async def debug_migrate(s: AsyncSession = Depends(get_db)):
     except Exception as e:
         await s.rollback()
         return {"status": "error", "message": f"Migration failed: {e}"}
-
