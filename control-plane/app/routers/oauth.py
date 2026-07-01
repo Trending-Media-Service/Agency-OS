@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 
 from app.database import get_db, get_worker_db, get_worker_session_maker
-from app.models import Connection
+from app.models import Connection, CircuitBreakerRow, ShadowDecision
 from app.auth import tenant_id, validate_id
 from app.tasks import enqueue_drain
 from app.services.oauth import generate_oauth_state, validate_redirect_uri, verify_oauth_state
@@ -238,3 +238,102 @@ async def oauth_callback(
         return RedirectResponse(url=redirect_uri, status_code=302)
         
     return {"status": "success", "message": "Connection proposed and queued", "op_id": op_id}
+
+
+class CircuitBreakerOut(BaseModel):
+    brand_id: str
+    domain: str
+    state: str
+    consecutive_failures: int
+    tripped_at: dt.datetime | None = None
+    last_failure_at: dt.datetime | None = None
+
+
+@router.get("/circuit-breakers", response_model=list[CircuitBreakerOut])
+async def list_circuit_breakers(s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
+    stmt = select(CircuitBreakerRow).where(CircuitBreakerRow.tenant_id == tid)
+    res = await s.execute(stmt)
+    breakers = res.scalars().all()
+    return [
+        {
+            "brand_id": cb.brand_id,
+            "domain": cb.domain,
+            "state": cb.state,
+            "consecutive_failures": cb.consecutive_failures,
+            "tripped_at": cb.tripped_at,
+            "last_failure_at": cb.last_failure_at
+        } for cb in breakers
+    ]
+
+
+@router.get("/autonomy-confidence")
+async def autonomy_confidence(
+    brand_id: str | None = None,
+    domain: str | None = None,
+    window_days: int | None = None,
+    s: AsyncSession = Depends(get_db),
+    tid: str = Depends(tenant_id)
+):
+    """Computes autonomy confidence metrics (agreement rate, critical disagreements)
+    for shadow Tier-2 decisions against human Tier-1 decisions.
+    """
+    import datetime as _dt
+    from app.models import ShadowDecision, OpRow
+    
+    stmt = select(ShadowDecision).join(OpRow, ShadowDecision.op_id == OpRow.id)
+    stmt = stmt.where(ShadowDecision.tenant_id == tid)
+    
+    if brand_id:
+        stmt = stmt.where(OpRow.brand_id == brand_id)
+    if domain:
+        stmt = stmt.where(OpRow.domain == domain)
+    if window_days:
+        since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=window_days)
+        # SQLite stores naive datetimes; compare with naive UTC
+        since = since.replace(tzinfo=None)
+        stmt = stmt.where(ShadowDecision.ts >= since)
+        
+    res = await s.execute(stmt)
+    decisions = res.scalars().all()
+    
+    total = len(decisions)
+    if total == 0:
+        return {
+            "tenant_id": tid,
+            "brand_id": brand_id,
+            "domain": domain,
+            "window_days": window_days,
+            "total_decisions": 0,
+            "agreement_rate": 1.0,
+            "critical_disagreements": 0,
+            "recommendation": "OBSERVE",
+            "message": "No shadow decisions recorded in this window."
+        }
+        
+    agreed_count = sum(1 for d in decisions if d.agreed)
+    critical_count = sum(1 for d in decisions if not d.agreed and d.human_decision == "reject" and d.shadow_requirement == "AUTO")
+    
+    agreement_rate = agreed_count / total
+    
+    if total < 5:
+        recommendation = "OBSERVE"
+        message = f"Insufficient data ({total} decision(s)). Recommend observing further."
+    elif agreement_rate >= 0.90 and critical_count == 0:
+        recommendation = "PROCEED"
+        message = "High agreement rate and zero critical disagreements. Autonomy promotion recommended."
+    else:
+        recommendation = "HOLD"
+        message = "Agreement rate below 90% or critical disagreements detected. Review shadow logs."
+        
+    return {
+        "tenant_id": tid,
+        "brand_id": brand_id,
+        "domain": domain,
+        "window_days": window_days,
+        "total_decisions": total,
+        "agreement_rate": agreement_rate,
+        "critical_disagreements": critical_count,
+        "recommendation": recommendation,
+        "message": message
+    }
+
