@@ -24,5 +24,4 @@ The governance kernel from `/ARCHITECTURE.md`. Run:
 | WhatsApp surface | REAL (Meta Cloud API client + webhook receiver; mock in tests) |
 | Trust wiring into /intents tier | NOT WIRED (tier passed explicitly until trust events flow) |
 
-SQLite by default (`AOS_DB_URL` overrides). Postgres + RLS is a tracked issue —
-every table already carries `tenant_id` so it bolts on without schema change.
+PostgreSQL with Row-Level Security (RLS) is enabled by default. Set `DATABASE_URL` (and optional `WORKER_DATABASE_URL` for RLS-bypass background tasks) to configure the database connections.
