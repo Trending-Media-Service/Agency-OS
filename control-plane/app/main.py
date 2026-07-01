@@ -137,6 +137,9 @@ app.include_router(webhooks_router)
 from app.routers.tasks import router as tasks_router
 app.include_router(tasks_router)
 
+from app.routers.session import router as session_router
+app.include_router(session_router)
+
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 

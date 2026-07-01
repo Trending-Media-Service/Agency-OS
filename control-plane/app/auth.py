@@ -1,6 +1,10 @@
 import os
 import logging
 import hmac
+import base64
+import json
+import hashlib
+import time
 from fastapi import Header, HTTPException, Request
 
 logger = logging.getLogger(__name__)
@@ -13,13 +17,70 @@ if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
     raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
 
 
+def base64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+
+def base64url_decode(data: str) -> bytes:
+    padding = "=" * (4 - (len(data) % 4))
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def sign_jwt(payload: dict, secret: str, expires_in: int = 7200) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload_copy = payload.copy()
+    payload_copy["exp"] = int(time.time()) + expires_in
+    
+    header_b64 = base64url_encode(json.dumps(header).encode("utf-8"))
+    payload_b64 = base64url_encode(json.dumps(payload_copy).encode("utf-8"))
+    
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature_b64 = base64url_encode(signature)
+    
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
+
+
+def verify_jwt(token: str, secret: str) -> dict | None:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+            
+        header_b64, payload_b64, signature_b64 = parts
+        
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        expected_sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+        actual_sig = base64url_decode(signature_b64)
+        
+        if not hmac.compare_digest(actual_sig, expected_sig):
+            return None
+            
+        payload = json.loads(base64url_decode(payload_b64).decode("utf-8"))
+        if payload.get("exp", 0) < time.time():
+            return None
+            
+        return payload
+    except Exception:
+        return None
+
+
 async def verify_operator_auth(authorization: str | None = Header(default=None)):
-    """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
+    """Verifies that the request carries a valid Operator Bearer Token or a valid signed JWT session token."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
     token = authorization[7:]
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
+    
+    # 1. Compare directly against raw OPERATOR_TOKEN (backward compatibility)
+    if hmac.compare_digest(token, OPERATOR_TOKEN):
+        return
+        
+    # 2. Try to verify as signed JWT session token
+    payload = verify_jwt(token, OPERATOR_TOKEN)
+    if payload and payload.get("role") == "OPERATOR_AUTHENTICATED":
+        return
+        
+    raise HTTPException(403, "Forbidden: Invalid operator token or session expired")
 
 
 async def resolved_operator_role(authorization: str | None = Header(default=None)) -> str | None:
@@ -29,9 +90,15 @@ async def resolved_operator_role(authorization: str | None = Header(default=None
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
     token = authorization[7:]
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
-    return "OPERATOR_AUTHENTICATED"
+    
+    if hmac.compare_digest(token, OPERATOR_TOKEN):
+        return "OPERATOR_AUTHENTICATED"
+        
+    payload = verify_jwt(token, OPERATOR_TOKEN)
+    if payload and payload.get("role") == "OPERATOR_AUTHENTICATED":
+        return "OPERATOR_AUTHENTICATED"
+        
+    raise HTTPException(403, "Forbidden: Invalid operator token or session expired")
 
 
 async def verify_worker_auth(request: Request, authorization: str | None = Header(default=None)):

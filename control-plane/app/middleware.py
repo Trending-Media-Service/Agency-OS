@@ -59,7 +59,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     if (request.url.path.startswith("/webhooks/plugins/") or 
         request.url.path.startswith("/api/v1/onboarding") or
         request.url.path.startswith("/tenants") or 
-        request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/tasks/drift-detect", "/tasks/run-diagnostics", "/connections/oauth/callback"]):
+        request.url.path in ["/healthz", "/readyz", "/health", "/docs", "/openapi.json", "/audit/verify", "/tasks/drain-outbox", "/webhooks/whatsapp", "/tasks/trust-snapshots", "/tasks/process-cadences", "/tasks/evaluate-trust", "/tasks/calibrate-attribution", "/dashboard", "/metrics", "/tasks/refresh-tokens", "/tasks/drift-detect", "/tasks/run-diagnostics", "/connections/oauth/callback", "/session/bootstrap"]):
       return await call_next(request)
 
     if not tenant_id:
