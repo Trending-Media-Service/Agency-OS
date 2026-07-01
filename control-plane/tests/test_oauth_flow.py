@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from app.models import Connection, AuditEvent
 from app.database import get_db
 import app.main as mainmod
+import app.auth as authmod
 
 # ---------------------------------------------------------
 # Tier 1: OAuth Token Refresh and OIDC Worker Auth
@@ -99,7 +100,7 @@ async def test_verify_worker_auth_valid_oidc(mock_oidc_verification):
     with patch("app.auth.AOS_ENV", "production"), \
          patch("app.auth.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
         # Should not raise exception
-        await mainmod.verify_worker_auth(request, authorization="Bearer valid-token")
+        await authmod.verify_worker_auth(request, authorization="Bearer valid-token")
 
 @pytest.mark.asyncio
 async def test_verify_worker_auth_invalid_audience(mock_oidc_verification):
@@ -123,7 +124,7 @@ async def test_verify_worker_auth_invalid_audience(mock_oidc_verification):
     with patch("app.auth.AOS_ENV", "production"), \
          patch("app.auth.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
         with pytest.raises(HTTPException) as exc:
-            await mainmod.verify_worker_auth(request, authorization="Bearer invalid-token")
+            await authmod.verify_worker_auth(request, authorization="Bearer invalid-token")
         assert exc.value.status_code == 401
 
 @pytest.mark.asyncio
