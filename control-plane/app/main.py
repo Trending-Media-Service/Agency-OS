@@ -120,6 +120,9 @@ app.state.db_session_maker = AsyncSessionLocal
 from app.routers.onboarding import router as onboarding_router
 app.include_router(onboarding_router)
 
+from app.routers.tenants import router as tenants_router
+app.include_router(tenants_router)
+
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -184,31 +187,8 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
-OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
-if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
-    raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
+from app.auth import verify_operator_auth, resolved_operator_role
 
-async def verify_operator_auth(authorization: str | None = Header(default=None)):
-    """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
-    import hmac
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
-
-
-async def resolved_operator_role(authorization: str | None = Header(default=None)) -> str | None:
-    """Resolves the operator's role if authenticated, else returns None."""
-    if not authorization:
-        return None
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    import hmac
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
-    return "OPERATOR_AUTHENTICATED"
 
 
 @app.get("/healthz")
@@ -295,9 +275,7 @@ def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
     return validate_id(x_tenant_id, "tenant_id")
 
 
-class TenantIn(BaseModel):
-    name: str = Field(max_length=200)
-    brand_name: str = Field(max_length=200)
+
 
 
 class OpOut(BaseModel):
@@ -350,139 +328,7 @@ class AuditVerifyOut(BaseModel):
     first_bad_id: int | None = None
 
 
-@app.post("/tenants", dependencies=[Depends(verify_operator_auth)])
-async def create_tenant(body: TenantIn, s: AsyncSession = Depends(get_worker_db)):
-    import uuid
-    tenant_id = uuid.uuid4().hex
-    # Set the tenant context so the INSERTs satisfy the RLS WITH CHECK policies on
-    # tenants/brands (the worker role is RLS-enforced, not BYPASSRLS). set_config is a
-    # Postgres function — guard on dialect so the SQLite test database isn't hit with it.
-    if s.bind and s.bind.dialect.name == "postgresql":
-        await s.execute(
-            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
-            {"tenant_id": tenant_id}
-        )
 
-    t = Tenant(id=tenant_id, name=body.name)
-    s.add(t)
-    await s.flush()
-    
-    b = Brand(tenant_id=t.id, name=body.brand_name)
-    s.add(b)
-    await s.flush()
-    
-    from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE[t.id] = True
-    
-    return {"tenant_id": t.id, "brand_id": b.id}
-
-
-class TenantBrandOut(BaseModel):
-    tenant_id: str
-    tenant_name: str
-    brand_id: str
-    brand_name: str
-
-
-@app.get("/tenants", response_model=list[TenantBrandOut], dependencies=[Depends(verify_operator_auth)])
-async def list_tenants(s: AsyncSession = Depends(get_worker_db)):
-    """Lists all tenants and their brands.
-
-    Bypasses RLS (uses get_worker_db) to allow the operator console to discover tenants.
-    """
-    stmt = select(
-        Tenant.id.label("tenant_id"),
-        Tenant.name.label("tenant_name"),
-        Brand.id.label("brand_id"),
-        Brand.name.label("brand_name")
-    ).join(Brand, Brand.tenant_id == Tenant.id).order_by(Tenant.name, Brand.name)
-
-    res = await s.execute(stmt)
-    return [dict(row) for row in res.mappings().all()]
-
-
-class TenantUpdateIn(BaseModel):
-    is_active: bool
-
-
-class TenantOut(BaseModel):
-    id: str
-    name: str
-    hosting_tier: str
-    gcp_project: str | None = None
-    is_active: bool
-    created_at: dt.datetime
-
-
-@app.patch("/tenants/{tenant_id}", response_model=TenantOut, dependencies=[Depends(verify_operator_auth)])
-async def update_tenant_status(
-    tenant_id: str,
-    body: TenantUpdateIn,
-    s: AsyncSession = Depends(get_worker_db)
-):
-    tenant = await s.get(Tenant, tenant_id)
-    
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-        
-    tenant.is_active = body.is_active
-    await s.commit()
-    
-    # Update the gateway memory cache
-    from app.middleware import VALID_TENANTS_CACHE
-    VALID_TENANTS_CACHE[tenant_id] = body.is_active
-    
-    return tenant
-
-
-@app.delete("/tenants/{tenant_id}", status_code=202, dependencies=[Depends(verify_operator_auth)])
-async def delete_tenant(
-    tenant_id: str,
-    background_tasks: BackgroundTasks,
-    s: AsyncSession = Depends(get_worker_db)
-):
-    tenant = await s.get(Tenant, tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-        
-    # Propose a governed offboard Op
-    import uuid
-    from app.kernel.optypes import OpSpec, Severity, Reversibility, Money
-    from app.kernel.services import resolve_brand_tier
-    from app.database import get_worker_session_maker
-    
-    op_id = f"op_offboard_{uuid.uuid4().hex[:12]}"
-    spec = OpSpec(
-        id=op_id,
-        tenant_id=tenant_id,
-        brand_id="_system",
-        domain="manage",
-        action="manage.tenant.offboard",
-        params={"target_tenant_id": tenant_id},
-        severity=Severity(impact=3, reversibility=Reversibility.IRREVERSIBLE),
-        cost_estimate=Money(amount_minor=0, currency="INR")
-    )
-    
-    # Propose Op using the RLS-bypassed worker session
-    row = await loop.propose(s, spec, actor="api:operator")
-    
-    # Resolve tier (default 1) and gate
-    tier = await resolve_brand_tier(s, tenant_id=tenant_id, brand_id="_system", domain="manage")
-    gate, requirement = await loop.preview_and_gate(s, row, tier=tier)
-    
-    await s.commit()
-    
-    # If it needs approval, send notifications
-    if row.state in ("AWAITING_APPROVAL", "BLOCKED"):
-        background_tasks.add_task(send_whatsapp_card_task, row.id, get_worker_session_maker())
-        
-    return {
-        "status": "proposed",
-        "op_id": row.id,
-        "state": row.state,
-        "requirement": requirement,
-        "preview": row.preview_summary
-    }
 
 
 class BrandPortfolioItem(BaseModel):
@@ -1423,35 +1269,8 @@ async def promote_recipe(body: RecipePromoteIn):
     }
 
 
-WORKER_SA = os.getenv("AOS_WORKER_SERVICE_ACCOUNT")
-AOS_ENV = os.getenv("AOS_ENV", "development")
+from app.auth import verify_worker_auth
 
-
-async def verify_worker_auth(request: Request, authorization: str | None = Header(default=None)):
-    if AOS_ENV == "test" or not WORKER_SA:
-        return
-
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-
-    token = authorization[7:]
-    try:
-        from google.oauth2 import id_token
-        from google.auth.transport import requests as google_requests
-        google_request = google_requests.Request()
-        aud_base = f"{request.url.scheme}://{request.url.netloc}{request.url.path}"
-        info = id_token.verify_oauth2_token(token, google_request, audience=aud_base)
-
-        if info.get("iss") not in ["accounts.google.com", "https://accounts.google.com"]:
-            raise ValueError("Wrong issuer")
-
-        email = info.get("email")
-        if email != WORKER_SA:
-            raise ValueError(f"Unauthorized service account: {email}")
-
-    except Exception as e:
-        logger.error(f"OIDC token verification failed: {e}")
-        raise HTTPException(401, f"Unauthorized: {e}")
 
 
 
