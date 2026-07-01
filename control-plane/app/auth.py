@@ -59,3 +59,19 @@ async def verify_worker_auth(request: Request, authorization: str | None = Heade
     except Exception as e:
         logger.error(f"OIDC token verification failed: {e}")
         raise HTTPException(401, f"Unauthorized: {e}")
+
+
+def validate_id(id_val: str, name: str = "ID") -> str:
+    if not id_val:
+        raise HTTPException(400, f"{name} is required")
+    import re
+    if not re.match(r"\A[a-zA-Z0-9_-]+\Z", id_val):
+        raise HTTPException(400, f"Invalid characters or path traversal in {name}")
+    return id_val
+
+
+def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
+    if not x_tenant_id:
+        raise HTTPException(401, "X-Tenant-Id header required")
+    return validate_id(x_tenant_id, "tenant_id")
+

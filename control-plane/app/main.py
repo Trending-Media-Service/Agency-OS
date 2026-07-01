@@ -123,6 +123,9 @@ app.include_router(onboarding_router)
 from app.routers.tenants import router as tenants_router
 app.include_router(tenants_router)
 
+from app.routers.ops import router as ops_router
+app.include_router(ops_router)
+
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -260,19 +263,7 @@ async def metrics_endpoint(s: AsyncSession = Depends(get_worker_db)):
 
 
 
-def validate_id(id_val: str, name: str = "ID") -> str:
-    if not id_val:
-        raise HTTPException(400, f"{name} is required")
-    import re
-    if not re.match(r"\A[a-zA-Z0-9_-]+\Z", id_val):
-        raise HTTPException(400, f"Invalid characters or path traversal in {name}")
-    return id_val
-
-
-def tenant_id(x_tenant_id: str | None = Header(default=None)) -> str:
-    if not x_tenant_id:
-        raise HTTPException(401, "X-Tenant-Id header required")
-    return validate_id(x_tenant_id, "tenant_id")
+from app.auth import tenant_id, validate_id
 
 
 
@@ -706,104 +697,7 @@ async def submit_action(body: ActionIn, background_tasks: BackgroundTasks,
     return {"cards": cards}
 
 
-class DecisionIn(BaseModel):
-    decision: str  # approve | reject
-    actor: str
-    role: str = "AGENCY_OWNER"
-    surface: str = "web"
-    reason: str | None = None
 
-
-@app.post("/ops/{op_id}/decision")
-async def decide(op_id: str, body: DecisionIn, background_tasks: BackgroundTasks,
-                 operator_status: str | None = Depends(resolved_operator_role),
-                 s: AsyncSession = Depends(get_db),
-                 worker_session_maker = Depends(get_worker_session_maker),
-                 tid: str = Depends(tenant_id)):
-    row = await s.get(OpRow, op_id)
-    if not row or row.tenant_id != tid:
-        raise HTTPException(404, "op not found for tenant")
-
-    # Resolve secure role provenance via Dual-Auth Role Routing
-    resolved_role = "CLIENT"
-    if operator_status == "OPERATOR_AUTHENTICATED":
-        resolved_role = body.role
-
-    try:
-        await loop.decide(s, row, decision=body.decision, actor=body.actor, role=resolved_role,
-                    surface=body.surface, reason=body.reason)
-        await s.commit()
-    except loop.RBACError as e:
-        raise HTTPException(403, str(e))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    enqueue_drain(background_tasks, worker_session_maker)
-    return {"op_id": row.id, "state": row.state}
-
-
-@app.get("/ops/{op_id}")
-async def get_op(op_id: str, s: AsyncSession = Depends(get_db), tid: str = Depends(tenant_id)):
-    row = await s.get(OpRow, op_id)
-    if not row or row.tenant_id != tid:
-        raise HTTPException(404, "op not found for tenant")
-    result = await s.execute(select(OpTrace).filter_by(op_id=op_id).order_by(OpTrace.id))
-    traces = [
-        {"ts": t.ts.isoformat(), "kind": t.kind, "detail": t.detail}
-        for t in result.scalars()
-    ]
-    return {
-        "op_id": row.id,
-        "action": row.action,
-        "state": row.state,
-        "params": row.params,
-        "preview": row.preview_summary,
-        "trace": traces,
-        "impact": row.impact,
-        "reversibility": row.reversibility,
-        "statutory": row.statutory,
-        "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
-                          if row.cost_amount_minor else None)
-    }
-
-
-@app.get("/ops", response_model=list[OpOut])
-async def list_ops(
-    state: str | None = None,
-    domain: str | None = None,
-    brand_id: str | None = None,
-    limit: int = Query(default=10, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    s: AsyncSession = Depends(get_db),
-    tid: str = Depends(tenant_id)
-):
-    if brand_id:
-        validate_id(brand_id, "brand_id")
-    stmt = select(OpRow).where(OpRow.tenant_id == tid)
-    if state:
-        stmt = stmt.where(OpRow.state == state)
-    if domain:
-        stmt = stmt.where(OpRow.domain == domain)
-    if brand_id:
-        stmt = stmt.where(OpRow.brand_id == brand_id)
-        
-    stmt = stmt.order_by(OpRow.id.desc()).offset(offset).limit(limit)
-    res = await s.execute(stmt)
-    rows = res.scalars().all()
-    
-    return [
-        {
-            "op_id": row.id,
-            "tenant_id": row.tenant_id,
-            "brand_id": row.brand_id,
-            "domain": row.domain,
-            "action": row.action,
-            "state": row.state,
-            "preview": row.preview_summary,
-            "cost_estimate": (f"{row.cost_amount_minor/100:.2f} {row.cost_currency}/mo"
-                              if row.cost_amount_minor else None),
-        }
-        for row in rows
-    ]
 
 
 @app.get("/audit/verify", response_model=AuditVerifyOut)
@@ -1661,14 +1555,7 @@ async def verify_whatsapp_signature(payload: bytes, signature: str) -> bool:
 class BrandObjectiveIn(BaseModel):
     objective: str
 
-class RecommendationOut(BaseModel):
-    action: str
-    domain: str
-    params: dict
-    preview_summary: str
-    impact: int
-    reversibility: str
-    cost_minor: int
+
 
 class BrandPropertyOut(BaseModel):
     id: str
@@ -1741,47 +1628,7 @@ async def set_brand_objective(
     return {"brand_id": brand_id, "objective": body.objective}
 
 
-@app.get("/brands/{brand_id}/recommendations", response_model=list[RecommendationOut])
-async def get_brand_recommendations(
-    brand_id: str,
-    s: AsyncSession = Depends(get_db),
-    tid: str = Depends(tenant_id)
-):
-    brand = await s.get(Brand, brand_id)
-    if not brand or brand.tenant_id != tid:
-        raise HTTPException(404, "Brand not found")
-        
-    from app.services.recommender import get_recommendations
-    specs = await get_recommendations(s, brand_id)
-    
-    recs = []
-    for spec in specs:
-        if spec.action == "presence.google.connect":
-            summary = "Connect Google Search Console and Merchant Center channels to establish presence."
-        elif spec.action == "presence.search_console.audit":
-            summary = "Run Search Console organic search indexing and crawl health audit."
-        elif spec.action == "presence.merchant_center.audit":
-            summary = "Run Merchant Center product feed formatting and sync health audit."
-        elif spec.action == "presence.citation.audit":
-            summary = "Run Playwright competitor citation gap and organic keywords audit."
-        elif spec.action == "grow.budget.reallocate":
-            summary = spec.params.get("preview_summary") or "Optimize marketing ad spend by reallocating budget to high-performing campaigns."
-        elif spec.action == "presence.wordpress.connect":
-            summary = "Connect WordPress blog to launch customer retention content marketing."
-        else:
-            summary = f"Govern operation for action: {spec.action}"
 
-        recs.append({
-            "action": spec.action,
-            "domain": spec.domain,
-            "params": spec.params,
-            "preview_summary": summary,
-            "impact": spec.severity.impact,
-            "reversibility": spec.severity.reversibility.value,
-            "cost_minor": spec.cost_estimate.amount_minor if spec.cost_estimate else 0
-        })
-        
-    return recs
 
 
 @app.get("/webhooks/whatsapp")
