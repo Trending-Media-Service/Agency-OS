@@ -95,9 +95,9 @@ async def test_verify_worker_auth_valid_oidc(mock_oidc_verification):
     request.url.netloc = "test"
     request.url.path = "/tasks/refresh-tokens"
 
-    # Override env in app.main
-    with patch("app.main.AOS_ENV", "production"), \
-         patch("app.main.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
+    # Override env in app.auth
+    with patch("app.auth.AOS_ENV", "production"), \
+         patch("app.auth.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
         # Should not raise exception
         await mainmod.verify_worker_auth(request, authorization="Bearer valid-token")
 
@@ -120,8 +120,8 @@ async def test_verify_worker_auth_invalid_audience(mock_oidc_verification):
     request.url.netloc = "test"
     request.url.path = "/tasks/invalid-path"
 
-    with patch("app.main.AOS_ENV", "production"), \
-         patch("app.main.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
+    with patch("app.auth.AOS_ENV", "production"), \
+         patch("app.auth.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"):
         with pytest.raises(HTTPException) as exc:
             await mainmod.verify_worker_auth(request, authorization="Bearer invalid-token")
         assert exc.value.status_code == 401
@@ -356,8 +356,8 @@ async def test_scheduler_batch_resiliency(session, mock_secrets_client):
 async def test_scheduler_auth_enforcement(client):
     """Test 38: Verify that worker task endpoints return 401 unauthorized if no OIDC header is passed."""
     # Ensure WORKER_SA is configured to force verification
-    with patch("app.main.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"), \
-         patch("app.main.AOS_ENV", "production"):
+    with patch("app.auth.WORKER_SA", "scheduler-worker@aos.iam.gserviceaccount.com"), \
+         patch("app.auth.AOS_ENV", "production"):
         resp = await client.post("/tasks/drain-outbox")
         assert resp.status_code == 401
 
