@@ -4,6 +4,7 @@ from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uuid
+import time
 
 from app.database import AsyncSessionLocal
 from app.models import Tenant
@@ -40,8 +41,9 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
 
 
-# Thread-safe memory cache mapping tenant_id -> is_active (bool) to ensure zero-latency fast-paths
-VALID_TENANTS_CACHE: dict[str, bool] = {}
+# Thread-safe memory cache mapping tenant_id -> (is_active: bool, cached_at: float) to ensure zero-latency fast-paths
+VALID_TENANTS_CACHE: dict[str, tuple[bool, float]] = {}
+TENANT_CACHE_TTL_SECONDS = 300
 
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
@@ -68,15 +70,19 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
 
     # --- SECURE TENANT VALIDATION ---
     bypass_validation = getattr(request.app.state, "bypass_tenant_validation", False)
-    # 1. Fast path: check local memory cache
     if not bypass_validation:
+      use_cached = False
       if tenant_id in VALID_TENANTS_CACHE:
-        if not VALID_TENANTS_CACHE[tenant_id]:
-          return JSONResponse(
-              status_code=status.HTTP_403_FORBIDDEN,
-              content={"detail": "Forbidden: Tenant account is suspended."},
-          )
-      else:
+        is_active, cached_at = VALID_TENANTS_CACHE[tenant_id]
+        if time.time() - cached_at < TENANT_CACHE_TTL_SECONDS:
+          use_cached = True
+          if not is_active:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "Forbidden: Tenant account is suspended."},
+            )
+
+      if not use_cached:
         # 2. Slow path: check database
         try:
           session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
@@ -93,8 +99,8 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
             
             db_tenant_id, is_active = row
             
-            # Cache the verified tenant status for future fast-paths
-            VALID_TENANTS_CACHE[tenant_id] = is_active
+            # Cache the verified tenant status with current timestamp
+            VALID_TENANTS_CACHE[tenant_id] = (is_active, time.time())
             
             if not is_active:
               return JSONResponse(
