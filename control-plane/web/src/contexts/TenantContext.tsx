@@ -71,12 +71,12 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
-  // Fetch tenants from backend on boot to sync with DB
+  // Fetch tenants from backend on boot or when operator token changes
   useEffect(() => {
     const fetchTenants = async () => {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       // GET /tenants is operator-gated; attach the bearer token if the operator has set one.
-      const token = localStorage.getItem("aos_operator_token");
+      const token = operatorToken;
       try {
         const res = await fetch(`${baseUrl}/tenants`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -110,7 +110,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
     };
     
     fetchTenants();
-  }, []);
+  }, [operatorToken]);
 
   const setTenantId = (id: string) => {
     setTenantIdState(id);

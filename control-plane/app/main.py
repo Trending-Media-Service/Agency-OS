@@ -211,10 +211,20 @@ async def healthz():
 
 
 @app.get("/readyz")
-async def readyz(s: AsyncSession = Depends(get_db)):
+async def readyz(s: AsyncSession = Depends(get_worker_db)):
     try:
+        from sqlalchemy import func
         await s.execute(select(1))
-        return {"status": "ready"}
+        
+        # Check if there are any onboarded tenants
+        stmt = select(func.count(Tenant.id))
+        res = await s.execute(stmt)
+        count = res.scalar() or 0
+        
+        return {
+            "status": "ready",
+            "onboarded": count > 0
+        }
     except Exception as e:
         logger.error(f"Readiness probe failed: {e}")
         return JSONResponse(
