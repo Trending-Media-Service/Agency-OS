@@ -22,6 +22,7 @@ from app.adapters.manage import ManageAdapter
 from app.adapters.build import BuildAdapter
 from app.adapters.governance import GovernanceAdapter
 from app.adapters.dr import DRAdapter
+from app.adapters.monitor import MonitorAdapter
 from .kernel import loop
 from .kernel.services import audit_verify, approval_latency_rollup
 from .kernel.plugins import register_plugin, get_plugin, ShopifyPlugin
@@ -58,6 +59,7 @@ loop.register(ManageAdapter())
 loop.register(BuildAdapter())
 loop.register(GovernanceAdapter())
 loop.register(DRAdapter())
+loop.register(MonitorAdapter())
 
 register_plugin(ShopifyPlugin())
 

@@ -86,7 +86,7 @@ class BuildAgentHarness:
             logger.error(f"Git operation failed: {e.stderr}")
             return False
 
-    def apply_edits(self, intent: str) -> bool:
+    def apply_edits(self, intent: str, system_instruction: Optional[str] = None) -> bool:
         """Calls Vertex AI Gemini model to get codebase edits and applies them."""
         if not hasattr(self, 'repo_path'):
             raise RuntimeError("Repo must be cloned first")
@@ -114,7 +114,7 @@ class BuildAgentHarness:
         from app.services.llm import VertexAIClient
         client = VertexAIClient()
         try:
-            result = client.generate_edits(intent, context_str)
+            result = client.generate_edits(intent, context_str, system_instruction=system_instruction)
         except Exception as e:
             logger.error(f"Failed to generate edits from LLM: {e}")
             return False
