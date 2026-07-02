@@ -3,6 +3,8 @@ from app.observability import trace_context
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import time
 import uuid
 
 from app.database import AsyncSessionLocal
@@ -40,8 +42,48 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
 
 
-# Thread-safe memory cache mapping tenant_id -> is_active (bool) to ensure zero-latency fast-paths
-VALID_TENANTS_CACHE: dict[str, bool] = {}
+class _TTLTenantCache:
+  """Dict-like cache of tenant_id -> is_active with a per-entry TTL.
+
+  The old plain-dict cache never expired, so a tenant suspended/deleted on one
+  Cloud Run instance stayed cached as active in every OTHER instance's memory
+  until that instance restarted. Bounding each entry with a TTL forces every
+  instance to re-validate against the DB within TENANT_CACHE_TTL_SECONDS, while
+  preserving the zero-latency fast path within the window. Drop-in for the dict
+  API the call sites already use (item get/set, `in`, pop, clear).
+  """
+
+  def __init__(self, ttl_seconds: float):
+    self._ttl = ttl_seconds
+    self._d: dict[str, tuple[bool, float]] = {}
+
+  def __setitem__(self, key: str, value: bool) -> None:
+    self._d[key] = (value, time.monotonic())
+
+  def __contains__(self, key: str) -> bool:
+    entry = self._d.get(key)
+    if entry is None:
+      return False
+    if time.monotonic() - entry[1] > self._ttl:
+      self._d.pop(key, None)  # lazily evict on read
+      return False
+    return True
+
+  def __getitem__(self, key: str) -> bool:
+    return self._d[key][0]
+
+  def pop(self, key: str, default=None):
+    entry = self._d.pop(key, None)
+    return default if entry is None else entry[0]
+
+  def clear(self) -> None:
+    self._d.clear()
+
+
+# Memory cache mapping tenant_id -> is_active (bool) for a zero-latency fast-path,
+# bounded by TTL so suspensions/deletions propagate across instances.
+TENANT_CACHE_TTL_SECONDS = float(os.getenv("TENANT_CACHE_TTL_SECONDS", "60"))
+VALID_TENANTS_CACHE = _TTLTenantCache(TENANT_CACHE_TTL_SECONDS)
 
 
 class TenantIsolationMiddleware(BaseHTTPMiddleware):
