@@ -37,11 +37,26 @@ def test_prod_boot_guards_operator_token(monkeypatch):
     monkeypatch.setenv("OPERATOR_TOKEN", "default-dev-token")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@10.0.0.1:5432/agency_os")
     monkeypatch.setenv("WHATSAPP_APP_SECRET", "mock-whatsapp-secret")
+    monkeypatch.setenv("SECRET_KEY", "strong-random-state-key")  # isolate: only OPERATOR_TOKEN should trip
     clean_imports()
-    
+
     with pytest.raises(RuntimeError) as exc_info:
         import app.main
     assert "OPERATOR_TOKEN must be explicitly set" in str(exc_info.value)
+
+
+def test_prod_boot_guards_secret_key(monkeypatch):
+    # ENV=production + SECRET_KEY left at the built-in default -> RuntimeError
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("OPERATOR_TOKEN", "super-secret-token")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@10.0.0.1:5432/agency_os")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "mock-whatsapp-secret")
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    clean_imports()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        import app.services.oauth
+    assert "SECRET_KEY must be set" in str(exc_info.value)
 
 def test_prod_boot_guards_database_url(monkeypatch):
     # Case 2: ENV=production + DATABASE_URL contains localhost -> RuntimeError
@@ -60,8 +75,9 @@ def test_prod_boot_guards_valid_prod(monkeypatch):
     monkeypatch.setenv("OPERATOR_TOKEN", "super-secret-token")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@10.0.0.1:5432/agency_os")
     monkeypatch.setenv("WHATSAPP_APP_SECRET", "mock-whatsapp-secret")
+    monkeypatch.setenv("SECRET_KEY", "strong-random-state-key")
     clean_imports()
-    
+
     try:
         import app.database
         import app.main

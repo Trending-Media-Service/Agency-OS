@@ -26,7 +26,10 @@ def clean_env():
 @pytest.mark.asyncio
 async def test_onboarding_bootstrap(client, session: AsyncSession):
     # Test POST /api/v1/onboarding/bootstrap (using async client fixture!)
-    resp = await client.post("/api/v1/onboarding/bootstrap?name=LuxeDecor&domain=luxedecor.com&tier=dedicated")
+    resp = await client.post(
+        "/api/v1/onboarding/bootstrap?name=LuxeDecor&domain=luxedecor.com&tier=dedicated",
+        headers={"Authorization": "Bearer default-dev-token"},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "onboarding_ready"
@@ -51,7 +54,8 @@ async def test_onboarding_oauth_authorize(clean_env, client):
     # Test GET /api/v1/onboarding/oauth/authorize/shopify
     resp = await client.get(
         "/api/v1/onboarding/oauth/authorize/shopify?"
-        "tenant_id=t-1&brand_id=b-1&redirect_uri=http://localhost/callback"
+        "tenant_id=t-1&brand_id=b-1&redirect_uri=http://localhost/callback",
+        headers={"Authorization": "Bearer default-dev-token"},
     )
     # FastAPI RedirectResponse returns 307
     assert resp.status_code == 307 or resp.status_code == 200
@@ -135,7 +139,8 @@ async def test_onboarding_connection_direct(client, session: AsyncSession):
         
         resp = await client.post(
             "/api/v1/onboarding/connection/direct?"
-            "tenant_id=t-3&brand_id=b-3&provider=klaviyo&api_key=pk_test_klaviyo_key_987"
+            "tenant_id=t-3&brand_id=b-3&provider=klaviyo&api_key=pk_test_klaviyo_key_987",
+            headers={"Authorization": "Bearer default-dev-token"},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "direct_connection_established"
@@ -226,7 +231,8 @@ async def test_onboarding_oauth_authorize_with_explicit_shop(clean_env, client):
     # must target that store, not the brand_id.
     resp = await client.get(
         "/api/v1/onboarding/oauth/authorize/shopify?"
-        "tenant_id=t-1&brand_id=b-1&redirect_uri=http://localhost/callback&shop=ableys"
+        "tenant_id=t-1&brand_id=b-1&redirect_uri=http://localhost/callback&shop=ableys",
+        headers={"Authorization": "Bearer default-dev-token"},
     )
     assert resp.status_code in (200, 307)
     redirect_url = str(resp.headers.get("location") or resp.url)
@@ -260,6 +266,7 @@ async def test_onboarding_connection_config(client, session: AsyncSession):
     resp = await client.post(
         "/api/v1/onboarding/connection/config?tenant_id=t-5&brand_id=b-5&provider=google-ads",
         json={"developer_token": "real-dev-token-123"},
+        headers={"Authorization": "Bearer default-dev-token"},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "connection_configured"
@@ -277,6 +284,7 @@ async def test_onboarding_connection_config_missing_404(client):
     resp = await client.post(
         "/api/v1/onboarding/connection/config?tenant_id=nope&brand_id=nope&provider=google-ads",
         json={"developer_token": "x"},
+        headers={"Authorization": "Bearer default-dev-token"},
     )
     assert resp.status_code == 404
 
