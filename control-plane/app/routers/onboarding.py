@@ -2,68 +2,107 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 import httpx
 import json
 import os
+import uuid
 import logging
 from typing import Optional
 
-from app.database import get_db, AsyncSessionLocal
+from app.database import get_worker_db, get_worker_session_maker
 from app.models import Tenant, Brand, Connection, BrandProperty
+from app.security import verify_operator_auth
 from app.services.oauth import generate_oauth_state, verify_oauth_state, OauthService, normalize_shopify_domain
 from app.services.oauth_registry import OauthProviderRegistry
 
 router = APIRouter(prefix="/api/v1/onboarding", tags=["onboarding"])
 logger = logging.getLogger(__name__)
 
-@router.post("/bootstrap")
+
+async def _set_tenant_context(db: AsyncSession, tenant_id: str) -> None:
+    """Bind the RLS tenant GUC for this transaction.
+
+    The onboarding paths are exempt from TenantIsolationMiddleware, so nothing sets
+    app.current_tenant_id for us. Without it, RLS (USING/WITH CHECK tenant_id =
+    current_setting('app.current_tenant_id', true)) filters/rejects every row on
+    production Postgres. No-op on SQLite (tests). set_config(..., true) is txn-local.
+    """
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            {"tid": tenant_id},
+        )
+
+
+@router.post("/bootstrap", dependencies=[Depends(verify_operator_auth)])
 async def bootstrap_tenant(
-    name: str, 
-    domain: str, 
-    tier: str = "shared", 
-    db: AsyncSession = Depends(get_db)
+    name: str,
+    domain: str,
+    tier: str = "shared",
+    db: AsyncSession = Depends(get_worker_db),
 ):
     """Seeds the initial Tenant and Brand database rows.
-    
+
     Prepares the system for OAuth connections and launches the GCP baseline provisioning.
     """
     logger.info(f"Bootstrapping tenant={name}, tier={tier}...")
-    tenant = Tenant(name=name, hosting_tier=tier)
+    # Pre-generate the id so we can bind the RLS context before the INSERT satisfies
+    # the WITH CHECK policy (mirrors create_tenant in app/main.py).
+    tenant_id = uuid.uuid4().hex
+    await _set_tenant_context(db, tenant_id)
+
+    tenant = Tenant(id=tenant_id, name=name, hosting_tier=tier)
     db.add(tenant)
-    await db.flush() # Resolve tenant ID
-    
+    await db.flush()  # Resolve tenant ID
+
     brand = Brand(tenant_id=tenant.id, name=name)
     db.add(brand)
+    await db.flush()  # Resolve brand ID
+
+    # Persist the requested domain so downstream provisioning can find it.
+    if domain:
+        db.add(BrandProperty(
+            tenant_id=tenant.id,
+            brand_id=brand.id,
+            type="domain",
+            provider="internal",
+            status="active",
+            findings={"domain": domain},
+        ))
+
     await db.commit()
-    
+
     # In production, this trigger initiates the asynchronous GCP provision.brand_baseline Saga
     logger.info(f"Tenant {tenant.id} and Brand {brand.id} seeded successfully. Tier: {tier}")
     return {
-        "tenant_id": tenant.id, 
-        "brand_id": brand.id, 
-        "status": "onboarding_ready", 
-        "tier": tier
+        "tenant_id": tenant.id,
+        "brand_id": brand.id,
+        "status": "onboarding_ready",
+        "tier": tier,
     }
 
-@router.get("/oauth/authorize/{provider}")
+@router.get("/oauth/authorize/{provider}", dependencies=[Depends(verify_operator_auth)])
 async def oauth_authorize(
-    provider: str, 
-    tenant_id: str, 
-    brand_id: str, 
+    provider: str,
+    tenant_id: str,
+    brand_id: str,
     redirect_uri: str,
     custom_domain: Optional[str] = None,
     shop: Optional[str] = None,
 ):
     """Generates the signed state token and redirects the merchant to the provider's OAuth page.
 
-    For Shopify, `shop` is the store's myshopify handle/domain (e.g. 'ableys' or
-    'ableys.myshopify.com'); it is carried in the signed state so the callback can
-    complete the token exchange against the correct store. Falls back to brand_id.
+    Operator-authenticated: only a trusted operator can mint a state binding a
+    tenant_id/brand_id, so the (unauthenticated, provider-driven) callback can trust
+    that binding. For Shopify, `shop` is the store's myshopify handle/domain (e.g.
+    'ableys' or 'ableys.myshopify.com'); it is carried in the signed state so the
+    callback can complete the token exchange against the correct store. Falls back to
+    brand_id.
     """
     logger.info(f"Generating OAuth redirect for provider={provider}, tenant={tenant_id}...")
     state = generate_oauth_state(tenant_id, brand_id, redirect_uri, provider)
-    
+
     # Handle Shopify custom store subdomains vs standard providers
     if provider == "shopify":
         shop_domain = normalize_shopify_domain(shop or brand_id)
@@ -84,25 +123,41 @@ async def oauth_authorize(
         except Exception as e:
             logger.error(f"Failed to generate authorize URL: {e}")
             raise HTTPException(status_code=400, detail=str(e))
-            
+
     return RedirectResponse(auth_url)
 
 @router.get("/oauth/callback")
 async def oauth_callback(
-    code: str, 
-    state: str, 
-    background_tasks: BackgroundTasks, 
+    state: str,
+    background_tasks: BackgroundTasks,
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    db: AsyncSession = Depends(get_worker_db),
 ):
-    """Receives the redirect callback, exchanges code, seeds Connection, and triggers RAG scan."""
+    """Receives the redirect callback, exchanges code, seeds Connection, and triggers RAG scan.
+
+    Unauthenticated (the provider redirects the merchant's browser here), but the state
+    is HMAC-signed by an operator-authenticated /oauth/authorize call, so the
+    tenant_id/brand_id binding is trustworthy.
+    """
     logger.info("Received OAuth callback redirect...")
+
+    # Provider signalled a user denial / error rather than returning a code.
+    if error:
+        logger.warning(f"OAuth provider returned error: {error} - {error_description}")
+        raise HTTPException(status_code=400, detail=f"OAuth error: {error} - {error_description}")
+
     try:
         payload = verify_oauth_state(state)
     except Exception as e:
         logger.error(f"OAuth State verification failed: {e}")
         raise HTTPException(status_code=400, detail=f"OAuth State verification failed: {str(e)}")
-        
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
     tenant_id = payload["tenant_id"]
     brand_id = payload["brand_id"]
     provider = payload.get("provider", "shopify")
@@ -116,8 +171,9 @@ async def oauth_callback(
     except Exception as e:
         logger.error(f"OAuth token exchange failed: {e}")
         raise HTTPException(status_code=500, detail=f"OAuth token exchange failed: {str(e)}")
-        
-    # 2. Seed or update the Connection row
+
+    # 2. Seed or update the Connection row (bind RLS context to the state's tenant)
+    await _set_tenant_context(db, tenant_id)
     stmt = select(Connection).where(
         Connection.tenant_id == tenant_id,
         Connection.brand_id == brand_id,
@@ -125,7 +181,7 @@ async def oauth_callback(
     )
     res = await db.execute(stmt)
     conn = res.scalar_one_or_none()
-    
+
     if not conn:
         conn = Connection(
             tenant_id=tenant_id,
@@ -140,38 +196,41 @@ async def oauth_callback(
         conn.credential = creds["refresh_token_ref"]
         conn.config = {"access_token_ref": creds["access_token_ref"]}
         conn.status = "active"
-        
+
     await db.commit()
     logger.info(f"Connection seeded successfully for provider={provider}, brand={brand_id}")
-    
+
     # 3. Trigger autonomous background RAG bootstrapping if Shopify is connected
     if provider == "shopify":
-        session_maker = getattr(request.app.state, "db_session_maker", AsyncSessionLocal)
-        background_tasks.add_task(bootstrap_brand_identity_task, tenant_id, brand_id, creds["access_token"], session_maker, shop)
-        
+        background_tasks.add_task(
+            bootstrap_brand_identity_task,
+            tenant_id, brand_id, creds["access_token"], get_worker_session_maker(), shop,
+        )
+
     return {
-        "status": "connection_established", 
-        "tenant_id": tenant_id, 
+        "status": "connection_established",
+        "tenant_id": tenant_id,
         "brand_id": brand_id,
         "provider": provider
     }
 
-@router.post("/connection/direct")
+@router.post("/connection/direct", dependencies=[Depends(verify_operator_auth)])
 async def connect_direct_api_key(
     tenant_id: str,
     brand_id: str,
     provider: str,
     api_key: str,
     config: Optional[dict] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_worker_db),
 ):
     """Directly registers permanent API keys (Stripe, Klaviyo, Shopify Private Apps) securely in Secret Manager."""
     logger.info(f"Directly registering API key for tenant={tenant_id}, provider={provider}...")
     secret_id = f"{tenant_id}-{brand_id}-{provider}-secret"
-    
+
     oauth_service = OauthService()
     credential_ref = await oauth_service.secrets_client.write_secret(secret_id, api_key)
-    
+
+    await _set_tenant_context(db, tenant_id)
     conn = Connection(
         tenant_id=tenant_id,
         brand_id=brand_id,
@@ -182,17 +241,17 @@ async def connect_direct_api_key(
     )
     db.add(conn)
     await db.commit()
-    
+
     logger.info(f"Direct connection established successfully for provider={provider}")
     return {"status": "direct_connection_established", "provider": provider}
 
-@router.post("/connection/config")
+@router.post("/connection/config", dependencies=[Depends(verify_operator_auth)])
 async def configure_connection(
     tenant_id: str,
     brand_id: str,
     provider: str,
     config: dict,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_worker_db),
 ):
     """Merges additional non-secret config into an existing Connection.
 
@@ -200,6 +259,7 @@ async def configure_connection(
     `developer_token` (read by app/services/google_ads.py from the connection config).
     """
     logger.info(f"Configuring connection for tenant={tenant_id}, provider={provider}...")
+    await _set_tenant_context(db, tenant_id)
     stmt = select(Connection).where(
         Connection.tenant_id == tenant_id,
         Connection.brand_id == brand_id,
@@ -231,7 +291,7 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         "X-Shopify-Access-Token": shopify_token,
         "Content-Type": "application/json"
     }
-    
+
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(shop_url, headers=headers, timeout=10.0)
@@ -243,7 +303,7 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         except Exception as e:
             logger.error(f"Failed to scan Shopify catalog during RAG bootstrap: {e}")
             return
-            
+
     # B. Compile catalog context
     catalog_summary = []
     for p in products_data:
@@ -253,11 +313,11 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
             f"Description: {p.get('body_html', '')[:200]}"
         )
     catalog_context = "\n---\n".join(catalog_summary)
-    
+
     # C. Call Gemini to synthesize Tone of Voice, Target Persona, and Guidelines
     from app.services.llm import VertexAIClient
     llm_client = VertexAIClient()
-    
+
     prompt = (
         f"Analyze this e-commerce product catalog and synthesize a highly accurate Brand Identity profile. "
         f"Determine:\n"
@@ -266,7 +326,7 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         f"3. Key copy guidelines (what terms to focus on, what to avoid).\n\n"
         f"Catalog Context:\n{catalog_context}"
     )
-    
+
     try:
         # Generate the structured profile using Gemini
         identity_json_str = await llm_client.generate_personalized_content(
@@ -288,9 +348,10 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
             "target_persona": "General e-commerce consumers",
             "past_experience": "No performance logs recorded yet."
         }
-        
+
     # D. Write the RAG profile directly to the database using local session
     async with session_maker() as db_session:
+        await _set_tenant_context(db_session, tenant_id)
         # Clean up any existing brand_identity entries
         stmt_cleanup = select(BrandProperty).where(
             BrandProperty.tenant_id == tenant_id,
@@ -301,7 +362,7 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         existing = res.scalars().all()
         for prop in existing:
             await db_session.delete(prop)
-            
+
         rag_prop = BrandProperty(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -312,5 +373,5 @@ async def bootstrap_brand_identity_task(tenant_id: str, brand_id: str, shopify_t
         )
         db_session.add(rag_prop)
         await db_session.commit()
-        
+
     logger.info(f"Autonomous RAG profile successfully bootstrapped for brand {brand_id}! TOV: {identity_data.get('tone_of_voice')}")

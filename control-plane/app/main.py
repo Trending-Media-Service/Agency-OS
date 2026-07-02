@@ -42,8 +42,10 @@ if SENTRY_DSN:
             SqlalchemyIntegration(),
             HttpxIntegration(),
         ],
-        traces_sample_rate=1.0,
-        profiles_sample_rate=1.0,
+        # Default to light sampling in production; override via env. 100% tracing +
+        # profiling is prohibitively expensive and noisy at real request volumes.
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
     )
 
 # Setup logging
@@ -151,31 +153,12 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
-OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "default-dev-token")
-if os.getenv("ENV") == "production" and OPERATOR_TOKEN == "default-dev-token":
-    raise RuntimeError("PRODUCTION BOOT ERROR: OPERATOR_TOKEN must be explicitly set — default is forbidden")
-
-async def verify_operator_auth(authorization: str | None = Header(default=None)):
-    """Verifies that the request carries a valid Operator Bearer Token in the Authorization header."""
-    import hmac
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
-
-
-async def resolved_operator_role(authorization: str | None = Header(default=None)) -> str | None:
-    """Resolves the operator's role if authenticated, else returns None."""
-    if not authorization:
-        return None
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    import hmac
-    if not hmac.compare_digest(token, OPERATOR_TOKEN):
-        raise HTTPException(403, "Forbidden: Invalid operator token")
-    return "OPERATOR_AUTHENTICATED"
+from app.security import (
+    OPERATOR_TOKEN,
+    verify_operator_auth,
+    resolved_operator_role,
+    require_non_production,
+)
 
 
 @app.get("/healthz")
@@ -2214,7 +2197,7 @@ async def plugin_webhook(
         raise
 
 
-@app.get("/debug/db", dependencies=[Depends(verify_operator_auth)])
+@app.get("/debug/db", dependencies=[Depends(require_non_production), Depends(verify_operator_auth)])
 async def debug_db(s: AsyncSession = Depends(get_worker_db)):
     from app.models import OpRow, Tenant, OutboxItem
     
@@ -2242,7 +2225,7 @@ async def debug_db(s: AsyncSession = Depends(get_worker_db)):
     return {"tenants": tenants, "ops": ops, "outbox": outbox, "policies": policies}
 
 
-@app.post("/debug/reset/{op_id}", dependencies=[Depends(verify_operator_auth)])
+@app.post("/debug/reset/{op_id}", dependencies=[Depends(require_non_production), Depends(verify_operator_auth)])
 async def debug_reset(op_id: str, request: Request, s: AsyncSession = Depends(get_worker_db)):
     from app.models import OutboxItem, OpRow
     import datetime as dt
@@ -2272,7 +2255,7 @@ async def debug_reset(op_id: str, request: Request, s: AsyncSession = Depends(ge
     return {"status": "ok", "message": f"Reset op {op_id} to PENDING/APPROVED"}
 
 
-@app.get("/debug/raw", dependencies=[Depends(verify_operator_auth)])
+@app.get("/debug/raw", dependencies=[Depends(require_non_production), Depends(verify_operator_auth)])
 async def debug_raw(s: AsyncSession = Depends(get_worker_db)):
     res_role = await s.execute(text("SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"))
     role = res_role.fetchone()
@@ -2299,7 +2282,7 @@ async def debug_raw(s: AsyncSession = Depends(get_worker_db)):
     }
 
 
-@app.get("/debug/ops", dependencies=[Depends(verify_operator_auth)])
+@app.get("/debug/ops", dependencies=[Depends(require_non_production), Depends(verify_operator_auth)])
 async def debug_ops(s: AsyncSession = Depends(get_worker_db)):
     res_owners = await s.execute(text("SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public'"))
     owners = {r[0]: r[1] for r in res_owners.fetchall()}
@@ -2319,7 +2302,7 @@ async def debug_ops(s: AsyncSession = Depends(get_worker_db)):
     }
 
 
-@app.post("/debug/migrate", dependencies=[Depends(verify_operator_auth)])
+@app.post("/debug/migrate", dependencies=[Depends(require_non_production), Depends(verify_operator_auth)])
 async def debug_migrate(s: AsyncSession = Depends(get_db)):
     try:
         await s.execute(text("ALTER TABLE outbox ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(32)"))
