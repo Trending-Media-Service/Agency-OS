@@ -173,6 +173,63 @@ async def test_operator_authentication_enforcement(client: AsyncClient):
         assert res.status_code == 200
         assert "tenant_id" in res.json()
 
+        # 7. POST /api/v1/onboarding/bootstrap without header -> 401
+        res = await client.post("/api/v1/onboarding/bootstrap?name=Test&domain=test.com")
+        assert res.status_code == 401
+        
+        # 8. POST /api/v1/onboarding/bootstrap with invalid Bearer token -> 403
+        res = await client.post(
+            "/api/v1/onboarding/bootstrap?name=Test&domain=test.com",
+            headers={"Authorization": "Bearer wrong-token"}
+        )
+        assert res.status_code == 403
+        
+        # 9. POST /api/v1/onboarding/bootstrap with valid Bearer token -> 200
+        res = await client.post(
+            "/api/v1/onboarding/bootstrap?name=Test&domain=test.com",
+            headers={"Authorization": "Bearer default-dev-token"}
+        )
+        assert res.status_code == 200
+        assert "tenant_id" in res.json()
+
+        # 10. POST /api/v1/onboarding/connection/direct without header -> 401
+        res = await client.post("/api/v1/onboarding/connection/direct?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo&api_key=key")
+        assert res.status_code == 401
+
+        # 11. POST /api/v1/onboarding/connection/direct with invalid token -> 403
+        res = await client.post(
+            "/api/v1/onboarding/connection/direct?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo&api_key=key",
+            headers={"Authorization": "Bearer wrong-token"}
+        )
+        assert res.status_code == 403
+
+        # 12. POST /api/v1/onboarding/connection/direct with valid token -> 200
+        res = await client.post(
+            "/api/v1/onboarding/connection/direct?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo&api_key=key",
+            headers={"Authorization": "Bearer default-dev-token"}
+        )
+        assert res.status_code == 200
+
+        # 13. POST /api/v1/onboarding/connection/config without header -> 401
+        res = await client.post("/api/v1/onboarding/connection/config?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo", json={})
+        assert res.status_code == 401
+
+        # 14. POST /api/v1/onboarding/connection/config with invalid token -> 403
+        res = await client.post(
+            "/api/v1/onboarding/connection/config?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo",
+            headers={"Authorization": "Bearer wrong-token"},
+            json={}
+        )
+        assert res.status_code == 403
+
+        # 15. POST /api/v1/onboarding/connection/config with valid token -> 200
+        res = await client.post(
+            "/api/v1/onboarding/connection/config?tenant_id=t-rbac&brand_id=b-rbac&provider=klaviyo",
+            headers={"Authorization": "Bearer default-dev-token"},
+            json={"foo": "bar"}
+        )
+        assert res.status_code == 200
+
     finally:
         # 7. Restore override to prevent leaking to other tests
         mainmod.app.dependency_overrides[verify_operator_auth] = lambda: None

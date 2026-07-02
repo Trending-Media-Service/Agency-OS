@@ -1,5 +1,6 @@
 import datetime as dt
 import logging
+import os
 import urllib.parse as urlparse
 import uuid
 import httpx
@@ -13,7 +14,8 @@ from app.database import get_db, get_worker_db, get_worker_session_maker
 from app.models import Connection, CircuitBreakerRow, ShadowDecision
 from app.auth import tenant_id, validate_id
 from app.tasks import enqueue_drain
-from app.services.oauth import generate_oauth_state, validate_redirect_uri, verify_oauth_state
+from app.services.oauth import generate_oauth_state, validate_redirect_uri, verify_oauth_state, OauthService, normalize_shopify_domain
+from app.services.oauth_registry import OauthProviderRegistry
 from app.services.secrets import SecretManagerClient
 from app.kernel.optypes import OpSpec, Severity, Reversibility
 from app.kernel.loop import propose, preview_and_gate
@@ -66,21 +68,32 @@ async def oauth_authorize(
     provider: str,
     brand_id: str,
     redirect_uri: str,
+    shop: str | None = None,
     tid: str = Depends(tenant_id)
 ):
     validate_id(brand_id, "brand_id")
     if not validate_redirect_uri(redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid redirect_uri")
 
-    state = generate_oauth_state(tid, brand_id, redirect_uri, provider=provider)
+    state = generate_oauth_state(tid, brand_id, redirect_uri, provider=provider, shop=shop)
 
-    shop = brand_id
+    callback_uri = str(request.url_for('oauth_callback'))
     if provider == "shopify":
-        auth_url = f"https://{shop}.myshopify.com/admin/oauth/authorize?client_id=mock-client-id&scope=read_products,write_products&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}"
-    elif provider.startswith("google"):
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&response_type=code&scope=https://www.googleapis.com/auth/adwords&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}&access_type=offline&prompt=consent"
+        shop_domain = normalize_shopify_domain(shop or brand_id)
+        state = generate_oauth_state(tid, brand_id, redirect_uri, provider=provider, shop=shop_domain)
+        client_id = os.getenv("SHOPIFY_CLIENT_ID", "mock-shopify-client-id")
+        auth_url = (
+            f"https://{shop_domain}/admin/oauth/authorize?"
+            f"client_id={client_id}&"
+            f"scope=read_products,write_products&"
+            f"redirect_uri={urlparse.quote(callback_uri)}&"
+            f"state={state}"
+        )
     else:
-        auth_url = f"https://oauth.example.com/authorize?client_id=mock-client-id&redirect_uri={urlparse.quote(str(request.url_for('oauth_callback')))}&state={state}"
+        try:
+            auth_url = OauthProviderRegistry.get_authorize_url(provider, state, callback_uri)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     return RedirectResponse(url=auth_url, status_code=302)
 
@@ -119,43 +132,6 @@ async def oauth_callback(
     provider = payload.get("provider", "shopify")
     redirect_uri = payload.get("redirect_uri")
 
-    if provider == "shopify":
-        token_url = f"https://{brand_id}.myshopify.com/admin/oauth/access_token"
-    else:
-        token_url = "https://oauth2.googleapis.com/token"
-
-    token_payload = {
-        "client_id": "mock-client-id",
-        "client_secret": "mock-client-secret",
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": str(request.url_for("oauth_callback"))
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.post(token_url, data=token_payload)
-            if resp.status_code != 200:
-                err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-                err_msg = err_data.get("error_description") or err_data.get("error") or resp.text
-                raise HTTPException(status_code=400, detail=f"Token exchange failed: {err_msg}")
-            token_data = resp.json()
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Token exchange failed: {e}")
-
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    scope_str = token_data.get("scope") or "read_products,write_products"
-    expires_in = token_data.get("expires_in", 3600)
-
-    if provider == "shopify":
-        required_scopes = {"read_products", "write_products"}
-        returned_scopes = {s.strip() for s in scope_str.split(",")}
-        if not required_scopes.issubset(returned_scopes):
-            raise HTTPException(status_code=400, detail="Scope mismatch: missing required permissions")
-
     # Set up DB RLS tenant context explicitly for this session
     if s.bind.dialect.name == "postgresql":
         await s.execute(
@@ -163,21 +139,32 @@ async def oauth_callback(
             {"tenant_id": tenant_id_val},
         )
 
-    secrets_client = SecretManagerClient()
-    
-    # Write refresh token to Secret Manager (if present)
-    refresh_token_ref = None
-    if refresh_token:
-        refresh_token_ref = await secrets_client.write_secret(
-            f"{tenant_id_val}-{brand_id}-{provider}-refresh",
-            refresh_token
+    oauth_service = OauthService()
+    try:
+        shop = payload.get("shop")
+        callback_uri = str(request.url_for("oauth_callback"))
+        creds = await oauth_service.exchange_code_for_token(
+            tenant_id=tenant_id_val,
+            brand_id=brand_id,
+            provider=provider,
+            code=code,
+            shop=shop,
+            redirect_uri=callback_uri
         )
-        
-    # Write access token to Secret Manager
-    access_token_ref = await secrets_client.write_secret(
-        f"{tenant_id_val}-{brand_id}-{provider}-access",
-        access_token
-    )
+    except Exception as e:
+        logger.error(f"OAuth token exchange failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Token exchange failed: {str(e)}")
+
+    access_token_ref = creds["access_token_ref"]
+    refresh_token_ref = creds.get("refresh_token_ref")
+    expires_in = creds.get("expires_in", 3600)
+    scope_str = creds.get("scope") or "read_products,write_products"
+
+    if provider == "shopify":
+        required_scopes = {"read_products", "write_products"}
+        returned_scopes = {s.strip() for s in scope_str.split(",")}
+        if not required_scopes.issubset(returned_scopes):
+            raise HTTPException(status_code=400, detail="Scope mismatch: missing required permissions")
 
     action_map = {
         "shopify": "manage.shopify.connect",
@@ -199,10 +186,14 @@ async def oauth_callback(
 
     op_id = f"op_{uuid.uuid4().hex[:12]}"
     
+    env_prefix = provider.replace("-", "_").upper()
+    client_id = os.getenv("SHOPIFY_CLIENT_ID" if provider == "shopify" else f"{env_prefix}_CLIENT_ID", f"mock-{provider}-client-id")
     config = {
         "scopes": scope_str,
-        "client_id": "mock-client-id",
+        "client_id": client_id,
     }
+    if shop:
+        config["shop"] = shop
     if refresh_token_ref:
         config["refresh_token_ref"] = refresh_token_ref
     if expires_in:

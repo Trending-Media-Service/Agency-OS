@@ -225,10 +225,14 @@ class ManageAdapter(Adapter):
             tenant = res_tenant.scalar_one_or_none()
             gcp_project = tenant.gcp_project if tenant else None
 
-            # Write token to Secret Manager and get reference
-            secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
-            secrets_client = SecretManagerClient(project_id=gcp_project)
-            credential_ref = await secrets_client.write_secret(secret_id, raw_token)
+            # If raw_token is already a Secret Manager reference, use it directly.
+            # Otherwise, write it to the canonical secret location.
+            if raw_token.startswith("projects/"):
+                credential_ref = raw_token
+            else:
+                secret_id = f"{op.tenant_id}-{op.brand_id}-{provider}-secret"
+                secrets_client = SecretManagerClient(project_id=gcp_project)
+                credential_ref = await secrets_client.write_secret(secret_id, raw_token)
             
             logger.info(f"Connecting {provider} for brand {op.brand_id} with credential reference {credential_ref}")
             
@@ -258,6 +262,22 @@ class ManageAdapter(Adapter):
                 session.add(conn)
                 logger.info("Created new connection")
                 
+            if provider == "shopify":
+                try:
+                    from app.services.brand_identity import bootstrap_brand_identity
+                    shop = config.get("shop")
+                    secrets_client = SecretManagerClient(project_id=gcp_project)
+                    shopify_token = await secrets_client.read_secret(credential_ref)
+                    await bootstrap_brand_identity(
+                        db_session=session,
+                        tenant_id=op.tenant_id,
+                        brand_id=op.brand_id,
+                        shopify_token=shopify_token,
+                        shop=shop
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to bootstrap brand identity during connect: {e}")
+
             from app.metrics import CONNECTOR_OPERATIONS
             CONNECTOR_OPERATIONS.labels(operation="connect", provider=provider, result="success").inc()
             return ExecResult(ok=True, detail={"message": "Connection registered in DB and Secret Manager"})

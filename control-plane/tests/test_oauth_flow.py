@@ -1,12 +1,13 @@
 # Feature 2 OAuth Flow and Token Rotation tests
 import datetime as dt
+import json
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from sqlalchemy import select
 from httpx import AsyncClient, HTTPStatusError
 from fastapi import HTTPException, Request
 
-from app.models import Connection, AuditEvent
+from app.models import Connection, AuditEvent, BrandProperty
 from app.database import get_db
 import app.main as mainmod
 import app.auth as authmod
@@ -458,8 +459,31 @@ async def test_rotation_prunes_old_versions(session, mock_secrets_client):
 # ---------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_complete_oauth_flow(client, session, mock_secrets_client):
+@patch("app.services.brand_identity.VertexAIClient")
+async def test_complete_oauth_flow(mock_llm_cls, client, session, mock_secrets_client):
     """Test 48: Verify full OAuth flow: authorize redirect, code callback, token exchange, and active state."""
+    # Mock Shopify products response
+    shopify_products_response = {
+        "products": [
+            {
+                "title": "Weighted Sensory Blanket",
+                "product_type": "Sensory Toy",
+                "body_html": "<p>Empathy-centered calming blanket for sensory seeking toddlers.</p>"
+            }
+        ]
+    }
+    # Mock Gemini response
+    gemini_identity_response = {
+        "tone_of_voice": "Empathetic, sensory-friendly, clinical",
+        "target_persona": "Parents of sensory-seeking children",
+        "past_experience": "Avoid discounts."
+    }
+    mock_llm = MagicMock()
+    async def mock_generate(*args, **kwargs):
+        return json.dumps(gemini_identity_response)
+    mock_llm.generate_personalized_content.side_effect = mock_generate
+    mock_llm_cls.return_value = mock_llm
+
     # Step 1: GET /connections/oauth/authorize
     auth_resp = await client.get(
         "/connections/oauth/authorize?provider=shopify&brand_id=b1&redirect_uri=https://app.agencyos.com/callback",
@@ -478,15 +502,25 @@ async def test_complete_oauth_flow(client, session, mock_secrets_client):
     state = queries["state"][0]
     
     # Step 2: GET /connections/oauth/callback with state and code
-    with patch("httpx.AsyncClient.post") as mock_post:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
+    with patch("httpx.AsyncClient.post") as mock_post, \
+         patch("app.services.brand_identity.AsyncClient") as mock_brand_client_cls:
+         
+        mock_resp_post = MagicMock()
+        mock_resp_post.status_code = 200
+        mock_resp_post.json.return_value = {
             "access_token": "shpat_mock_access_token",
             "refresh_token": "mock_refresh_token",
-            "expires_in": 3600
+            "expires_in": 3600,
+            "scope": "read_products,write_products"
         }
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_resp_post
+        
+        mock_brand_client = MagicMock()
+        mock_resp_get = MagicMock()
+        mock_resp_get.status_code = 200
+        mock_resp_get.json.return_value = shopify_products_response
+        mock_brand_client.get = AsyncMock(return_value=mock_resp_get)
+        mock_brand_client_cls.return_value.__aenter__.return_value = mock_brand_client
         
         callback_resp = await client.get(
             f"/connections/oauth/callback?code=mock_auth_code&state={state}"
@@ -517,6 +551,18 @@ async def test_complete_oauth_flow(client, session, mock_secrets_client):
         conn = res.scalar_one()
         assert conn.status == "active"
         assert conn.credential is not None
+
+        # Check BrandProperty (brand_identity) was created
+        stmt_prop = select(BrandProperty).where(
+            BrandProperty.tenant_id == "t1",
+            BrandProperty.brand_id == "b1",
+            BrandProperty.type == "brand_identity"
+        )
+        res_prop = await session.execute(stmt_prop)
+        bp = res_prop.scalar_one_or_none()
+        assert bp is not None
+        assert bp.status == "active"
+        assert bp.findings["tone_of_voice"] == "Empathetic, sensory-friendly, clinical"
 
 @pytest.mark.asyncio
 async def test_callback_code_exchange_failure(client, session):
@@ -605,3 +651,15 @@ def test_open_redirect_bypass_payloads():
     assert validate_redirect_uri("https://app.agencyos.com@attacker.com/bypass") is False
     assert validate_redirect_uri("https://app.agencyos.com\\@attacker.com/bypass") is False
     assert validate_redirect_uri("https://localhost.attacker.com") is False
+
+@pytest.mark.asyncio
+async def test_oauth_authorize_redirect_generation_with_explicit_shop(client):
+    """Verify authorize endpoint with explicit shop handle targets that store instead of brand_id."""
+    resp = await client.get(
+        "/connections/oauth/authorize?provider=shopify&brand_id=b1&redirect_uri=https://app.agencyos.com/callback&shop=ableys",
+        headers={"X-Tenant-ID": "t1"}
+    )
+    assert resp.status_code == 302
+    location = resp.headers.get("location")
+    assert "ableys.myshopify.com/admin/oauth/authorize" in location
+    assert "b1.myshopify.com" not in location

@@ -239,7 +239,12 @@ class OauthService:
             try:
                 resp = await client.post(url, data=payload)
                 if resp.status_code != 200:
-                    raise Exception(f"Token exchange HTTP failed: {resp.status_code} - {resp.text}")
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get("error_description") or err_data.get("error") or resp.text
+                    except Exception:
+                        err_msg = resp.text
+                    raise Exception(f"Token exchange HTTP failed: {resp.status_code} - {err_msg}")
                 data = resp.json()
             except Exception as e:
                 logger.error(f"OAuth token exchange request failed: {e}")
@@ -263,5 +268,6 @@ class OauthService:
             "refresh_token": refresh_token,
             "expires_in": expires_in,
             "access_token_ref": access_token_ref,
-            "refresh_token_ref": refresh_token_ref
+            "refresh_token_ref": refresh_token_ref,
+            "scope": data.get("scope")
         }

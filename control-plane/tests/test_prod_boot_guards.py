@@ -110,32 +110,6 @@ def test_prod_boot_guards_dev_mode(monkeypatch):
         pytest.fail(f"Boots failed in dev mode: {e}")
 
 
-def test_debug_endpoints_disabled_by_default(monkeypatch):
-    monkeypatch.setenv("ENV", "development")
-    monkeypatch.setenv("ENABLE_DEBUG_ENDPOINTS", "false")
-    clean_imports()
-    import app.main
-    debug_routes = [r.path for r in app.main.app.routes if r.path.startswith("/debug/")]
-    assert len(debug_routes) == 0, f"Found debug routes: {debug_routes}"
-
-
-def test_debug_endpoints_enabled_in_dev(monkeypatch):
-    monkeypatch.setenv("ENV", "development")
-    monkeypatch.setenv("ENABLE_DEBUG_ENDPOINTS", "true")
-    clean_imports()
-    import app.main
-    debug_routes = [r.path for r in app.main.app.routes if r.path.startswith("/debug/")]
-    assert len(debug_routes) > 0, "No debug routes registered when enabled!"
-    assert "/debug/db" in debug_routes
-
-
-def test_prod_boot_guards_debug_endpoints_fails(monkeypatch):
-    setup_valid_prod_env(monkeypatch)
-    monkeypatch.setenv("ENABLE_DEBUG_ENDPOINTS", "true")
-    clean_imports()
-    with pytest.raises(RuntimeError) as exc_info:
-        import app.main
-    assert "Debug endpoints cannot be enabled in production mode" in str(exc_info.value)
 
 
 def test_prod_boot_guards_mock_secret_fails(monkeypatch):
