@@ -7,7 +7,7 @@ from sqlalchemy import select
 from httpx import AsyncClient, HTTPStatusError
 from fastapi import HTTPException, Request
 
-from app.models import Connection, AuditEvent, BrandProperty
+from app.models import Connection, AuditEvent, BrandProperty, Tenant, Brand
 from app.database import get_db
 import app.main as mainmod
 import app.auth as authmod
@@ -653,8 +653,12 @@ def test_open_redirect_bypass_payloads():
     assert validate_redirect_uri("https://localhost.attacker.com") is False
 
 @pytest.mark.asyncio
-async def test_oauth_authorize_redirect_generation_with_explicit_shop(client):
+async def test_oauth_authorize_redirect_generation_with_explicit_shop(client, session):
     """Verify authorize endpoint with explicit shop handle targets that store instead of brand_id."""
+    session.add(Tenant(id="t1", name="Test Tenant", hosting_tier="shared"))
+    session.add(Brand(id="b1", tenant_id="t1", name="Test Brand"))
+    await session.commit()
+
     resp = await client.get(
         "/connections/oauth/authorize?provider=shopify&brand_id=b1&redirect_uri=https://app.agencyos.com/callback&shop=ableys",
         headers={"X-Tenant-ID": "t1"}
@@ -663,3 +667,33 @@ async def test_oauth_authorize_redirect_generation_with_explicit_shop(client):
     location = resp.headers.get("location")
     assert "ableys.myshopify.com/admin/oauth/authorize" in location
     assert "b1.myshopify.com" not in location
+
+
+def test_salesforce_oauth_domain_fallback():
+    """Verify Salesforce OAuth URL fallback logic when custom_domain is or isn't passed."""
+    from app.services.oauth_registry import OauthProviderRegistry
+    
+    # 1. Without custom_domain -> falls back to login.salesforce.com
+    auth_url = OauthProviderRegistry.get_authorize_url("salesforce", "state123", "https://app/callback")
+    assert "https://login.salesforce.com/services/oauth2/authorize" in auth_url
+    
+    token_url, _ = OauthProviderRegistry.get_exchange_payload("salesforce", "code123", "https://app/callback")
+    assert token_url == "https://login.salesforce.com/services/oauth2/token"
+    
+    # 2. With custom_domain -> uses custom_domain
+    auth_url_custom = OauthProviderRegistry.get_authorize_url("salesforce", "state123", "https://app/callback", custom_domain="mycorp.my.salesforce.com")
+    assert "https://mycorp.my.salesforce.com/services/oauth2/authorize" in auth_url_custom
+    
+    token_url_custom, _ = OauthProviderRegistry.get_exchange_payload("salesforce", "code123", "https://app/callback", custom_domain="mycorp.my.salesforce.com")
+    assert token_url_custom == "https://mycorp.my.salesforce.com/services/oauth2/token"
+
+
+@pytest.mark.asyncio
+async def test_callback_provider_denial_clean_failure(client):
+    """Verify callback handles provider denial cleanly with 400."""
+    resp = await client.get(
+        "/connections/oauth/callback?error=access_denied&error_description=User+denied+access&state=some_state"
+    )
+    assert resp.status_code == 400
+    assert "access_denied" in resp.text
+    assert "User denied access" in resp.text

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 import httpx
 import json
 import os
@@ -30,10 +30,15 @@ async def bootstrap_tenant(
     """
     logger.info(f"Bootstrapping tenant={name}, tier={tier}...")
     tenant = Tenant(name=name, hosting_tier=tier)
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant.id}
+        )
     db.add(tenant)
     await db.flush() # Resolve tenant ID
     
-    brand = Brand(tenant_id=tenant.id, name=name)
+    brand = Brand(tenant_id=tenant.id, name=name, domain=domain)
     db.add(brand)
     await db.commit()
     
@@ -59,6 +64,18 @@ async def connect_direct_api_key(
 ):
     """Directly registers permanent API keys (Stripe, Klaviyo, Shopify Private Apps) securely in Secret Manager."""
     logger.info(f"Directly registering API key for tenant={tenant_id}, provider={provider}...")
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant_id}
+        )
+    # Verify brand belongs to tenant
+    stmt_brand = select(Brand).where(Brand.id == brand_id, Brand.tenant_id == tenant_id)
+    res_brand = await db.execute(stmt_brand)
+    brand = res_brand.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found for this tenant")
+
     secret_id = f"{tenant_id}-{brand_id}-{provider}-secret"
     
     oauth_service = OauthService()
@@ -92,6 +109,18 @@ async def configure_connection(
     `developer_token` (read by app/services/google_ads.py from the connection config).
     """
     logger.info(f"Configuring connection for tenant={tenant_id}, provider={provider}...")
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant_id}
+        )
+    # Verify brand belongs to tenant
+    stmt_brand = select(Brand).where(Brand.id == brand_id, Brand.tenant_id == tenant_id)
+    res_brand = await db.execute(stmt_brand)
+    brand = res_brand.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found for this tenant")
+
     stmt = select(Connection).where(
         Connection.tenant_id == tenant_id,
         Connection.brand_id == brand_id,

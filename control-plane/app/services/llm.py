@@ -1244,3 +1244,93 @@ class VertexAIClient:
             except (KeyError, IndexError, ValueError) as e:
                 logger.error(f"Failed to parse model response payload: {e}. Raw response: {data}")
                 raise RuntimeError("Invalid model response format")
+
+    async def generate_personalized_content(
+        self,
+        tenant_id: str,
+        brand_id: str,
+        prompt: str,
+        session = None,
+        system_instruction: Optional[str] = None
+    ) -> dict:
+        if os.getenv("AOS_ENV") == "test":
+            logger.info("[TEST MODE] Returning mock brand identity")
+            return {
+                "tone_of_voice": "Friendly, modern, and direct",
+                "target_persona": "General consumers",
+                "past_experience": "No performance logs recorded yet."
+            }
+
+        import google.auth
+        import google.auth.transport.requests
+
+        try:
+            credentials, resolved_project = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            auth_req = google.auth.transport.requests.Request()
+            credentials.refresh(auth_req)
+            token = credentials.token
+            project = self.project_id or resolved_project
+        except Exception as e:
+            logger.error(f"Failed to obtain GCP credentials: {e}")
+            raise RuntimeError(f"GCP Authentication failed: {e}")
+
+        url = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{self.region}/publishers/google/models/{self.model}:generateContent"
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            "systemInstruction": {
+                "parts": [
+                    {
+                        "text": system_instruction or "You are a senior brand consultant."
+                    }
+                ]
+            },
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "tone_of_voice": {
+                            "type": "STRING"
+                        },
+                        "target_persona": {
+                            "type": "STRING"
+                        },
+                        "past_experience": {
+                            "type": "STRING"
+                        }
+                    },
+                    "required": ["tone_of_voice", "target_persona", "past_experience"]
+                }
+            }
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, headers=headers, timeout=60.0)
+            if resp.status_code != 200:
+                logger.error(f"Vertex AI API returned error: {resp.status_code} - {resp.text}")
+                raise RuntimeError(f"Vertex AI request failed: {resp.text}")
+            
+            data = resp.json()
+            try:
+                text_content = data["candidates"][0]["content"]["parts"][0]["text"]
+                return json.loads(text_content)
+            except (KeyError, IndexError, ValueError) as e:
+                logger.error(f"Failed to parse model response payload: {e}. Raw response: {data}")
+                raise RuntimeError("Invalid model response format")

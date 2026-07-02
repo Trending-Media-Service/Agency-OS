@@ -136,11 +136,19 @@ async def test_rbac_enforcement_cases(client: AsyncClient, session):
 
 
 @pytest.mark.asyncio
-async def test_operator_authentication_enforcement(client: AsyncClient):
+async def test_operator_authentication_enforcement(client: AsyncClient, session):
     import app.main as mainmod
     from app.main import verify_operator_auth
+    from app.models import Tenant, Brand
 
-    # 1. Remove the override temporarily
+    # 1. Seed tenant and brand for connection tests
+    tenant = Tenant(id="t-rbac", name="RBAC Tenant")
+    brand = Brand(id="b-rbac", tenant_id="t-rbac", name="RBAC Brand")
+    session.add(tenant)
+    session.add(brand)
+    await session.commit()
+
+    # 2. Remove the override temporarily
     if verify_operator_auth in mainmod.app.dependency_overrides:
         del mainmod.app.dependency_overrides[verify_operator_auth]
 

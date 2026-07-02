@@ -56,7 +56,7 @@ async def bootstrap_brand_identity(db_session: AsyncSession, tenant_id: str, bra
     )
     
     try:
-        identity_json_str = await llm_client.generate_personalized_content(
+        identity_data = await llm_client.generate_personalized_content(
             tenant_id=tenant_id,
             brand_id=brand_id,
             prompt=prompt,
@@ -66,7 +66,6 @@ async def bootstrap_brand_identity(db_session: AsyncSession, tenant_id: str, bra
                 "'tone_of_voice', 'target_persona', and 'past_experience' keys."
             )
         )
-        identity_data = json.loads(identity_json_str)
     except Exception as e:
         logger.error(f"Failed to synthesize brand identity via LLM: {e}")
         identity_data = {

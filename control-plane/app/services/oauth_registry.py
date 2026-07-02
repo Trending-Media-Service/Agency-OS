@@ -49,6 +49,9 @@ class OauthProviderRegistry:
         if not cfg:
             raise ValueError(f"OAuth Provider '{provider}' not supported in registry.")
             
+        if provider == "salesforce" and not custom_domain:
+            custom_domain = "login.salesforce.com"
+
         base_auth_url = cfg["auth_url"]
         if custom_domain:
             if not custom_domain.startswith("https://"):
@@ -75,6 +78,9 @@ class OauthProviderRegistry:
         if not cfg:
             raise ValueError(f"OAuth Provider '{provider}' not supported in registry.")
             
+        if provider == "salesforce" and not custom_domain:
+            custom_domain = "login.salesforce.com"
+
         base_token_url = cfg["token_url"]
         if custom_domain:
             if not custom_domain.startswith("https://"):

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 
 from app.database import get_db, get_worker_db, get_worker_session_maker
-from app.models import Connection, CircuitBreakerRow, ShadowDecision
+from app.models import Connection, CircuitBreakerRow, ShadowDecision, Brand
 from app.auth import tenant_id, validate_id
 from app.tasks import enqueue_drain
 from app.services.oauth import generate_oauth_state, validate_redirect_uri, verify_oauth_state, OauthService, normalize_shopify_domain
@@ -69,9 +69,17 @@ async def oauth_authorize(
     brand_id: str,
     redirect_uri: str,
     shop: str | None = None,
-    tid: str = Depends(tenant_id)
+    tid: str = Depends(tenant_id),
+    db: AsyncSession = Depends(get_db)
 ):
     validate_id(brand_id, "brand_id")
+    # Verify brand belongs to tenant
+    stmt_brand = select(Brand).where(Brand.id == brand_id, Brand.tenant_id == tid)
+    res_brand = await db.execute(stmt_brand)
+    brand = res_brand.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found for this tenant")
+
     if not validate_redirect_uri(redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid redirect_uri")
 

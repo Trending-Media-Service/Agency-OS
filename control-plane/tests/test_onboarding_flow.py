@@ -44,11 +44,17 @@ async def test_onboarding_bootstrap(client, session: AsyncSession):
     brand = res_brand.scalar_one_or_none()
     assert brand is not None
     assert brand.name == "LuxeDecor"
+    assert brand.domain == "luxedecor.com"
 
 
 
 @pytest.mark.asyncio
 async def test_onboarding_connection_direct(client, session: AsyncSession):
+    # Seed tenant and brand
+    session.add(Tenant(id="t-3", name="LuxeDecor", hosting_tier="shared"))
+    session.add(Brand(id="b-3", tenant_id="t-3", name="LuxeDecor"))
+    await session.commit()
+
     # Test POST /api/v1/onboarding/connection/direct for Klaviyo API key
     with patch("app.services.oauth.SecretManagerClient") as mock_secrets_cls:
         mock_secrets = MagicMock()
@@ -104,7 +110,7 @@ async def test_bootstrap_brand_identity_task(mock_llm_cls, clean_env, db_engine,
     # Setup Mock LLM client
     mock_llm = MagicMock()
     async def mock_generate(*args, **kwargs):
-        return json.dumps(gemini_identity_response)
+        return gemini_identity_response
     mock_llm.generate_personalized_content.side_effect = mock_generate
     mock_llm_cls.return_value = mock_llm
     
